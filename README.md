@@ -1,0 +1,2 @@
+- cd mcp-client
+- uv run client.py ../weather/weather.py
