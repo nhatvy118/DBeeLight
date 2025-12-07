@@ -1,0 +1,11 @@
+[project]
+name = "database"
+version = "0.1.0"
+description = "MCP Server for PostgreSQL database operations"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "asyncpg>=0.29.0",
+    "mcp[cli]>=1.22.0",
+]
+

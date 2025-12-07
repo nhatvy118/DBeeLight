@@ -1,6 +1,8 @@
 import asyncio
 import json
 import sys
+import os
+from pathlib import Path
 from typing import Optional
 from contextlib import AsyncExitStack
 
@@ -33,10 +35,47 @@ class MCPClient:
         if not (is_python or is_js):
             raise ValueError("Server script must be a .py or .js file")
 
-        command = "python" if is_python else "node"
+        # Check if there's a virtual environment in the same directory as the script
+        # If so, use Python from that venv to ensure correct dependencies
+        script_path = Path(server_script_path).resolve()
+        script_dir = script_path.parent
+        
+        if is_python:
+            # Look for common venv directory names
+            venv_dirs = [".venv", "venv", "env"]
+            python_executable = None
+            
+            for venv_dir in venv_dirs:
+                venv_path = script_dir / venv_dir
+                if venv_path.exists() and venv_path.is_dir():
+                    # Determine the Python executable path based on OS
+                    if sys.platform == "win32":
+                        python_exe = venv_path / "Scripts" / "python.exe"
+                    else:
+                        python_exe = venv_path / "bin" / "python"
+                    
+                    if python_exe.exists():
+                        python_executable = str(python_exe)
+                        break
+            
+            if python_executable:
+                # Use Python from venv
+                command = python_executable
+                args = [str(script_path)]
+                print(f"Using Python from venv: {python_executable}")
+            else:
+                # Fallback to system python
+                command = "python"
+                args = [server_script_path]
+                print(f"Using system Python: {command}")
+        else:
+            # For JavaScript, use node directly
+            command = "node"
+            args = [server_script_path]
+        
         server_params = StdioServerParameters(
             command=command,
-            args=[server_script_path],
+            args=args,
             env=None,
         )
 
