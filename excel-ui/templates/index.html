@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel Summary & Chart Generator</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 Excel Summary & Chart Generator</h1>
+            <p>Upload Excel file, get summary, and generate charts</p>
+        </header>
+
+        <div class="main-content">
+            <!-- Upload Section -->
+            <section class="card" id="upload-section">
+                <h2>1. Upload Excel File</h2>
+                <div class="upload-area" id="upload-area">
+                    <input type="file" id="file-input" accept=".xlsx,.xls" style="display: none;">
+                    <div class="upload-placeholder">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        <p>Click to upload or drag and drop</p>
+                        <p class="file-hint">Excel files (.xlsx, .xls) only</p>
+                    </div>
+                </div>
+                <div id="upload-status" class="status-message"></div>
+            </section>
+
+            <!-- Data Preview Section -->
+            <section class="card" id="preview-section" style="display: none;">
+                <h2>2. Data Preview</h2>
+                <div id="data-preview" class="data-preview"></div>
+            </section>
+
+            <!-- Summary Section -->
+            <section class="card" id="summary-section" style="display: none;">
+                <h2>3. Data Summary</h2>
+                <button id="generate-summary-btn" class="btn btn-primary">Generate Summary</button>
+                <div id="summary-content" class="summary-content"></div>
+            </section>
+
+            <!-- Chart Section -->
+            <section class="card" id="chart-section" style="display: none;">
+                <h2>4. Generate Chart</h2>
+                <div class="chart-controls">
+                    <div class="form-group">
+                        <label for="chart-type">Chart Type:</label>
+                        <select id="chart-type" class="form-control">
+                            <option value="bar">Bar Chart</option>
+                            <option value="line">Line Chart</option>
+                            <option value="pie">Pie Chart</option>
+                            <option value="scatter">Scatter Plot</option>
+                            <option value="histogram">Histogram</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="chart-title">Chart Title (optional):</label>
+                        <input type="text" id="chart-title" class="form-control" placeholder="Enter chart title">
+                    </div>
+                    <button id="suggest-charts-btn" class="btn btn-secondary">Get Suggestions</button>
+                    <button id="generate-chart-btn" class="btn btn-primary">Generate Chart</button>
+                </div>
+                <div id="chart-suggestions" class="chart-suggestions"></div>
+                <div id="chart-result" class="chart-result"></div>
+            </section>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
+
