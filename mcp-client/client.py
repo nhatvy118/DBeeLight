@@ -23,6 +23,9 @@ class MCPClient:
 
         # OpenAI client (dùng OPENAI_API_KEY trong .env)
         self.openai = OpenAI()
+        
+        # Cache tools để tránh list lại mỗi query
+        self._cached_tools = None
 
     async def connect_to_server(self, server_script_path: str):
         """Connect to an MCP server
@@ -89,10 +92,9 @@ class MCPClient:
 
         await self.session.initialize()
 
-        # List available tools
+        # List available tools và cache lại
         response = await self.session.list_tools()
-        tools = response.tools
-        print("\nConnected to server with tools:", [tool.name for tool in tools])
+        self._cached_tools = response.tools
 
     async def process_query(self, query: str) -> str:
         """Process a query using OpenAI and available MCP tools"""
@@ -106,7 +108,11 @@ class MCPClient:
             }
         ]
 
-        response = await self.session.list_tools()
+        # Sử dụng cached tools thay vì list lại mỗi lần
+        if self._cached_tools is None:
+            response = await self.session.list_tools()
+            self._cached_tools = response.tools
+        
         tools = [
             {
                 "type": "function",
@@ -116,7 +122,7 @@ class MCPClient:
                     "parameters": tool.inputSchema,
                 },
             }
-            for tool in response.tools
+            for tool in self._cached_tools
         ]
 
         final_text_chunks = []

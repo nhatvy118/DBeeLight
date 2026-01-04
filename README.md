@@ -4,17 +4,8 @@ Dự án này chứa các MCP (Model Context Protocol) servers và client để 
 
 ## Các Servers
 
-### 1. Weather Server (`weather/`)
-MCP server cung cấp thông tin thời tiết từ National Weather Service API.
-
-**Sử dụng:**
-```bash
-cd mcp-client
-uv run client.py ../weather/weather.py
-```
-
-### 2. Database Server (`database/`)
-MCP server cung cấp các công cụ CRUD để thao tác với PostgreSQL database.
+### 1. Database Server (`database/`)
+MCP server cung cấp các công cụ để thao tác với PostgreSQL database (CRUD, schema management, SQL execution, etc.).
 
 **Cài đặt:**
 ```bash
@@ -30,7 +21,50 @@ cd mcp-client
 uv run client.py ../database/database.py
 ```
 
+**Tools:** connect_db, create_db_from_spec, list_databases, list_tables, get_table_stats, get_schema, generate_schema_doc, manage_constraint, manage_trigger, preview_table, validate_sql, explain_sql, run_mutation, và các tools CRUD cơ bản.
+
 Client sẽ tự động sử dụng Python từ `.venv` của database server để đảm bảo tất cả dependencies đã được cài đặt.
+
+### 2. Excel & Summary Server (`excel-summary/`)
+MCP server cung cấp các công cụ để import/export Excel và tạo visualizations/summaries từ dữ liệu.
+
+**Cài đặt:**
+```bash
+cd excel-summary
+uv sync  # Tạo .venv và cài đặt dependencies
+```
+
+**Sử dụng:**
+```bash
+cd mcp-client
+uv run client.py ../excel-summary/excel_summary.py
+```
+
+**Tools:** import_excel, export_excel, render_chart, suggest_charts, generate_chart_spec, describe_result_summary.
+
+### 3. Excel UI (`excel-ui/`)
+Web UI để upload Excel files, tạo summary và generate charts sử dụng MCP excel-summary server tools.
+
+**Cài đặt:**
+```bash
+cd excel-ui
+uv sync
+```
+
+**Sử dụng:**
+```bash
+cd excel-ui
+uv run app.py
+```
+
+Sau đó mở browser tại: http://localhost:5000
+
+**Tính năng:**
+- Upload Excel files (drag & drop hoặc click)
+- Data preview
+- Generate summary với statistics
+- Generate charts (bar, line, pie, scatter, histogram)
+- Chart type suggestions
 
 ## MCP Client (`mcp-client/`)
 

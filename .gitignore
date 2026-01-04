@@ -1,0 +1,65 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+wheels/
+*.egg-info/
+*.egg
+*.so
+*.dylib
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.env
+.env.local
+.env.*.local
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# User uploads and generated files
+**/uploads/*
+!**/uploads/.gitkeep
+**/static/charts/*.png
+!**/static/charts/.gitkeep
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/

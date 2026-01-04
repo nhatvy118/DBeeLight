@@ -1,0 +1,13 @@
+[project]
+name = "excel-summary"
+version = "0.1.0"
+description = "MCP Server for Excel import/export and data visualization"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=2.0.0",
+    "openpyxl>=3.1.0",
+    "matplotlib>=3.7.0",
+    "mcp[cli]>=1.22.0",
+]
+
