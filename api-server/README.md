@@ -1,6 +1,6 @@
 # API Server
 
-Flask API server để kết nối Frontend với MCP Agent.
+FastAPI server để kết nối Frontend với MCP Agent.
 
 ## Cài đặt
 
@@ -21,7 +21,7 @@ Hoặc:
 uv run python -m api_server
 ```
 
-Server sẽ chạy tại `http://localhost:5000`
+Server sẽ chạy tại `http://localhost:5001`
 
 ## API Endpoints
 
