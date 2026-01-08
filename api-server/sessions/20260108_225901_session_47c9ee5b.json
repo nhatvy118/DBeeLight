@@ -1,0 +1,78 @@
+{
+  "session_id": "47c9ee5b",
+  "created_at": "2026-01-08T22:59:01.769052",
+  "session_name": "Session 47c9ee5b",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hi",
+      "timestamp": "2026-01-08T22:59:01.769711"
+    },
+    {
+      "role": "assistant",
+      "content": "Chào bạn! Bạn cần giúp gì với PostgreSQL database hôm nay?",
+      "timestamp": "2026-01-08T22:59:05.983167"
+    },
+    {
+      "role": "user",
+      "content": "connect database localhost 5432, user postgres, db postgres, pass postgres",
+      "timestamp": "2026-01-08T22:59:28.857413"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "timestamp": "2026-01-08T22:59:31.630055",
+      "tool_calls": [
+        {
+          "id": "call_9pGpHeV0ZfuOgLK3p2BnNu48",
+          "type": "function",
+          "function": {
+            "name": "connect_db",
+            "arguments": "{\"host\":\"localhost\",\"port\":5432,\"database\":\"postgres\",\"username\":\"postgres\",\"password\":\"postgres\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "{\"role\": \"tool\", \"tool_call_id\": \"call_9pGpHeV0ZfuOgLK3p2BnNu48\", \"name\": \"connect_db\", \"content\": \"[TextContent(type='text', text=\\\"Successfully connected to database 'postgres' on localhost:5432 as user 'postgres'.\\\", annotations=None, meta=None)]\"}",
+      "timestamp": "2026-01-08T22:59:31.663950"
+    },
+    {
+      "role": "assistant",
+      "content": "Đã kết nối thành công đến database 'postgres' trên localhost:5432 với user 'postgres'. Bạn cần làm gì tiếp theo?",
+      "timestamp": "2026-01-08T22:59:33.012754"
+    },
+    {
+      "role": "user",
+      "content": "list table",
+      "timestamp": "2026-01-08T22:59:37.864310"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "timestamp": "2026-01-08T22:59:39.790395",
+      "tool_calls": [
+        {
+          "id": "call_gOfgimgRixnDHaWYeukfcrGW",
+          "type": "function",
+          "function": {
+            "name": "list_tables",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "{\"role\": \"tool\", \"tool_call_id\": \"call_gOfgimgRixnDHaWYeukfcrGW\", \"name\": \"list_tables\", \"content\": \"[TextContent(type='text', text='Tables in database: employees, skill_courses', annotations=None, meta=None)]\"}",
+      "timestamp": "2026-01-08T22:59:39.813041"
+    },
+    {
+      "role": "assistant",
+      "content": "Có các table sau trong database:\n\n- employees\n- skill_courses\n\nBạn muốn thao tác với table nào?",
+      "timestamp": "2026-01-08T22:59:41.916685"
+    }
+  ],
+  "updated_at": "2026-01-08T22:59:41.916696"
+}
