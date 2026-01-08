@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ChatMessage from './ChatMessage';
-import { sendMessage } from '../services/api';
+import { sendMessage, getSession } from '../services/api';
 
 type Message = {
   text: string;
@@ -10,16 +10,61 @@ type Message = {
 const MAX_TEXTAREA_HEIGHT = 200;
 const MIN_TEXTAREA_HEIGHT = 60;
 
-export default function MainContent() {
+type MainContentProps = {
+  sessionId?: string | null;
+  onSessionIdChange?: (sessionId: string | null) => void;
+};
+
+export default function MainContent({ sessionId: propSessionId, onSessionIdChange }: MainContentProps) {
   const [query, setQuery] = useState<string>('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(propSessionId || null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const canSend = useMemo(() => !isLoading && query.trim().length > 0, [isLoading, query]);
+
+  // Load session when sessionId prop changes
+  useEffect(() => {
+    const loadSession = async (sid: string) => {
+      try {
+        setIsLoading(true);
+        const res = await getSession(sid);
+        if (res.success && res.messages) {
+          // Convert session messages to Message format
+          const convertedMessages: Message[] = res.messages
+            .filter((msg: any) => msg.role === 'user' || msg.role === 'assistant')
+            .map((msg: any) => ({
+              text: msg.content || '',
+              isUser: msg.role === 'user',
+            }));
+          setMessages(convertedMessages);
+          setSessionId(sid);
+          if (onSessionIdChange) {
+            onSessionIdChange(sid);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load session:', err);
+        window.alert('Failed to load chat history');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    if (propSessionId && propSessionId !== sessionId) {
+      void loadSession(propSessionId);
+    } else if (!propSessionId && sessionId) {
+      // Clear messages if sessionId is cleared
+      setMessages([]);
+      setSessionId(null);
+      if (onSessionIdChange) {
+        onSessionIdChange(null);
+      }
+    }
+  }, [propSessionId]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -46,7 +91,12 @@ export default function MainContent() {
       const res = await sendMessage(text, sessionId);
       if (res.success) {
         setMessages((prev) => [...prev, { text: res.response, isUser: false }]);
-        if (res.session_id) setSessionId(res.session_id);
+        if (res.session_id) {
+          setSessionId(res.session_id);
+          if (onSessionIdChange) {
+            onSessionIdChange(res.session_id);
+          }
+        }
       } else {
         setMessages((prev) => [
           ...prev,
