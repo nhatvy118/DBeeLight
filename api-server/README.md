@@ -18,10 +18,33 @@ uv run api-server
 Hoặc:
 
 ```bash
-uv run python -m api_server
+uv run python -m internal
 ```
 
 Server sẽ chạy tại `http://localhost:5001`
+
+## Google OAuth2 Login (Authorization Code)
+
+Tạo file `api-server/.env`:
+
+```env
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+FRONTEND_URL=http://localhost:5173
+SESSION_SECRET=change-me
+# Optional (comma-separated)
+CORS_ORIGINS=http://localhost:5173
+```
+
+Redirect URI cần khai báo trong Google Console sẽ phụ thuộc bạn start login từ đâu:
+- Nếu bạn login qua frontend proxy: `http://localhost:5173/api/auth/google/callback`
+- Nếu bạn login trực tiếp vào backend: `http://localhost:5001/api/auth/google/callback`
+
+Endpoints:
+- `GET /api/auth/google/login?next=/chat`
+- `GET /api/auth/google/callback`
+- `GET /api/auth/me`
+- `POST /api/auth/logout`
 
 ## API Endpoints
 

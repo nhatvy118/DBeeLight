@@ -1,0 +1,18 @@
+{
+  "session_id": "28181ab7",
+  "created_at": "2026-01-23T16:45:28.920091",
+  "session_name": "Session 28181ab7",
+  "messages": [
+    {
+      "role": "user",
+      "content": "xin chào",
+      "timestamp": "2026-01-23T17:12:55.886969"
+    },
+    {
+      "role": "assistant",
+      "content": "Xin chào! Tôi có thể giúp gì cho bạn hôm nay?",
+      "timestamp": "2026-01-23T17:12:57.791645"
+    }
+  ],
+  "updated_at": "2026-01-23T17:12:57.791660"
+}

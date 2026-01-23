@@ -1,5 +1,6 @@
-// Default port 5001 để tránh conflict với AirPlay trên macOS
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+// Prefer relative "/api/*" so Vite proxy can handle same-origin cookies.
+// You can override with VITE_API_URL if you don't want to use the proxy.
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 export type ChatResponse =
   | { success: true; response: string; session_id?: string | null }
@@ -33,6 +34,7 @@ function url(path: string) {
 export async function sendMessage(message: string, sessionId: string | null = null): Promise<ChatResponse> {
   const response = await fetch(url('/api/chat'), {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, session_id: sessionId }),
   });
@@ -45,7 +47,7 @@ export async function sendMessage(message: string, sessionId: string | null = nu
 }
 
 export async function getSessions(): Promise<SessionsResponse> {
-  const response = await fetch(url('/api/sessions'), { method: 'GET', headers: { 'Content-Type': 'application/json' } });
+  const response = await fetch(url('/api/sessions'), { method: 'GET', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
   if (!response.ok) throw new Error('Failed to get sessions');
   return (await response.json()) as SessionsResponse;
 }
@@ -53,6 +55,7 @@ export async function getSessions(): Promise<SessionsResponse> {
 export async function createSession(name: string | null = null): Promise<CreateSessionResponse> {
   const response = await fetch(url('/api/sessions/new'), {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
   });
@@ -63,6 +66,7 @@ export async function createSession(name: string | null = null): Promise<CreateS
 export async function getSession(sessionId: string): Promise<GetSessionResponse> {
   const response = await fetch(url(`/api/sessions/${encodeURIComponent(sessionId)}`), {
     method: 'GET',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
   });
   if (!response.ok) throw new Error('Failed to get session');
@@ -70,7 +74,7 @@ export async function getSession(sessionId: string): Promise<GetSessionResponse>
 }
 
 export async function healthCheck(): Promise<HealthResponse> {
-  const response = await fetch(url('/api/health'), { method: 'GET' });
+  const response = await fetch(url('/api/health'), { method: 'GET', credentials: 'include' });
   if (!response.ok) throw new Error('Health check failed');
   return (await response.json()) as HealthResponse;
 }

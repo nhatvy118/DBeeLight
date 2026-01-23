@@ -4,16 +4,16 @@
 
 API server có **2 phiên bản**:
 
-1. **`api_server/__init__.py`** - Sử dụng `DatabaseAgent` (mặc định)
-2. **`api_server/langraph_api.py`** - Sử dụng `LangGraphMCPAgent` (mới)
+1. **`internal/__init__.py`** - Sử dụng `DatabaseAgent` (mặc định)
+2. **`internal/langraph_api.py`** - Sử dụng `LangGraphMCPAgent` (mới)
 
 ## So Sánh Chi Tiết
 
 | Tính Năng | DatabaseAgent API | LangGraph API |
 |-----------|-------------------|---------------|
 | **Agent Type** | `DatabaseAgent` | `LangGraphMCPAgent` |
-| **File** | `api_server/__init__.py` | `api_server/langraph_api.py` |
-| **Command** | `uv run python -m api_server` | `uv run python -m api_server.langraph_api` |
+| **File** | `internal/__init__.py` | `internal/langraph_api.py` |
+| **Command** | `uv run python -m internal` | `uv run python -m internal.langraph_api` |
 | **Workflow** | Simple loop | Graph-based workflow |
 | **State Management** | Manual (session-based) | Automatic (graph state) |
 | **Session/Thread** | `session_id` | `thread_id` |
@@ -30,7 +30,7 @@ API server có **2 phiên bản**:
 ```bash
 cd api-server
 uv sync
-uv run python -m api_server
+uv run python -m internal
 ```
 
 **Khi nào dùng:**
@@ -45,7 +45,7 @@ uv run python -m api_server
 ```bash
 cd api-server
 uv sync
-uv run python -m api_server.langraph_api
+uv run python -m internal.langraph_api
 ```
 
 **Khi nào dùng:**
@@ -96,7 +96,7 @@ GET /api/sessions/{session_id}  # Lấy thread info
 
 ```bash
 # Start server
-uv run python -m api_server
+uv run python -m internal
 
 # Frontend sẽ gửi:
 POST /api/chat
@@ -110,7 +110,7 @@ POST /api/chat
 
 ```bash
 # Start server
-uv run python -m api_server.langraph_api
+uv run python -m internal.langraph_api
 
 # Frontend sẽ gửi:
 POST /api/chat
@@ -129,10 +129,10 @@ POST /api/chat
 1. **Thay đổi command:**
    ```bash
    # Cũ
-   uv run python -m api_server
+   uv run python -m internal
    
    # Mới
-   uv run python -m api_server.langraph_api
+   uv run python -m internal.langraph_api
    ```
 
 2. **Thay đổi API calls:**
@@ -162,4 +162,5 @@ POST /api/chat
 - **LangGraph API**: Phù hợp cho workflows phức tạp, cần state management tốt
 
 Cả hai đều tương thích với Frontend hiện tại, chỉ cần thay đổi cách gọi API nếu muốn dùng LangGraph.
+
 

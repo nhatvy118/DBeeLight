@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 type ChatMessageProps = {
   message: string;
@@ -34,7 +34,7 @@ export default function ChatMessage({ message, isUser, enableTyping = true }: Ch
 
     // Split message into tokens (words and spaces)
     // This regex splits on whitespace but keeps the whitespace as separate tokens
-    const tokens = message.split(/(\s+)/).filter(token => token.length > 0);
+    const tokens = message.split(/(\s+)/).filter((token) => token.length > 0);
 
     const typeNextWord = () => {
       if (currentIndexRef.current < tokens.length) {
@@ -83,14 +83,11 @@ export default function ChatMessage({ message, isUser, enableTyping = true }: Ch
         <div className="bg-white rounded-2xl rounded-tl-sm px-4 py-3 shadow-md">
           <p className="text-sm text-gray-800 whitespace-pre-wrap break-words">
             {displayedText}
-            {isTyping && (
-              <span className="inline-block w-2 h-4 bg-gray-800 ml-1 animate-pulse" />
-            )}
+            {isTyping && <span className="inline-block w-2 h-4 bg-gray-800 ml-1 animate-pulse" />}
           </p>
         </div>
       </div>
     </div>
   );
 }
-
 

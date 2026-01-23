@@ -9,6 +9,8 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:5001',
         changeOrigin: true,
+        // allow Set-Cookie through the proxy for session-based auth
+        secure: false,
       },
     },
   },
