@@ -7,6 +7,7 @@ from fastapi import Request
 
 from internal.repositories.agent_repository import AgentRepository
 from internal.repositories.google_oauth_repository import GoogleOAuthRepository
+from internal.repositories.user_repository import UserRepository
 from internal.usecases.auth_usecase import AuthUseCase
 from internal.usecases.chat_usecase import ChatUseCase
 from internal.usecases.sessions_usecase import SessionsUseCase
@@ -44,7 +45,14 @@ def get_sessions_usecase() -> SessionsUseCase:
     return SessionsUseCase(get_agent_repository())
 
 
-def get_auth_usecase() -> AuthUseCase:
+def get_user_repository(request: Request) -> UserRepository | None:
+    pool = getattr(request.app.state, "db_pool", None)
+    if pool is None:
+        return None
+    return UserRepository(pool)
+
+
+def get_auth_usecase(request: Request) -> AuthUseCase:
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
-    return AuthUseCase(get_google_oauth_repository(), frontend_url=frontend_url)
+    return AuthUseCase(get_google_oauth_repository(), get_user_repository(request), frontend_url=frontend_url)
 

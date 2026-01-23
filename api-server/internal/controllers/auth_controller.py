@@ -16,7 +16,7 @@ async def google_login(request: Request, next: str = "/chat", usecase: AuthUseCa
 async def google_callback(
     request: Request, code: str | None = None, state: str | None = None, usecase: AuthUseCase = Depends(get_auth_usecase)
 ):
-    return usecase.google_callback(request, code, state)
+    return await usecase.google_callback(request, code, state)
 
 @router.get("/api/auth/me")
 async def auth_me(request: Request, usecase: AuthUseCase = Depends(get_auth_usecase)):

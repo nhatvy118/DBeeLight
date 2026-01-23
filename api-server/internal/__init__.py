@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from internal.controllers import auth_controller, chat_controller, health_controller, sessions_controller
+from internal.db import close_db, init_db
 
 load_dotenv()
 
@@ -55,6 +56,14 @@ def create_app() -> FastAPI:
     app.include_router(auth_controller.router)
     app.include_router(chat_controller.router)
     app.include_router(sessions_controller.router)
+
+    @app.on_event("startup")
+    async def _startup() -> None:
+        await init_db(app)
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        await close_db(app)
 
     return app
 

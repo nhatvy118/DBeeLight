@@ -6,11 +6,18 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from internal.repositories.google_oauth_repository import GoogleOAuthRepository
+from internal.repositories.user_repository import UserRepository
 
 
 class AuthUseCase:
-    def __init__(self, google_repo: GoogleOAuthRepository, frontend_url: str = "http://localhost:5173"):
+    def __init__(
+        self,
+        google_repo: GoogleOAuthRepository,
+        user_repo: UserRepository | None,
+        frontend_url: str = "http://localhost:5173",
+    ):
         self._google_repo = google_repo
+        self._user_repo = user_repo
         self._frontend_url = frontend_url.rstrip("/")
 
     def google_login(self, request: Request, next_path: str) -> RedirectResponse:
@@ -27,7 +34,7 @@ class AuthUseCase:
         auth_url = self._google_repo.build_auth_url(client_id=client_id, redirect_uri=redirect_uri, state=state)
         return RedirectResponse(url=auth_url)
 
-    def google_callback(self, request: Request, code: str | None, state: str | None) -> RedirectResponse:
+    async def google_callback(self, request: Request, code: str | None, state: str | None) -> RedirectResponse:
         expected_state = request.session.get("google_oauth_state")
         if not expected_state or not state or state != expected_state:
             raise HTTPException(status_code=400, detail="Invalid OAuth state")
@@ -77,6 +84,26 @@ class AuthUseCase:
         request.session.pop("google_oauth_state", None)
         next_path = request.session.pop("google_oauth_next", "/chat") or "/chat"
         request.session["user"] = user
+
+        # Persist user into DB on every login (insert if new; update name if existing).
+        if self._user_repo is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Database is not configured. Set DATABASE_URL (or DB_URL) and restart the server.",
+            )
+
+        google_sub = user.get("sub")
+        if not isinstance(google_sub, str) or not google_sub.strip():
+            raise HTTPException(status_code=400, detail="Missing Google subject (sub)")
+        display_name = user.get("name")
+        if not isinstance(display_name, str) or not display_name.strip():
+            display_name = user.get("email") if isinstance(user.get("email"), str) else "Unknown"
+
+        try:
+            db_user = await self._user_repo.upsert_user(google_sub=google_sub, name=display_name)
+            request.session["user_id"] = db_user.get("id")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to persist user: {str(e)}") from e
 
         return RedirectResponse(url=f"{self._frontend_url}{next_path}")
 
