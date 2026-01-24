@@ -26,7 +26,7 @@ class SessionManager:
         self.current_session_id: Optional[str] = None
         self.current_session_file: Optional[Path] = None
     
-    def create_session(self, session_name: Optional[str] = None) -> str:
+    def create_session(self, session_name: Optional[str] = None, project_id: Optional[str] = None) -> str:
         """Tạo session mới"""
         session_id = str(uuid.uuid4())[:8]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -44,6 +44,7 @@ class SessionManager:
             "session_id": session_id,
             "created_at": datetime.now().isoformat(),
             "session_name": session_name or f"Session {session_id}",
+            "project_id": project_id,
             "messages": []
         }
         
@@ -61,18 +62,25 @@ class SessionManager:
         self.current_session_id = session_id
         return True
     
-    def list_sessions(self) -> List[Dict[str, Any]]:
-        """Liệt kê tất cả sessions"""
+    def list_sessions(self, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Liệt kê tất cả sessions, có thể lọc theo project_id"""
         sessions = []
         for session_file in sorted(self.sessions_dir.glob("*.json"), reverse=True):
             try:
                 with open(session_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                    session_project_id = data.get("project_id")
+                    
+                    # Nếu có project_id filter, chỉ lấy sessions thuộc project đó
+                    if project_id is not None and session_project_id != project_id:
+                        continue
+                    
                     sessions.append({
                         "session_id": data.get("session_id", ""),
                         "session_name": data.get("session_name", ""),
                         "created_at": data.get("created_at", ""),
                         "message_count": len(data.get("messages", [])),
+                        "project_id": session_project_id,
                         "file": session_file.name
                     })
             except Exception:
@@ -143,7 +151,8 @@ class SessionManager:
                     "session_id": data.get("session_id", ""),
                     "session_name": data.get("session_name", ""),
                     "created_at": data.get("created_at", ""),
-                    "message_count": len(data.get("messages", []))
+                    "message_count": len(data.get("messages", [])),
+                    "project_id": data.get("project_id")
                 }
         except Exception:
             return {}

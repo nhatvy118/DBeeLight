@@ -11,6 +11,7 @@ export type SessionInfo = {
   session_name?: string;
   created_at?: string;
   message_count?: number;
+  project_id?: string | null;
 };
 
 export type SessionsResponse =
@@ -31,12 +32,12 @@ function url(path: string) {
   return API_BASE_URL.startsWith('http') ? `${API_BASE_URL}${path}` : path;
 }
 
-export async function sendMessage(message: string, sessionId: string | null = null): Promise<ChatResponse> {
+export async function sendMessage(message: string, sessionId: string | null = null, projectId: string | null = null): Promise<ChatResponse> {
   const response = await fetch(url('/api/chat'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, session_id: sessionId }),
+    body: JSON.stringify({ message, session_id: sessionId, project_id: projectId }),
   });
 
   const data = (await response.json()) as ChatResponse & { error?: string };
@@ -46,18 +47,19 @@ export async function sendMessage(message: string, sessionId: string | null = nu
   return data;
 }
 
-export async function getSessions(): Promise<SessionsResponse> {
-  const response = await fetch(url('/api/sessions'), { method: 'GET', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
+export async function getSessions(projectId: string | null = null): Promise<SessionsResponse> {
+  const queryParams = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+  const response = await fetch(url(`/api/sessions${queryParams}`), { method: 'GET', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
   if (!response.ok) throw new Error('Failed to get sessions');
   return (await response.json()) as SessionsResponse;
 }
 
-export async function createSession(name: string | null = null): Promise<CreateSessionResponse> {
+export async function createSession(name: string | null = null, projectId: string | null = null): Promise<CreateSessionResponse> {
   const response = await fetch(url('/api/sessions/new'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, project_id: projectId }),
   });
   if (!response.ok) throw new Error('Failed to create session');
   return (await response.json()) as CreateSessionResponse;

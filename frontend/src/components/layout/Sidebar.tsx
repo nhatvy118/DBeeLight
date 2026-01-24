@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createSession, getSessions, type SessionInfo } from '../../services/api';
 import ProjectModal from '../modals/ProjectModal';
+import DatabaseConnectPopup, { type DatabaseConnectionData } from '../modals/DatabaseConnectPopup';
 import settingsIcon from '../../assets/icons/Settings.svg';
 import gridIcon from '../../assets/icons/Grid.svg';
 import penIcon from '../../assets/icons/Pen.svg';
@@ -29,10 +30,12 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [projects, setProjects] = useState<Project[]>([]);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
+  const [isDatabasePopupOpen, setIsDatabasePopupOpen] = useState(false);
   const [user, setUser] = useState<{ name?: string; email?: string; picture?: string } | null>(null);
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
-  // Load projects from localStorage
+  // Load projects and selected project from localStorage
   useEffect(() => {
     const savedProjects = localStorage.getItem('projects');
     if (savedProjects) {
@@ -41,6 +44,11 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
       } catch {
         setProjects([]);
       }
+    }
+    // Load selected project ID
+    const savedSelectedProjectId = localStorage.getItem('selectedProjectId');
+    if (savedSelectedProjectId) {
+      setSelectedProjectId(savedSelectedProjectId);
     }
   }, []);
 
@@ -81,10 +89,33 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
     return () => clearInterval(interval);
   }, []);
 
+  // Listen for changes in projectSessions to update the display
+  useEffect(() => {
+    const handleStorageChange = () => {
+      // Force re-render by fetching sessions again
+      void fetchSessions();
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('projectSessionsUpdated', handleStorageChange);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('projectSessionsUpdated', handleStorageChange);
+    };
+  }, []);
+
   const handleNewChat = async () => {
     try {
-      const res = await createSession();
+      // Create new session without project (unassigned)
+      const res = await createSession(null, null);
       if (res.success && res.session_id) {
+        // Clear selected project when creating new chat from sidebar
+        // This makes it an unassigned chat
+        localStorage.removeItem('selectedProjectId');
+        setSelectedProjectId(null);
+        window.dispatchEvent(new CustomEvent('projectSelected'));
+
         await fetchSessions(); // Refresh list
         if (onSessionSelect) {
           onSessionSelect(res.session_id);
@@ -96,7 +127,26 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
     }
   };
 
+  // Get sessions that don't belong to any project (project_id is null/undefined)
+  const getUnassignedSessions = (): SessionInfo[] => {
+    const unassigned = sessions.filter(session => !session.project_id);
+    console.log('Total sessions:', sessions.length);
+    console.log('Unassigned sessions:', unassigned.length);
+    return unassigned;
+  };
+
   const handleSessionClick = (sessionId: string) => {
+    // Find the session to check if it has a project_id
+    const session = sessions.find(s => s.session_id === sessionId);
+
+    // If session doesn't have a project_id (unassigned), clear selectedProjectId
+    if (session && !session.project_id) {
+      localStorage.removeItem('selectedProjectId');
+      setSelectedProjectId(null);
+      // Dispatch event to notify other components
+      window.dispatchEvent(new CustomEvent('projectSelected'));
+    }
+
     if (onSessionSelect) {
       onSessionSelect(sessionId);
     }
@@ -128,6 +178,14 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
     const updatedProjects = [...projects, newProject];
     setProjects(updatedProjects);
     localStorage.setItem('projects', JSON.stringify(updatedProjects));
+  };
+
+  const handleDatabaseConnect = (connectionData: DatabaseConnectionData) => {
+    console.log('Connecting to database with:', connectionData);
+    // TODO: Implement actual database connection logic
+    // For now, just close the popup and show success message
+    alert(`Connecting to ${connectionData.databaseName} at ${connectionData.server}:${connectionData.port}`);
+    setIsDatabasePopupOpen(false);
   };
 
   const navigate = (path: string) => {
@@ -199,6 +257,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
             </button>
 
             <button
+              onClick={() => setIsDatabasePopupOpen(true)}
               className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left`}
               type="button"
               title={isCollapsed ? 'Connect Database' : undefined}
@@ -245,7 +304,17 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
               {projects.map((project) => (
                 <button
                   key={project.id}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left"
+                  onClick={() => {
+                    setSelectedProjectId(project.id);
+                    localStorage.setItem('selectedProjectId', project.id);
+                    // Dispatch custom event to notify other components
+                    window.dispatchEvent(new CustomEvent('projectSelected'));
+                    // Clear selected session when switching projects
+                    if (onSessionSelect) {
+                      onSessionSelect(null as any);
+                    }
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left ${selectedProjectId === project.id ? 'bg-gray-100 font-semibold' : ''}`}
                   type="button"
                 >
                   <img src={folderIcon} alt="Folder" className="w-6 h-6" />
@@ -256,17 +325,17 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
           </div>
         )}
 
-        {/* Chats Section - Hidden when collapsed */}
+        {/* Chats Section - Only show unassigned chats */}
         {!isCollapsed && (
           <div className="flex-1 overflow-y-auto px-4 py-3">
             <h2 className="text-base font-semibold text-gray-700 mb-2">Chats</h2>
             {isLoading ? (
               <div className="text-sm text-gray-500">Loading...</div>
-            ) : sessions.length === 0 ? (
-              <div className="text-sm text-gray-500">No chats yet</div>
+            ) : getUnassignedSessions().length === 0 ? (
+              <div className="text-sm text-gray-500">No unassigned chats yet</div>
             ) : (
               <div className="space-y-1">
-                {sessions.map((session) => (
+                {getUnassignedSessions().map((session) => (
                   <button
                     key={session.session_id}
                     onClick={() => handleSessionClick(session.session_id)}
@@ -285,7 +354,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
         )}
 
         {/* Bottom Profile - Always at bottom */}
-        <div className={`mt-auto p-4`}>
+        <div className={`mt-auto p-5`}>
           <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3'}`}>
             {user?.picture ? (
               <img
@@ -310,6 +379,12 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
         isOpen={isProjectModalOpen}
         onClose={() => setIsProjectModalOpen(false)}
         onCreate={handleCreateProject}
+      />
+
+      <DatabaseConnectPopup
+        isOpen={isDatabasePopupOpen}
+        onClose={() => setIsDatabasePopupOpen(false)}
+        onConnect={handleDatabaseConnect}
       />
     </>
   );

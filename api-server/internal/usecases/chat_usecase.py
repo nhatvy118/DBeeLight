@@ -9,7 +9,7 @@ class ChatUseCase:
     def __init__(self, agent_repo: AgentRepository):
         self._agent_repo = agent_repo
 
-    async def chat(self, user_key: str, message: str, session_id: str | None) -> tuple[str, str | None]:
+    async def chat(self, user_key: str, message: str, session_id: str | None, project_id: str | None = None) -> tuple[str, str | None]:
         query = (message or "").strip()
         if not query:
             raise HTTPException(status_code=400, detail="Message is required")
@@ -27,6 +27,9 @@ class ChatUseCase:
 
         if session_id and agent.session_manager:
             agent.session_manager.load_session(session_id)
+        elif agent.session_manager and not session_id:
+            # Tạo session mới với project_id nếu chưa có session
+            agent.session_manager.create_session(project_id=project_id)
 
         response_text = await agent.process_query(query, verbose=False)
         session_info = agent.session_manager.get_session_info() if agent.session_manager else None

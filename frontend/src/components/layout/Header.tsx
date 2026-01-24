@@ -3,6 +3,7 @@ import settingsIcon from '../../assets/icons/Settings.svg';
 import userIcon from '../../assets/icons/User.svg';
 import chevronDownIcon from '../../assets/icons/ChevronDown.svg';
 import shareIcon from '../../assets/icons/Share.svg';
+import folderIcon from '../../assets/icons/Folder.svg';
 
 type AuthUser = {
   name?: string;
@@ -10,9 +11,16 @@ type AuthUser = {
   picture?: string;
 };
 
+type Project = {
+  id: string;
+  name: string;
+  createdAt: string;
+};
+
 export default function Header() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
 
   useEffect(() => {
     const loadMe = async () => {
@@ -28,6 +36,44 @@ export default function Header() {
       }
     };
     void loadMe();
+  }, []);
+
+  // Load selected project from localStorage
+  // Show project whenever it's selected (even if it has no sessions yet)
+  const loadSelectedProject = () => {
+    const selectedProjectId = localStorage.getItem('selectedProjectId');
+    if (selectedProjectId) {
+      const projects = JSON.parse(localStorage.getItem('projects') || '[]');
+      const project = projects.find((p: Project) => p.id === selectedProjectId);
+      if (project) {
+        setSelectedProject(project);
+      } else {
+        setSelectedProject(null);
+      }
+    } else {
+      setSelectedProject(null);
+    }
+  };
+
+  useEffect(() => {
+    loadSelectedProject();
+
+    // Listen for project selection changes
+    const handleProjectSelected = () => {
+      loadSelectedProject();
+    };
+
+    window.addEventListener('projectSelected', handleProjectSelected);
+
+    // Also poll localStorage periodically to catch changes
+    const interval = setInterval(() => {
+      loadSelectedProject();
+    }, 500);
+
+    return () => {
+      window.removeEventListener('projectSelected', handleProjectSelected);
+      clearInterval(interval);
+    };
   }, []);
 
   const handleLogin = () => {
@@ -62,18 +108,25 @@ export default function Header() {
 
   return (
     <div className="w-full flex justify-between items-center px-6 py-4">
-      {/* Logo Section - Only show on home page when not logged in */}
-      {isHomePage && !user && (
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 flex items-center justify-center bg-gray-900 rounded text-white font-bold text-lg">
-            2
+      {/* Left Section - Logo or Project */}
+      <div className="flex items-center gap-2">
+        {isHomePage && !user ? (
+          <>
+            <div className="w-8 h-8 flex items-center justify-center bg-gray-900 rounded text-white font-bold text-lg">
+              2
+            </div>
+            <span className="text-xl font-semibold text-gray-900">LightDBee</span>
+            <button className="text-gray-600 hover:text-gray-900 transition-colors">
+              <img src={chevronDownIcon} alt="Dropdown" className="w-5 h-5" />
+            </button>
+          </>
+        ) : selectedProject ? (
+          <div className="flex items-center gap-3">
+            <img src={folderIcon} alt="Folder" className="w-7 h-7" />
+            <span className="text-xl font-semibold text-gray-900">{selectedProject.name}</span>
           </div>
-          <span className="text-xl font-semibold text-gray-900">LightDBee</span>
-          <button className="text-gray-600 hover:text-gray-900 transition-colors">
-            <img src={chevronDownIcon} alt="Dropdown" className="w-5 h-5" />
-          </button>
-        </div>
-      )}
+        ) : null}
+      </div>
 
       {/* Right Section */}
       <div className="flex items-center gap-3 ml-auto">
