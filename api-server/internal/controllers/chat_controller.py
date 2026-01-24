@@ -15,6 +15,6 @@ async def chat(
     user_key: str = Depends(get_user_key),
     usecase: ChatUseCase = Depends(get_chat_usecase),
 ) -> ChatOk:
-    response_text, sid = await usecase.chat(user_key, req.message, req.session_id)
+    response_text, sid = await usecase.chat(user_key, req.message, req.session_id, req.project_id)
     return ChatOk(response=response_text, session_id=sid)
 

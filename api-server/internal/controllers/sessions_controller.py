@@ -11,10 +11,11 @@ router = APIRouter()
 
 @router.get("/api/sessions")
 async def list_sessions(
+    project_id: str | None = None,
     user_key: str = Depends(get_user_key),
     usecase: SessionsUseCase = Depends(get_sessions_usecase),
 ):
-    sessions = await usecase.list_sessions(user_key)
+    sessions = await usecase.list_sessions(user_key, project_id=project_id)
     return {"success": True, "sessions": sessions}
 
 @router.post("/api/sessions/new")
@@ -23,7 +24,7 @@ async def create_session(
     user_key: str = Depends(get_user_key),
     usecase: SessionsUseCase = Depends(get_sessions_usecase),
 ):
-    session_id, session_info = await usecase.create_session(user_key, req.name)
+    session_id, session_info = await usecase.create_session(user_key, req.name, req.project_id)
     return {"success": True, "session_id": session_id, "session_info": session_info}
 
 @router.get("/api/sessions/{session_id}")

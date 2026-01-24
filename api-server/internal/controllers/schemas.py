@@ -8,10 +8,12 @@ from pydantic import BaseModel
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
+    project_id: Optional[str] = None
 
 
 class NewSessionRequest(BaseModel):
     name: Optional[str] = None
+    project_id: Optional[str] = None
 
 
 class ChatOk(BaseModel):
