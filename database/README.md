@@ -263,11 +263,9 @@ cd database
 uv run database.py
 ```
 
-### Sử dụng với Client (khuyến nghị):
-```bash
-cd ../mcp-client
-uv run client.py ../database/database.py
-```
+### Sử dụng qua API server (khuyến nghị):
+- Database server được kết nối bởi `api-server` thông qua package `mcp_agent`.
+- Hãy chạy `api-server` và gọi `/api/chat` để sử dụng.
 
 **Lưu ý:**
 - ❌ **KHÔNG CẦN** activate venv thủ công

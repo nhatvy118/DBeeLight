@@ -6,6 +6,7 @@ FastAPI server để kết nối Frontend với MCP Agent.
 
 ```bash
 cd api-server
+source .venv/bin/activate
 uv sync
 ```
 

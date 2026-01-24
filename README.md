@@ -16,10 +16,8 @@ uv sync  # Tạo .venv và cài đặt dependencies
 **Lưu ý:** Không cần file `.env` nữa! Bạn sẽ cung cấp thông tin database qua chatbot.
 
 **Sử dụng:**
-```bash
-cd mcp-client
-uv run client.py ../database/database.py
-```
+- Database server được kết nối bởi `api-server` thông qua package `mcp_agent`.
+- Hãy chạy `api-server` và gọi các endpoint `/api/chat` để sử dụng.
 
 **Tools:** connect_db, create_db_from_spec, list_databases, list_tables, get_table_stats, get_schema, generate_schema_doc, manage_constraint, manage_trigger, preview_table, validate_sql, explain_sql, run_mutation, và các tools CRUD cơ bản.
 
@@ -35,10 +33,8 @@ uv sync  # Tạo .venv và cài đặt dependencies
 ```
 
 **Sử dụng:**
-```bash
-cd mcp-client
-uv run client.py ../excel-summary/excel_summary.py
-```
+- Excel server được kết nối bởi `api-server` thông qua package `mcp_agent`.
+- Hãy chạy `api-server` và gọi các endpoint `/api/chat` để sử dụng.
 
 **Tools:** import_excel, export_excel, render_chart, suggest_charts, generate_chart_spec, describe_result_summary.
 
@@ -80,10 +76,8 @@ uv sync  # Tạo .venv và cài đặt dependencies
 - File `.env` với `OPENAI_API_KEY`
 
 **Sử dụng:**
-```bash
-cd mcp-client
-uv run client.py <path_to_server_script>
-```
+- `mcp-client` chỉ là package/library (không còn CLI).
+- Được dùng bởi `api-server` để cung cấp REST API.
 
 **Lưu ý về Virtual Environment:**
 - Client tự động phát hiện và sử dụng Python từ `.venv` của server (nếu có)

@@ -1,91 +1,81 @@
 # MCP Client
 
-Client để kết nối và tương tác với các MCP servers sử dụng OpenAI GPT.
+Python package for connecting to and interacting with MCP (Model Context Protocol) servers using OpenAI GPT models.
 
-## Cài Đặt
+## Installation
 
-1. Cài đặt dependencies:
+1. Install dependencies:
 ```bash
 cd mcp-client
 uv sync
 ```
 
-2. Tạo file `.env` với OpenAI API key:
+2. Create `.env` file with OpenAI API key:
 ```bash
 echo "OPENAI_API_KEY=your_api_key_here" > .env
 ```
 
-## Yêu Cầu
+## Requirements
 
-- File `.env` với `OPENAI_API_KEY`
+- `.env` file with `OPENAI_API_KEY`
 - Python 3.12+
 
-## Sử Dụng
+## Features
 
-### Kết nối với Database Server:
-```bash
-cd mcp-client
-uv run client.py ../database/database.py
-```
-
-### Kết nối với Excel & Summary Server:
-```bash
-cd mcp-client
-uv run client.py ../excel-summary/excel_summary.py
-```
-
-### Cú pháp chung:
-```bash
-uv run client.py <path_to_server_script>
-```
-
-## Tính Năng
-
-### Tự động phát hiện Virtual Environment
-- Client tự động phát hiện và sử dụng Python từ `.venv` của server (nếu có)
-- Điều này đảm bảo server chạy với đúng dependencies đã được cài đặt
-- Nếu không tìm thấy venv, client sẽ fallback về system Python
-
-### Interactive Chat Loop
-- Sau khi kết nối server, bạn có thể chat với AI
-- AI sẽ tự động phân tích query và gọi các tools phù hợp
-- Gõ `quit` để thoát
+### Automatic Virtual Environment Detection
+- Automatically detects and uses Python from server's `.venv` (if available)
+- Ensures server runs with correct dependencies
+- Falls back to system Python if venv not found
 
 ### Tool Caching
-- Tools được cache sau khi kết nối để tăng hiệu suất
-- Không cần list tools lại mỗi query
+- Tools are cached after connection for better performance
+- No need to list tools again for each query
 
-## Ví Dụ
+### Session Management
+- Automatic session creation and management
+- Persistent chat history per user
+- Support for multiple concurrent sessions
+- Sessions are stored in Postgres table `session` (id, user_id, content JSONB)
 
-### Kết nối Database Server:
-```bash
-$ uv run client.py ../database/database.py
-Using Python from venv: .../database/.venv/bin/python
+## Package Structure
 
-Connected to server with tools: ['connect_db', 'get_connection_info', ...]
-
-MCP Client Started!
-Type your queries or 'quit' to exit.
-
-Query: Connect to database: host=localhost, port=5432, database=testdb, username=postgres, password=mypassword
+```
+mcp-client/
+├── mcp_agent/           # Package
+│   ├── __init__.py      # Exports DatabaseAgent, SessionManager
+│   ├── agent.py         # DatabaseAgent class
+│   └── session.py       # SessionManager class
+└── pyproject.toml       # Package configuration
 ```
 
-### Kết nối Excel & Summary Server:
-```bash
-$ uv run client.py ../excel-summary/excel_summary.py
-Using Python from venv: .../excel-summary/.venv/bin/python
+## Usage as Library
 
-Connected to server with tools: ['import_excel', 'export_excel', ...]
+This package is designed to be used as a library in other projects:
 
-MCP Client Started!
-Type your queries or 'quit' to exit.
+```python
+from mcp_agent import DatabaseAgent, SessionManager
 
-Query: Import data from ./data.xlsx
+# Create session manager (Postgres-backed)
+# pool is an asyncpg.Pool created by your application
+session_manager = SessionManager(db_pool=pool, user_id="user-123")
+
+# Create agent
+agent = DatabaseAgent(model="gpt-4o-mini", session_manager=session_manager)
+
+# Connect to MCP servers
+await agent.connect_to_server("database", "../database/database.py")
+await agent.connect_to_server("excel", "../excel-summary/excel_summary.py")
+
+# Process queries
+response = await agent.process_query("Show all users")
 ```
 
-## Lưu Ý
+## Notes
 
-- Client hỗ trợ cả Python (`.py`) và JavaScript (`.js`) servers
-- Đảm bảo server đã được cài đặt dependencies trước khi kết nối
-- Client sử dụng OpenAI GPT-4o-mini mặc định (có thể thay đổi trong code)
+- Supports both Python (`.py`) and JavaScript (`.js`) MCP servers
+- Ensure servers have dependencies installed before connecting
+- Uses OpenAI GPT-4o-mini by default (can be changed in code)
+- Designed to be installed and used as a library in other projects
+- Used by `api-server` to provide REST API interface
+- Requires Postgres table `session` (id, user_id, content JSONB)
 

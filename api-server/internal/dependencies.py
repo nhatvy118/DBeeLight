@@ -14,9 +14,15 @@ from internal.usecases.sessions_usecase import SessionsUseCase
 
 
 @lru_cache
-def get_agent_repository() -> AgentRepository:
+def _agent_repository_singleton() -> AgentRepository:
     # Singleton-ish: AgentRepository keeps the initialized agent + async lock.
     return AgentRepository()
+
+
+def get_agent_repository(request: Request) -> AgentRepository:
+    repo = _agent_repository_singleton()
+    repo.set_db_pool(getattr(request.app.state, "db_pool", None))
+    return repo
 
 
 @lru_cache
@@ -37,12 +43,12 @@ def get_user_key(request: Request) -> str:
     return "anonymous"
 
 
-def get_chat_usecase() -> ChatUseCase:
-    return ChatUseCase(get_agent_repository())
+def get_chat_usecase(request: Request) -> ChatUseCase:
+    return ChatUseCase(get_agent_repository(request))
 
 
-def get_sessions_usecase() -> SessionsUseCase:
-    return SessionsUseCase(get_agent_repository())
+def get_sessions_usecase(request: Request) -> SessionsUseCase:
+    return SessionsUseCase(get_agent_repository(request))
 
 
 def get_user_repository(request: Request) -> UserRepository | None:

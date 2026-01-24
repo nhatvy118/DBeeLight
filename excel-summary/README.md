@@ -84,11 +84,9 @@ cd excel-summary
 uv run excel_summary.py
 ```
 
-### Sử dụng với Client:
-```bash
-cd ../mcp-client
-uv run client.py ../excel-summary/excel_summary.py
-```
+### Sử dụng qua API server:
+- Excel server được kết nối bởi `api-server` thông qua package `mcp_agent`.
+- Hãy chạy `api-server` và gọi `/api/chat` để sử dụng.
 
 ## Dependencies
 

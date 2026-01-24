@@ -26,13 +26,10 @@ class ChatUseCase:
             )
 
         if session_id and agent.session_manager:
-            agent.session_manager.load_session(session_id)
-        elif agent.session_manager and not session_id:
-            # Tạo session mới với project_id nếu chưa có session
-            agent.session_manager.create_session(project_id=project_id)
+            await agent.session_manager.load_session(session_id)
 
         response_text = await agent.process_query(query, verbose=False)
-        session_info = agent.session_manager.get_session_info() if agent.session_manager else None
+        session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
         current_session_id = session_info.get("session_id") if session_info else None
         return response_text, current_session_id
 

@@ -2,7 +2,7 @@
 name = "api-server"
 version = "0.1.0"
 description = "FastAPI server for MCP Agent"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.110.0",
     "uvicorn>=0.27.0",
@@ -11,6 +11,7 @@ dependencies = [
     "asyncpg>=0.29.0",
     "mcp>=1.22.0",
     "openai>=2.8.1",
+    "mcp-client",
 ]
 scripts = { api-server = "internal:main" }
 
@@ -20,4 +21,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["internal"]
+
+[tool.uv.sources]
+mcp-client = { path = "../mcp-client", editable = true }
 
