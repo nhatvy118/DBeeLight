@@ -5,6 +5,7 @@ import logging
 from fastapi import HTTPException, Request
 
 from internal.repositories.project_repository import ProjectRepository
+from internal.utils.sqlite_helper import generate_sqlite_db_path, get_sqlite_db_url_from_path, init_sqlite_database
 
 logger = logging.getLogger(__name__)
 
@@ -33,22 +34,40 @@ class ProjectUseCase:
     async def create_project(self, request: Request, name: str, description: str | None, db_url: str) -> dict:
         """
         Create a new project for the authenticated user.
+        If db_url is not provided, automatically creates a SQLite database file for the project.
         """
         user_key = self._get_user_key(request)
         logger.info(f"Creating project: name={name}, description={description}, db_url={db_url}, user_key={user_key}")
         
         try:
+            # If db_url is not provided, generate SQLite file with random name and get SQLite URL
+            final_db_url = db_url
+            
+            if not db_url or db_url.strip() == "" or db_url == "placeholder://not-configured":                
+                # Generate SQLite database file with random name
+                sqlite_path = generate_sqlite_db_path()
+                if init_sqlite_database(sqlite_path):
+                    final_db_url = get_sqlite_db_url_from_path(sqlite_path)
+                    logger.info(f"SQLite database file created: {sqlite_path}, URL: {final_db_url}")
+                else:
+                    logger.warning(f"Failed to create SQLite database file, using placeholder")
+                    final_db_url = "placeholder://not-configured"
+            
+            # Create project in database with SQLite URL (database will generate project_id)
             project = await self._project_repo.create_project(
                 user_id=user_key,
                 name=name,
                 description=description,
-                db_url=db_url
+                db_url=final_db_url
             )
-            logger.info(f"Project created successfully: id={project.get('id')}")
+            
+            project_id = str(project["id"])
+            logger.info(f"Project created successfully: id={project_id}, db_url={final_db_url}")
+            
             return {
                 "success": True,
                 "project": {
-                    "id": str(project["id"]),
+                    "id": project_id,
                     "name": project["name"],
                     "description": project.get("description"),
                     "created_at": project["created_at"].isoformat() if project.get("created_at") else None,

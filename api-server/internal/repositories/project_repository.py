@@ -16,6 +16,7 @@ class ProjectRepository:
         """
         Create a new project. Returns the created project.
         user_id is Google sub (TEXT) for consistency with sessions.
+        Database will automatically generate the project_id (UUID).
         """
         logger.info(f"Repository: Creating project with user_id={user_id}, name={name}, description={description}, db_url={db_url}")
         
@@ -29,6 +30,7 @@ class ProjectRepository:
         if not db_url:
             db_url = "placeholder://not-configured"
             logger.info(f"Repository: Using placeholder db_url: {db_url}")
+        
         query = """
         INSERT INTO projects (name, description, user_id, db_url)
         VALUES ($1, $2, $3, $4)
@@ -80,3 +82,27 @@ class ProjectRepository:
         async with self._pool.acquire() as conn:
             row: Optional[asyncpg.Record] = await conn.fetchrow(query, project_id, user_id)
             return dict(row) if row else None
+
+    async def update_project_db_url(self, project_id: str, user_id: str, db_url: str) -> None:
+        """
+        Update the db_url for a project.
+        user_id is Google sub (TEXT) for consistency with sessions.
+        """
+        logger.info(f"Repository: Updating db_url for project_id={project_id}, user_id={user_id}, db_url={db_url}")
+        
+        query = """
+        UPDATE projects
+        SET db_url = $1
+        WHERE id = $2 AND user_id = $3
+        """
+
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(query, db_url.strip(), project_id, user_id)
+                if result == "UPDATE 0":
+                    logger.warning(f"Repository: No project found to update: project_id={project_id}, user_id={user_id}")
+                else:
+                    logger.info(f"Repository: Project db_url updated successfully: project_id={project_id}")
+        except Exception as e:
+            logger.error(f"Repository: Database error updating project db_url: {e}", exc_info=True)
+            raise

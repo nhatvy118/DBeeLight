@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+import logging
+import sqlite3
+from pathlib import Path
+from typing import Optional
+from uuid import uuid4
+
+logger = logging.getLogger(__name__)
+
+
+def init_sqlite_database(db_path: Path) -> bool:
+    """
+    Initialize a new SQLite database file.
+    
+    Args:
+        db_path: Path to the SQLite database file
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Ensure parent directory exists
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create SQLite database file
+        conn = sqlite3.connect(str(db_path))
+        conn.close()
+        
+        logger.info(f"SQLite database initialized at: {db_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to initialize SQLite database at {db_path}: {e}")
+        return False
+
+
+def generate_sqlite_db_path(base_dir: Optional[Path] = None) -> Path:
+    """
+    Generate a path for a new SQLite database file with a random name.
+    
+    Args:
+        base_dir: Base directory for databases (defaults to api-server/databases/)
+        
+    Returns:
+        Path to the SQLite database file
+    """
+    if base_dir is None:
+        # Default to api-server/databases/ relative to this file
+        base_dir = Path(__file__).resolve().parent.parent.parent / "databases"
+    
+    # Create directory if it doesn't exist
+    base_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate a random UUID for the filename
+    db_filename = f"{uuid4()}.db"
+    
+    # Return path: databases/{random_uuid}.db
+    return base_dir / db_filename
+
+
+def get_sqlite_db_url_from_path(db_path: Path) -> str:
+    """
+    Get the SQLite database URL from a file path.
+    
+    Args:
+        db_path: Path to the SQLite database file
+        
+    Returns:
+        SQLite database URL (sqlite:///path/to/database.db)
+        Format: sqlite:///absolute/path (3 slashes total after sqlite:)
+    """
+    # Get absolute path
+    absolute_path = db_path.resolve()
+    # SQLite URL format: sqlite:///absolute/path
+    # absolute_path already starts with /, so sqlite:/// + /path = sqlite:////path (wrong)
+    # We need: sqlite:///path (remove the leading / from absolute_path or use different format)
+    # Actually, the correct format is sqlite:///absolute/path (3 slashes total)
+    # So we use: sqlite:/// + absolute_path (which already has leading /)
+    # This gives: sqlite:////path which is 4 slashes - this is actually correct for absolute paths!
+    # But some libraries expect 3 slashes. Let's use the standard: sqlite:///path
+    path_str = str(absolute_path)
+    # Remove leading / if present to avoid 4 slashes
+    if path_str.startswith('/'):
+        return f"sqlite://{path_str}"
+    else:
+        return f"sqlite:///{path_str}"

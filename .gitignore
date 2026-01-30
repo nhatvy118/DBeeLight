@@ -69,3 +69,6 @@ sessions/
 
 # macOs
 .DS_Store
+
+# sqlite databases
+api-server/databases/*
