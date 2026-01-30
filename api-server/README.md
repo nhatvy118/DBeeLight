@@ -10,6 +10,37 @@ source .venv/bin/activate
 uv sync
 ```
 
+## Để có dữ liệu từ DB (checklist)
+
+Làm lần lượt:
+
+1. **PostgreSQL đang chạy** (trên máy hoặc Docker).
+2. **Tạo database** (nếu chưa có):
+   ```bash
+   createdb -U postgres mcp-api-server
+   ```
+3. **Cấu hình `.env`** trong thư mục `api-server`:
+   ```env
+   DATABASE_URL=postgres://USER:PASSWORD@localhost:5432/mcp-api-server?sslmode=disable
+   ```
+   (Bạn đã có `.env` với `DATABASE_URL` thì bỏ qua.)
+4. **Chạy migration** (tạo bảng `users`, `projects`, `session`):
+   ```bash
+   cd api-server
+   uv run python run_migrations.py
+   ```
+5. **Chạy API server** rồi **mở frontend** và **đăng nhập Google**:
+   - User sẽ được tạo trong bảng `users` khi bạn login lần đầu.
+   - Khi bạn chat, session được lưu vào bảng `session`.
+   - Projects (nếu app có tính năng tạo project) sẽ ghi vào bảng `projects`.
+
+**Tóm lại:** Sau khi migration xong, cứ dùng app bình thường (login, chat) — dữ liệu sẽ tự ghi vào DB.
+
+## Database & Migration
+
+- **Migration:** `uv run python run_migrations.py` hoặc `make migrate-up`.
+- **Biến môi trường:** Server đọc `DATABASE_URL` (hoặc `DB_URL`). Nếu không set, server vẫn chạy nhưng auth/sessions (ghi DB) sẽ bị tắt.
+
 ## Chạy Server
 
 ```bash

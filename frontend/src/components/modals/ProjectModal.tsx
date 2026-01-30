@@ -4,19 +4,21 @@ import closeIcon from '../../assets/icons/Close.svg';
 type ProjectModalProps = {
   isOpen: boolean;
   onClose: () => void;
-  onCreate: (name: string) => void;
+  onCreate: (name: string, description?: string) => void;
 };
 
 export default function ProjectModal({ isOpen, onClose, onCreate }: ProjectModalProps) {
   const [projectName, setProjectName] = useState('');
+  const [projectDescription, setProjectDescription] = useState('');
 
   if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (projectName.trim()) {
-      onCreate(projectName.trim());
+      onCreate(projectName.trim(), projectDescription.trim() || undefined);
       setProjectName('');
+      setProjectDescription('');
       onClose();
     }
   };
@@ -50,6 +52,20 @@ export default function ProjectModal({ isOpen, onClose, onCreate }: ProjectModal
               placeholder="Enter project name"
               className="w-full px-4 py-3 bg-gray-100 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900"
               autoFocus
+            />
+          </div>
+
+          <div className="mb-4">
+            <label htmlFor="project-description" className="block text-sm font-bold text-gray-900 mb-2">
+              Description
+            </label>
+            <textarea
+              id="project-description"
+              value={projectDescription}
+              onChange={(e) => setProjectDescription(e.target.value)}
+              placeholder="Enter project description (optional)"
+              rows={3}
+              className="w-full px-4 py-3 bg-gray-100 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 resize-none"
             />
           </div>
 

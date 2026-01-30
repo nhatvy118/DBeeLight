@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 
 class UserRepository:
@@ -14,8 +17,11 @@ class UserRepository:
         Insert user if new; otherwise update name. Returns the persisted row.
         Requires unique constraint on users.google_sub.
         """
+        logger.info(f"Repository: Upserting user with google_sub={google_sub}, name={name}")
+        
         google_sub = (google_sub or "").strip()
         if not google_sub:
+            logger.error("Repository: google_sub is required but was empty")
             raise ValueError("google_sub is required")
 
         name = (name or "").strip() or "Unknown"
@@ -28,9 +34,16 @@ class UserRepository:
         RETURNING id, name, google_sub
         """
 
-        async with self._pool.acquire() as conn:
-            row: Optional[asyncpg.Record] = await conn.fetchrow(query, name, google_sub)
-            if row is None:
-                raise RuntimeError("Failed to upsert user")
-            return dict(row)
+        try:
+            logger.info(f"Repository: Executing upsert query with name={name}, google_sub={google_sub}")
+            async with self._pool.acquire() as conn:
+                row: Optional[asyncpg.Record] = await conn.fetchrow(query, name, google_sub)
+                if row is None:
+                    logger.error("Repository: UPSERT query returned no row")
+                    raise RuntimeError("Failed to upsert user")
+                logger.info(f"Repository: User upserted successfully, id={row.get('id')}")
+                return dict(row)
+        except Exception as e:
+            logger.error(f"Repository: Database error upserting user: {e}", exc_info=True)
+            raise
 

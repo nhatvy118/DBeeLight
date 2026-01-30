@@ -16,7 +16,7 @@ class SessionManager:
         self._user_id = (user_id or "anonymous").strip() or "anonymous"
         self.current_session_id: Optional[str] = None
 
-    async def create_session(self, session_name: Optional[str] = None) -> str:
+    async def create_session(self, session_name: Optional[str] = None, project_id: Optional[int] = None) -> str:
         """Create a new session and persist to Postgres."""
         session_id = str(uuid.uuid4())[:8]
         session_data = {
@@ -24,8 +24,9 @@ class SessionManager:
             "created_at": datetime.now().isoformat(),
             "session_name": session_name or f"Session {session_id}",
             "messages": [],
+            "project_id": project_id,
         }
-        await self._save_session(session_id, session_data)
+        await self._save_session(session_id, session_data, project_id=project_id)
         self.current_session_id = session_id
         return session_id
 
@@ -37,12 +38,35 @@ class SessionManager:
         self.current_session_id = session_id
         return True
 
-    async def list_sessions(self) -> List[Dict[str, Any]]:
-        """List all sessions for this user."""
-        rows = await self._pool.fetch(
-            "SELECT id, content FROM session WHERE user_id = $1 ORDER BY content->>'created_at' DESC",
-            self._user_id,
-        )
+    async def list_sessions(self, project_id: Optional[int] = None, unassigned_only: bool = False) -> List[Dict[str, Any]]:
+        """List all sessions for this user.
+
+        Args:
+            project_id: If provided, only sessions for that project are returned.
+            unassigned_only: If True, only return sessions where project_id IS NULL.
+                           If False and project_id is None, return all sessions.
+        """
+        if unassigned_only:
+            # Only sessions without project (project_id IS NULL)
+            rows = await self._pool.fetch(
+                "SELECT id, content, project_id FROM session WHERE user_id = $1 AND project_id IS NULL "
+                "ORDER BY content->>'created_at' DESC",
+                self._user_id,
+            )
+        elif project_id is not None:
+            # Specific project
+            rows = await self._pool.fetch(
+                "SELECT id, content, project_id FROM session WHERE user_id = $1 AND project_id = $2 "
+                "ORDER BY content->>'created_at' DESC",
+                self._user_id,
+                project_id,
+            )
+        else:
+            # All sessions
+            rows = await self._pool.fetch(
+                "SELECT id, content, project_id FROM session WHERE user_id = $1 ORDER BY content->>'created_at' DESC",
+                self._user_id,
+            )
         sessions: List[Dict[str, Any]] = []
         for row in rows:
             data = row["content"] or {}
@@ -59,6 +83,7 @@ class SessionManager:
                     "session_name": data.get("session_name", ""),
                     "created_at": data.get("created_at", ""),
                     "message_count": len(data.get("messages", [])),
+                    "project_id": data.get("project_id") or row.get("project_id"),
                 }
             )
         return sessions
@@ -108,6 +133,7 @@ class SessionManager:
             "session_name": data.get("session_name", ""),
             "created_at": data.get("created_at", ""),
             "message_count": len(data.get("messages", [])),
+            "project_id": data.get("project_id"),
         }
 
     async def _get_session(self, session_id: str) -> Dict[str, Any] | None:
@@ -126,15 +152,16 @@ class SessionManager:
                 return None
         return content
 
-    async def _save_session(self, session_id: str, content: Dict[str, Any]) -> None:
+    async def _save_session(self, session_id: str, content: Dict[str, Any], project_id: Optional[int] = None) -> None:
         await self._pool.execute(
             """
-            INSERT INTO session (id, user_id, content)
-            VALUES ($1, $2, $3)
+            INSERT INTO session (id, user_id, content, project_id)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (id)
-            DO UPDATE SET content = EXCLUDED.content, user_id = EXCLUDED.user_id
+            DO UPDATE SET content = EXCLUDED.content, user_id = EXCLUDED.user_id, project_id = EXCLUDED.project_id
             """,
             session_id,
             self._user_id,
             json.dumps(content),
+            project_id,
         )

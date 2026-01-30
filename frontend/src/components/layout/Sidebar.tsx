@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { createSession, getSessions, type SessionInfo } from '../../services/api';
+import { createSession, getSessions, createProject, type SessionInfo } from '../../services/api';
 import ProjectModal from '../modals/ProjectModal';
 import DatabaseConnectPopup, { type DatabaseConnectionData } from '../modals/DatabaseConnectPopup';
 import settingsIcon from '../../assets/icons/Settings.svg';
@@ -17,6 +17,7 @@ import beeLogo from '../../assets/icons/bee.png';
 type Project = {
   id: string;
   name: string;
+  description?: string;
   createdAt: string;
 };
 
@@ -69,7 +70,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
   const fetchSessions = async () => {
     try {
       setIsLoading(true);
-      const res = await getSessions();
+      // Only fetch unassigned sessions (sessions where project_id IS NULL)
+      const res = await getSessions(null, true);
       if (res.success) {
         setSessions(res.sessions || []);
       }
@@ -127,12 +129,11 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
     }
   };
 
-  // Get sessions that don't belong to any project (project_id is null/undefined)
+  // Sessions are already filtered to only include unassigned ones from API
+  // This function is kept for consistency but just returns all sessions
   const getUnassignedSessions = (): SessionInfo[] => {
-    const unassigned = sessions.filter(session => !session.project_id);
-    console.log('Total sessions:', sessions.length);
-    console.log('Unassigned sessions:', unassigned.length);
-    return unassigned;
+    // All sessions in state are already unassigned (fetched with unassigned_only=true)
+    return sessions;
   };
 
   const handleSessionClick = (sessionId: string) => {
@@ -169,15 +170,27 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
     return `Chat ${session.session_id.slice(0, 8)}`;
   };
 
-  const handleCreateProject = (name: string) => {
-    const newProject: Project = {
-      id: `project_${Date.now()}`,
-      name,
-      createdAt: new Date().toISOString(),
-    };
-    const updatedProjects = [...projects, newProject];
-    setProjects(updatedProjects);
-    localStorage.setItem('projects', JSON.stringify(updatedProjects));
+  const handleCreateProject = async (name: string, description?: string) => {
+    try {
+      const res = await createProject(name, description);
+      if (res.success && res.project) {
+        const newProject: Project = {
+          id: res.project.id,
+          name: res.project.name,
+          description: res.project.description,
+          createdAt: res.project.created_at || new Date().toISOString(),
+        };
+        const updatedProjects = [...projects, newProject];
+        setProjects(updatedProjects);
+        localStorage.setItem('projects', JSON.stringify(updatedProjects));
+      } else {
+        console.error('Failed to create project:', res);
+        window.alert('Failed to create project');
+      }
+    } catch (err) {
+      console.error('Failed to create project:', err);
+      window.alert('Failed to create project');
+    }
   };
 
   const handleDatabaseConnect = (connectionData: DatabaseConnectionData) => {

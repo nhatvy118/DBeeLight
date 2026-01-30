@@ -7,9 +7,11 @@ from fastapi import Request
 
 from internal.repositories.agent_repository import AgentRepository
 from internal.repositories.google_oauth_repository import GoogleOAuthRepository
+from internal.repositories.project_repository import ProjectRepository
 from internal.repositories.user_repository import UserRepository
 from internal.usecases.auth_usecase import AuthUseCase
 from internal.usecases.chat_usecase import ChatUseCase
+from internal.usecases.project_usecase import ProjectUseCase
 from internal.usecases.sessions_usecase import SessionsUseCase
 
 
@@ -62,3 +64,12 @@ def get_auth_usecase(request: Request) -> AuthUseCase:
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
     return AuthUseCase(get_google_oauth_repository(), get_user_repository(request), frontend_url=frontend_url)
 
+def get_project_repository(request: Request) -> ProjectRepository:
+    pool = getattr(request.app.state, "db_pool", None)
+    if pool is None:
+        raise RuntimeError("Database pool not initialized")
+    return ProjectRepository(pool)
+
+
+def get_project_usecase(request: Request) -> ProjectUseCase:
+    return ProjectUseCase(get_project_repository(request))

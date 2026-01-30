@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { useAuth } from '../../context/AuthContext';
 import Header from './Header';
 import Sidebar from './Sidebar';
 
@@ -9,16 +10,9 @@ type MainLayoutProps = {
   onSessionSelect: (sessionId: string | null) => void;
 };
 
-type AuthUser = {
-  name?: string;
-  email?: string;
-  picture?: string;
-};
-
 export default function MainLayout({ children, currentSessionId, onSessionSelect }: MainLayoutProps) {
   const [path, setPath] = useState<string>(() => window.location.pathname);
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const { user, isLoading } = useAuth();
 
   useEffect(() => {
     const onPopState = () => setPath(window.location.pathname);
@@ -26,24 +20,8 @@ export default function MainLayout({ children, currentSessionId, onSessionSelect
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  useEffect(() => {
-    const loadMe = async () => {
-      try {
-        setIsLoading(true);
-        const res = await fetch('/api/auth/me', { method: 'GET', credentials: 'include' });
-        const data = (await res.json()) as { authenticated: boolean; user?: AuthUser | null };
-        setUser(data.authenticated ? (data.user ?? null) : null);
-      } catch {
-        setUser(null);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    void loadMe();
-  }, []);
-
-  // Show sidebar only if not on home page or if user is logged in
-  const showSidebar = path !== '/' || (user !== null && !isLoading);
+  // Sidebar: chỉ hiện khi đã đăng nhập và đang ở /chat (không hiện ở "/" - chat đơn giản cho khách)
+  const showSidebar = path === '/chat' && user !== null && !isLoading;
 
   return (
     <div className="flex h-screen bg-white">

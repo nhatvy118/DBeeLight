@@ -47,9 +47,17 @@ export async function sendMessage(message: string, sessionId: string | null = nu
   return data;
 }
 
-export async function getSessions(projectId: string | null = null): Promise<SessionsResponse> {
-  const queryParams = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
-  const response = await fetch(url(`/api/sessions${queryParams}`), { method: 'GET', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
+export async function getSessions(projectId: string | null = null, unassignedOnly: boolean = false): Promise<SessionsResponse> {
+  const params = new URLSearchParams();
+  if (projectId) {
+    params.append('project_id', projectId);
+  }
+  if (unassignedOnly) {
+    params.append('unassigned_only', 'true');
+  }
+  const queryParams = params.toString();
+  const urlPath = queryParams ? `/api/sessions?${queryParams}` : '/api/sessions';
+  const response = await fetch(url(urlPath), { method: 'GET', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
   if (!response.ok) throw new Error('Failed to get sessions');
   return (await response.json()) as SessionsResponse;
 }
@@ -79,6 +87,30 @@ export async function healthCheck(): Promise<HealthResponse> {
   const response = await fetch(url('/api/health'), { method: 'GET', credentials: 'include' });
   if (!response.ok) throw new Error('Health check failed');
   return (await response.json()) as HealthResponse;
+}
+
+export type CreateProjectRequest = {
+  name: string;
+  description?: string;
+  db_url: string;
+};
+
+export type CreateProjectResponse =
+  | { success: true; project: { id: string; name: string; description?: string; created_at?: string } }
+  | { success: false; error: string };
+
+export async function createProject(name: string, description?: string, db_url: string = ''): Promise<CreateProjectResponse> {
+  const response = await fetch(url('/api/projects'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description, db_url }),
+  });
+  if (!response.ok) {
+    const data = (await response.json()) as { error?: string };
+    throw new Error(data.error || 'Failed to create project');
+  }
+  return (await response.json()) as CreateProjectResponse;
 }
 
 

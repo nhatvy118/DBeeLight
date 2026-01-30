@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 
 from fastapi import HTTPException, Request
@@ -7,6 +8,8 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from internal.repositories.google_oauth_repository import GoogleOAuthRepository
 from internal.repositories.user_repository import UserRepository
+
+logger = logging.getLogger(__name__)
 
 
 class AuthUseCase:
@@ -21,50 +24,74 @@ class AuthUseCase:
         self._frontend_url = frontend_url.rstrip("/")
 
     def google_login(self, request: Request, next_path: str) -> RedirectResponse:
+        logger.info(f"UseCase: Initiating Google login, next_path={next_path}")
         try:
             client_id, _client_secret = self._google_repo.require_client()
         except RuntimeError as e:
+            logger.error(f"UseCase: Google OAuth not configured: {e}")
             raise HTTPException(status_code=500, detail=str(e)) from e
 
         state = secrets.token_urlsafe(16)
         request.session["google_oauth_state"] = state
         request.session["google_oauth_next"] = next_path or "/chat"
+        logger.info(f"UseCase: Created OAuth state, redirecting to Google")
 
         redirect_uri = str(request.url_for("google_callback"))
         auth_url = self._google_repo.build_auth_url(client_id=client_id, redirect_uri=redirect_uri, state=state)
         return RedirectResponse(url=auth_url)
 
     async def google_callback(self, request: Request, code: str | None, state: str | None) -> RedirectResponse:
+        logger.info(f"UseCase: Processing Google OAuth callback, code={'present' if code else 'missing'}, state={'present' if state else 'missing'}")
         expected_state = request.session.get("google_oauth_state")
         if not expected_state or not state or state != expected_state:
+            logger.warning(f"UseCase: Invalid OAuth state. Expected: {expected_state}, Got: {state}")
             raise HTTPException(status_code=400, detail="Invalid OAuth state")
         if not code:
+            logger.error("UseCase: Missing authorization code")
             raise HTTPException(status_code=400, detail="Missing authorization code")
 
         try:
             client_id, client_secret = self._google_repo.require_client()
         except RuntimeError as e:
+            logger.error(f"UseCase: Google OAuth not configured: {e}")
             raise HTTPException(status_code=500, detail=str(e)) from e
 
         redirect_uri = str(request.url_for("google_callback"))
-        token_resp = self._google_repo.exchange_code_for_token(
-            client_id=client_id, client_secret=client_secret, redirect_uri=redirect_uri, code=code
-        )
+        logger.info(f"UseCase: Exchanging code for token, redirect_uri={redirect_uri}")
+        try:
+            token_resp = self._google_repo.exchange_code_for_token(
+                client_id=client_id, client_secret=client_secret, redirect_uri=redirect_uri, code=code
+            )
+        except Exception as e:
+            logger.error(f"UseCase: Error exchanging code for token: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to exchange code for token: {str(e)}") from e
+            
         id_token = token_resp.get("id_token")
         if not isinstance(id_token, str) or not id_token:
+            logger.error("UseCase: Missing id_token in token response")
             raise HTTPException(status_code=400, detail="Missing id_token in token response")
         access_token = token_resp.get("access_token")
         if not isinstance(access_token, str) or not access_token:
+            logger.error("UseCase: Missing access_token in token response")
             raise HTTPException(status_code=400, detail="Missing access_token in token response")
 
-        token_info = self._google_repo.token_info(id_token)
+        logger.info("UseCase: Validating token info")
+        try:
+            token_info = self._google_repo.token_info(id_token)
+        except Exception as e:
+            logger.error(f"UseCase: Error fetching token info: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to validate token: {str(e)}") from e
+            
         if token_info.get("aud") != client_id:
+            logger.warning(f"UseCase: Invalid token audience. Expected: {client_id}, Got: {token_info.get('aud')}")
             raise HTTPException(status_code=400, detail="Invalid token audience")
 
         # Fetch richer profile via OpenID userinfo endpoint
+        logger.info("UseCase: Fetching user info from Google")
         try:
             userinfo = self._google_repo.user_info(access_token)
         except Exception as e:
+            logger.error(f"UseCase: Error fetching user info: {e}", exc_info=True)
             raise HTTPException(status_code=502, detail=f"Failed to fetch Google userinfo: {str(e)}") from e
 
         # Merge: keep validated subject from tokeninfo, enrich from userinfo
@@ -99,12 +126,17 @@ class AuthUseCase:
         if not isinstance(display_name, str) or not display_name.strip():
             display_name = user.get("email") if isinstance(user.get("email"), str) else "Unknown"
 
+        logger.info(f"UseCase: Persisting user to database, google_sub={google_sub}, name={display_name}")
         try:
             db_user = await self._user_repo.upsert_user(google_sub=google_sub, name=display_name)
-            request.session["user_id"] = db_user.get("id")
+            user_id = db_user.get("id")
+            request.session["user_id"] = user_id
+            logger.info(f"UseCase: User persisted successfully, user_id={user_id}")
         except Exception as e:
+            logger.error(f"UseCase: Error persisting user: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to persist user: {str(e)}") from e
 
+        logger.info(f"UseCase: OAuth callback successful, redirecting to {next_path}")
         return RedirectResponse(url=f"{self._frontend_url}{next_path}")
 
     def me(self, request: Request) -> JSONResponse:

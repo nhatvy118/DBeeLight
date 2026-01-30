@@ -60,6 +60,8 @@ class AgentRepository:
                 raise RuntimeError("Database pool is not initialized. Sessions require Postgres storage.")
 
             logger.info("Initializing DatabaseAgent...")
+           
+            # Khởi tạo SessionManager không gắn với project cụ thể (project_id=None).
             session_manager = SessionManager(db_pool=self._db_pool, user_id=user_key)
             agent = DatabaseAgent(model=self._model, session_manager=session_manager)
 

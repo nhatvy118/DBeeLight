@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessageList, { type UiMessage } from '../components/chat/MessageList';
 import { getSession, sendMessage, getSessions, type SessionInfo } from '../services/api';
 import plusIcon from '../assets/icons/Plus.svg';
-import speakerIcon from '../assets/icons/Speaker.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
+import arrowUpCircleIcon from '../assets/icons/Arrow-up-circle.svg';
 import helpIcon from '../assets/icons/Help.svg';
 
 const MAX_TEXTAREA_HEIGHT = 200;
@@ -351,16 +351,17 @@ export default function Chat({ sessionId: propSessionId, onSessionIdChange }: Ch
               />
 
               <div className="flex items-center gap-2 flex-shrink-0">
-                <button type="button">
-                  <img src={speakerIcon} alt="Speaker" className="w-5 h-5" />
+                <button type="button" onClick={(): void => {}} aria-label="Microphone">
+                  <img src={microphoneIcon} alt="Microphone" className="w-5 h-5" />
                 </button>
                 <button
                   type="button"
-                  onClick={(): void => {
-                    console.log("Voice input clicked");
-                  }}
+                  onClick={(): void => { void handleSend(); }}
+                  disabled={!canSend}
+                  className="flex items-center justify-center w-10 h-10 rounded-full p-0 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+                  aria-label="Send"
                 >
-                  <img src={microphoneIcon} alt="Microphone" className="w-5 h-5" />
+                  <img src={arrowUpCircleIcon} alt="" className="w-20 h-20" />
                 </button>
               </div>
             </div>
@@ -414,7 +415,7 @@ export default function Chat({ sessionId: propSessionId, onSessionIdChange }: Ch
           <div className="px-8 pb-8">
             <div className="max-w-4xl mx-auto">
               <p className="text-center text-xs text-gray-500">
-                ChatGPT can make mistakes. OpenAI doesn't use ChatGPT Vip workspace data to train its models.
+              By using LightDBee, you agree to our Term and Service Policy
               </p>
             </div>
           </div>

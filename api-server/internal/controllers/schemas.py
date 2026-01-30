@@ -31,3 +31,9 @@ class HealthOk(BaseModel):
     status: str
     agent_initialized: bool
 
+
+class CreateProjectRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    db_url: Optional[str] = None
+
