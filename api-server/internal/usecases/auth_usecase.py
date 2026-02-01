@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 
 from fastapi import HTTPException, Request
@@ -36,7 +37,13 @@ class AuthUseCase:
         request.session["google_oauth_next"] = next_path or "/chat"
         logger.info(f"UseCase: Created OAuth state, redirecting to Google")
 
-        redirect_uri = str(request.url_for("google_callback"))
+        # Use explicit base URL so redirect_uri matches Google Console (fixes flowName=GeneralOAuthFlow / redirect_uri_mismatch)
+        base = (os.getenv("PUBLIC_BASE_URL") or os.getenv("API_BASE_URL") or "").strip().rstrip("/")
+        if base:
+            redirect_uri = f"{base}/api/auth/google/callback"
+        else:
+            redirect_uri = str(request.url_for("google_callback"))
+        logger.info(f"UseCase: OAuth redirect_uri={redirect_uri} (add this exact URL in Google Cloud Console → Credentials → Authorized redirect URIs)")
         auth_url = self._google_repo.build_auth_url(client_id=client_id, redirect_uri=redirect_uri, state=state)
         return RedirectResponse(url=auth_url)
 
@@ -56,7 +63,11 @@ class AuthUseCase:
             logger.error(f"UseCase: Google OAuth not configured: {e}")
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-        redirect_uri = str(request.url_for("google_callback"))
+        base = (os.getenv("PUBLIC_BASE_URL") or os.getenv("API_BASE_URL") or "").strip().rstrip("/")
+        if base:
+            redirect_uri = f"{base}/api/auth/google/callback"
+        else:
+            redirect_uri = str(request.url_for("google_callback"))
         logger.info(f"UseCase: Exchanging code for token, redirect_uri={redirect_uri}")
         try:
             token_resp = self._google_repo.exchange_code_for_token(

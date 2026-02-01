@@ -89,6 +89,30 @@ export async function healthCheck(): Promise<HealthResponse> {
   return (await response.json()) as HealthResponse;
 }
 
+export type ProjectItem = {
+  id: string;
+  name: string;
+  description?: string;
+  created_at?: string;
+};
+
+export type GetProjectsResponse =
+  | { success: true; projects: ProjectItem[] }
+  | { success: false; error: string };
+
+export async function getProjects(): Promise<GetProjectsResponse> {
+  const response = await fetch(url('/api/projects'), {
+    method: 'GET',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) {
+    const data = (await response.json()) as { error?: string };
+    return { success: false, error: data.error ?? 'Failed to get projects' };
+  }
+  return (await response.json()) as GetProjectsResponse;
+}
+
 export type CreateProjectRequest = {
   name: string;
   description?: string;

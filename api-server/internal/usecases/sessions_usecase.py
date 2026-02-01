@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import logging
+import uuid
 
 from fastapi import HTTPException
 
 from internal.repositories.agent_repository import AgentRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_project_id_uuid(project_id: str | None) -> str | None:
+    """Validate and return project_id as UUID string, or None if invalid/empty."""
+    if project_id is None:
+        return None
+    s = str(project_id).strip()
+    if not s:
+        return None
+    try:
+        uuid.UUID(s)
+        return s
+    except (ValueError, TypeError):
+        logger.warning(f"UseCase: Invalid project_id UUID format: {project_id!r}, ignoring")
+        return None
 
 
 class SessionsUseCase:
@@ -21,18 +37,11 @@ class SessionsUseCase:
                 logger.warning(f"UseCase: Session manager not available for user_key={user_key}")
                 return []
 
-            numeric_project_id: int | None = None
-            if project_id is not None:
-                project_id_str = str(project_id).strip()
-                if project_id_str:
-                    try:
-                        numeric_project_id = int(project_id_str)
-                        logger.info(f"UseCase: Parsed project_id={numeric_project_id}")
-                    except ValueError:
-                        logger.warning(f"UseCase: Invalid project_id format: {project_id_str}, ignoring")
-                        numeric_project_id = None
+            project_id_uuid = _parse_project_id_uuid(project_id)
+            if project_id_uuid:
+                logger.info(f"UseCase: Filtering by project_id={project_id_uuid}")
 
-            sessions = await agent.session_manager.list_sessions(project_id=numeric_project_id, unassigned_only=unassigned_only)
+            sessions = await agent.session_manager.list_sessions(project_id=project_id_uuid, unassigned_only=unassigned_only)
             logger.info(f"UseCase: Found {len(sessions)} sessions")
             return sessions
         except Exception as e:
@@ -47,18 +56,11 @@ class SessionsUseCase:
                 logger.warning(f"UseCase: Session manager not available for user_key={user_key}")
                 return None, None
 
-            numeric_project_id: int | None = None
-            if project_id is not None:
-                project_id_str = str(project_id).strip()
-                if project_id_str:
-                    try:
-                        numeric_project_id = int(project_id_str)
-                        logger.info(f"UseCase: Parsed project_id={numeric_project_id}")
-                    except ValueError:
-                        logger.warning(f"UseCase: Invalid project_id format: {project_id_str}, ignoring")
-                        numeric_project_id = None
+            project_id_uuid = _parse_project_id_uuid(project_id)
+            if project_id_uuid:
+                logger.info(f"UseCase: Creating session with project_id={project_id_uuid}")
 
-            session_id = await agent.session_manager.create_session(name, project_id=numeric_project_id)
+            session_id = await agent.session_manager.create_session(name, project_id=project_id_uuid)
             session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
             logger.info(f"UseCase: Session created successfully, session_id={session_id}")
             return session_id, session_info

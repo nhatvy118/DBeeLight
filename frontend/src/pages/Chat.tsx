@@ -9,6 +9,28 @@ import helpIcon from '../assets/icons/Help.svg';
 const MAX_TEXTAREA_HEIGHT = 200;
 const MIN_TEXTAREA_HEIGHT = 60;
 
+const STORAGE_LAST_SESSION_ID = 'lastSessionId';
+const STORAGE_LAST_SESSION_PROJECT = 'lastSessionIdForProject';
+
+function saveLastSession(sessionId: string | null, projectId: string | null) {
+  if (sessionId) {
+    localStorage.setItem(STORAGE_LAST_SESSION_ID, sessionId);
+    localStorage.setItem(STORAGE_LAST_SESSION_PROJECT, projectId ?? '');
+  } else {
+    localStorage.removeItem(STORAGE_LAST_SESSION_ID);
+    localStorage.removeItem(STORAGE_LAST_SESSION_PROJECT);
+  }
+}
+
+function getLastSession(projectId: string | null): string | null {
+  const stored = localStorage.getItem(STORAGE_LAST_SESSION_ID);
+  const storedProject = localStorage.getItem(STORAGE_LAST_SESSION_PROJECT) || '';
+  if (!stored) return null;
+  const currentProject = projectId ?? '';
+  if (storedProject !== currentProject) return null;
+  return stored;
+}
+
 type ChatProps = {
   sessionId?: string | null;
   onSessionIdChange?: (sessionId: string | null) => void;
@@ -23,18 +45,22 @@ export default function Chat({ sessionId: propSessionId, onSessionIdChange }: Ch
   const [projectSessions, setProjectSessions] = useState<SessionInfo[]>([]);
   const [sessionPreviews, setSessionPreviews] = useState<Record<string, string>>({});
   const previousProjectIdRef = useRef<string | null>(null);
+  const hasRestoredSessionRef = useRef(false);
 
-  // Load and update selected project from localStorage
+  // Load and update selected project from localStorage.
+  // Only clear session when user *switches* project (not on initial load).
   const loadSelectedProject = () => {
     const selectedProjectId = localStorage.getItem('selectedProjectId');
 
-    // Check if project changed
     if (selectedProjectId !== previousProjectIdRef.current) {
-      console.log('🔄 PROJECT CHANGED! Clearing session and messages');
-      setSessionId(null);
-      setMessages([]);
-      onSessionIdChange?.(null);
+      const isInitialLoad = previousProjectIdRef.current === null;
       previousProjectIdRef.current = selectedProjectId;
+      if (!isInitialLoad) {
+        console.log('🔄 PROJECT CHANGED! Clearing session and messages');
+        setSessionId(null);
+        setMessages([]);
+        onSessionIdChange?.(null);
+      }
     }
 
     if (selectedProjectId) {
@@ -103,6 +129,7 @@ export default function Chat({ sessionId: propSessionId, onSessionIdChange }: Ch
           setMessages(convertedMessages);
           setSessionId(sid);
           onSessionIdChange?.(sid);
+          saveLastSession(sid, selectedProject?.id ?? null);
         }
       } catch (err) {
         console.error('Failed to load session:', err);
@@ -119,6 +146,7 @@ export default function Chat({ sessionId: propSessionId, onSessionIdChange }: Ch
       setMessages([]);
       setSessionId(null);
       onSessionIdChange?.(null);
+      saveLastSession(null, null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [propSessionId]);
@@ -157,6 +185,7 @@ export default function Chat({ sessionId: propSessionId, onSessionIdChange }: Ch
 
           setSessionId(newSessionId);
           onSessionIdChange?.(newSessionId);
+          saveLastSession(newSessionId, selectedProject?.id ?? null);
 
           // Reload project sessions to update the history UI
           if (isNewSession) {
@@ -211,11 +240,17 @@ export default function Chat({ sessionId: propSessionId, onSessionIdChange }: Ch
     }
   };
 
-  // Clear session when selectedProject changes
+  // Clear session only when user switches to a *different* project (not on initial mount)
+  const prevProjectIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    setSessionId(null);
-    setMessages([]);
-    onSessionIdChange?.(null);
+    const currentId = selectedProject?.id;
+    if (prevProjectIdRef.current !== undefined && prevProjectIdRef.current !== currentId) {
+      setSessionId(null);
+      setMessages([]);
+      onSessionIdChange?.(null);
+      saveLastSession(null, null);
+    }
+    prevProjectIdRef.current = currentId;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProject?.id]);
 
@@ -257,6 +292,37 @@ export default function Chat({ sessionId: propSessionId, onSessionIdChange }: Ch
       console.error('Failed to load project sessions:', err);
     }
   };
+
+  // Restore last session from localStorage on mount/reload (don't create a new session every time)
+  useEffect(() => {
+    if (propSessionId != null || hasRestoredSessionRef.current) return;
+    const last = getLastSession(selectedProject?.id ?? null);
+    if (!last) return;
+    hasRestoredSessionRef.current = true;
+    const loadSession = async (sid: string) => {
+      try {
+        setIsLoading(true);
+        const res = await getSession(sid);
+        if (res.success && res.messages) {
+          const convertedMessages: UiMessage[] = res.messages
+            .filter((msg: any) => msg.role === 'user' || msg.role === 'assistant')
+            .map((msg: any) => ({
+              text: msg.content || '',
+              isUser: msg.role === 'user',
+            }));
+          setMessages(convertedMessages);
+          setSessionId(sid);
+          onSessionIdChange?.(sid);
+        }
+      } catch {
+        hasRestoredSessionRef.current = false;
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    void loadSession(last);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProject?.id, propSessionId]);
 
   // Load project sessions when project is selected
   useEffect(() => {

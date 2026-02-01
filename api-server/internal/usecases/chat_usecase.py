@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 
 from fastapi import HTTPException
 
@@ -39,17 +40,17 @@ class ChatUseCase:
             logger.error("UseCase: Session manager is not available for this agent")
             raise HTTPException(status_code=500, detail="Session manager is not available for this agent")
 
-        # Parse project_id (nếu có) thành số; nếu không hợp lệ thì bỏ qua
-        numeric_project_id: int | None = None
-        if project_id is not None:
-            project_id_str = str(project_id).strip()
-            if project_id_str:
+        # Validate project_id as UUID (from projects.id) if provided
+        project_id_uuid: str | None = None
+        if project_id:
+            s = str(project_id).strip()
+            if s:
                 try:
-                    numeric_project_id = int(project_id_str)
-                    logger.info(f"UseCase: Parsed project_id={numeric_project_id}")
-                except ValueError:
-                    logger.warning(f"UseCase: Invalid project_id format: {project_id_str}, ignoring")
-                    numeric_project_id = None
+                    uuid.UUID(s)
+                    project_id_uuid = s
+                    logger.info(f"UseCase: Using project_id={project_id_uuid}")
+                except (ValueError, TypeError):
+                    logger.warning(f"UseCase: Invalid project_id UUID: {project_id!r}, ignoring")
 
         # Nếu có session_id → cố gắng load session đó
         loaded = False
@@ -62,11 +63,11 @@ class ChatUseCase:
                 logger.warning(f"UseCase: Failed to load session: {session_id}")
 
         # Nếu không có session_id hoặc load thất bại:
-        # - Nếu đang trong project (numeric_project_id != None) → tạo session mới gắn với project đó
+        # - Nếu đang trong project (project_id_uuid) → tạo session mới gắn với project đó
         # - Nếu không có project → tạo session mới global cho user
         if not loaded:
-            logger.info(f"UseCase: Creating new session, project_id={numeric_project_id}")
-            await agent.session_manager.create_session(session_name=None, project_id=numeric_project_id)
+            logger.info(f"UseCase: Creating new session, project_id={project_id_uuid}")
+            await agent.session_manager.create_session(session_name=None, project_id=project_id_uuid)
 
         logger.info(f"UseCase: Processing query: {query[:100]}...")
         try:

@@ -1,9 +1,12 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import MessageList, { type UiMessage } from '../components/chat/MessageList';
 import { sendMessage } from '../services/api';
 import plusIcon from '../assets/icons/Plus.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
 import arrowUpCircleIcon from '../assets/icons/Arrow-up-circle.svg';
+
+const MAX_TEXTAREA_HEIGHT = 200;
+const MIN_TEXTAREA_HEIGHT = 60;
 
 export default function Home() {
   const [query, setQuery] = useState('');
@@ -11,6 +14,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const canSend = !isLoading && query.trim().length > 0;
 
@@ -45,12 +49,23 @@ export default function Home() {
     void sendText(query);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void handleSend();
     }
   };
+
+  // Auto-resize textarea (grow until MAX_TEXTAREA_HEIGHT, then scroll)
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const scrollHeight = el.scrollHeight;
+    const newHeight = Math.max(MIN_TEXTAREA_HEIGHT, Math.min(scrollHeight, MAX_TEXTAREA_HEIGHT));
+    el.style.height = `${newHeight}px`;
+    el.style.overflowY = scrollHeight > MAX_TEXTAREA_HEIGHT ? 'auto' : 'hidden';
+  }, [query]);
 
   const hasMessages = messages.length > 0;
 
@@ -82,14 +97,20 @@ export default function Home() {
               <button type="button" className="text-gray-500 hover:text-gray-700 flex-shrink-0">
                 <img src={plusIcon} alt="Add" className="w-5 h-5" />
               </button>
-              <input
-                type="text"
+              <textarea
+                ref={textareaRef}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Ask anything"
-                className="flex-1 outline-none text-lg min-w-0 min-h-[60px] py-5"
-                style={{ paddingTop: '20px', paddingBottom: '20px' }}
+                rows={1}
+                className="flex-1 resize-none outline-none text-lg min-w-0"
+                style={{
+                  maxHeight: `${MAX_TEXTAREA_HEIGHT}px`,
+                  minHeight: `${MIN_TEXTAREA_HEIGHT}px`,
+                  paddingTop: '20px',
+                  paddingBottom: '20px',
+                }}
                 disabled={isLoading}
               />
               <div className="flex items-center gap-2 flex-shrink-0">

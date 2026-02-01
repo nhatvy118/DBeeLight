@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { createSession, getSessions, createProject, type SessionInfo } from '../../services/api';
+import { createSession, getSessions, createProject, getProjects, type SessionInfo } from '../../services/api';
 import ProjectModal from '../modals/ProjectModal';
 import DatabaseConnectPopup, { type DatabaseConnectionData } from '../modals/DatabaseConnectPopup';
 import settingsIcon from '../../assets/icons/Settings.svg';
@@ -36,23 +36,6 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
-  // Load projects and selected project from localStorage
-  useEffect(() => {
-    const savedProjects = localStorage.getItem('projects');
-    if (savedProjects) {
-      try {
-        setProjects(JSON.parse(savedProjects));
-      } catch {
-        setProjects([]);
-      }
-    }
-    // Load selected project ID
-    const savedSelectedProjectId = localStorage.getItem('selectedProjectId');
-    if (savedSelectedProjectId) {
-      setSelectedProjectId(savedSelectedProjectId);
-    }
-  }, []);
-
   // Load user info
   useEffect(() => {
     const loadUser = async () => {
@@ -66,6 +49,47 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
     };
     void loadUser();
   }, []);
+
+  // Fetch projects from API for the current user only (not from localStorage)
+  useEffect(() => {
+    if (!user) {
+      setProjects([]);
+      setSelectedProjectId(null);
+      localStorage.removeItem('projects');
+      localStorage.removeItem('selectedProjectId');
+      return;
+    }
+    let cancelled = false;
+    const loadProjects = async () => {
+      try {
+        const res = await getProjects();
+        if (cancelled) return;
+        if (res.success && res.projects) {
+          const list: Project[] = res.projects.map((p) => ({
+            id: p.id,
+            name: p.name,
+            description: p.description,
+            createdAt: p.created_at ?? new Date().toISOString(),
+          }));
+          setProjects(list);
+          localStorage.setItem('projects', JSON.stringify(list));
+          const savedId = localStorage.getItem('selectedProjectId');
+          if (savedId && !list.some((pr) => pr.id === savedId)) {
+            localStorage.removeItem('selectedProjectId');
+            setSelectedProjectId(null);
+          } else if (savedId) {
+            setSelectedProjectId(savedId);
+          }
+        } else {
+          setProjects([]);
+        }
+      } catch {
+        if (!cancelled) setProjects([]);
+      }
+    };
+    void loadProjects();
+    return () => { cancelled = true; };
+  }, [user]);
 
   const fetchSessions = async () => {
     try {
@@ -174,15 +198,18 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
     try {
       const res = await createProject(name, description);
       if (res.success && res.project) {
-        const newProject: Project = {
-          id: res.project.id,
-          name: res.project.name,
-          description: res.project.description,
-          createdAt: res.project.created_at || new Date().toISOString(),
-        };
-        const updatedProjects = [...projects, newProject];
-        setProjects(updatedProjects);
-        localStorage.setItem('projects', JSON.stringify(updatedProjects));
+        // Refetch projects from API so list stays per-user
+        const listRes = await getProjects();
+        if (listRes.success && listRes.projects) {
+          const projectList: Project[] = listRes.projects.map((p) => ({
+            id: p.id,
+            name: p.name,
+            description: p.description,
+            createdAt: p.created_at ?? new Date().toISOString(),
+          }));
+          setProjects(projectList);
+          localStorage.setItem('projects', JSON.stringify(projectList));
+        }
       } else {
         console.error('Failed to create project:', res);
         window.alert('Failed to create project');

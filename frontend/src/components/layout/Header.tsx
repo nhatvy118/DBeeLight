@@ -85,6 +85,8 @@ export default function Header() {
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
     } finally {
       setUser(null);
+      localStorage.removeItem('projects');
+      localStorage.removeItem('selectedProjectId');
       window.history.pushState({}, '', '/');
       window.dispatchEvent(new PopStateEvent('popstate'));
     }
