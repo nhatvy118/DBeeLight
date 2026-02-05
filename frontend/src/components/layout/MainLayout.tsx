@@ -20,8 +20,8 @@ export default function MainLayout({ children, currentSessionId, onSessionSelect
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  // Sidebar: chỉ hiện khi đã đăng nhập và đang ở /chat (không hiện ở "/" - chat đơn giản cho khách)
-  const showSidebar = path === '/chat' && user !== null && !isLoading;
+  // Sidebar: chỉ hiện khi đã đăng nhập và đang ở /chat* (không hiện ở "/" - chat đơn giản cho khách)
+  const showSidebar = path.startsWith('/chat') && user !== null && !isLoading;
 
   return (
     <div className="flex h-screen bg-white">

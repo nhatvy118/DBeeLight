@@ -46,7 +46,9 @@ def get_user_key(request: Request) -> str:
 
 
 def get_chat_usecase(request: Request) -> ChatUseCase:
-    return ChatUseCase(get_agent_repository(request))
+    pool = getattr(request.app.state, "db_pool", None)
+    project_repo = ProjectRepository(pool) if pool else None
+    return ChatUseCase(get_agent_repository(request), project_repo)
 
 
 def get_sessions_usecase(request: Request) -> SessionsUseCase:

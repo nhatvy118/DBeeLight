@@ -66,21 +66,20 @@ def get_sqlite_db_url_from_path(db_path: Path) -> str:
         db_path: Path to the SQLite database file
         
     Returns:
-        SQLite database URL (sqlite:///path/to/database.db)
-        Format: sqlite:///absolute/path (3 slashes total after sqlite:)
+        SQLite database URL with absolute path
+        Format: sqlite:////absolute/path (4 slashes for Unix absolute paths)
     """
     # Get absolute path
     absolute_path = db_path.resolve()
-    # SQLite URL format: sqlite:///absolute/path
-    # absolute_path already starts with /, so sqlite:/// + /path = sqlite:////path (wrong)
-    # We need: sqlite:///path (remove the leading / from absolute_path or use different format)
-    # Actually, the correct format is sqlite:///absolute/path (3 slashes total)
-    # So we use: sqlite:/// + absolute_path (which already has leading /)
-    # This gives: sqlite:////path which is 4 slashes - this is actually correct for absolute paths!
-    # But some libraries expect 3 slashes. Let's use the standard: sqlite:///path
     path_str = str(absolute_path)
-    # Remove leading / if present to avoid 4 slashes
+    
+    # SQLite URL convention:
+    # - sqlite:///relative/path → relative path
+    # - sqlite:////absolute/path → absolute path on Unix (4 slashes total)
+    # We always use absolute paths for reliability
     if path_str.startswith('/'):
-        return f"sqlite://{path_str}"
+        # Unix absolute path: sqlite:/// + /path = sqlite:////path
+        return f"sqlite:///{path_str}"
     else:
+        # Windows or relative: sqlite:///path
         return f"sqlite:///{path_str}"

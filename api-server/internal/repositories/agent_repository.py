@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from mcp_agent import DatabaseAgent, SessionManager
+from mcp_agent import DatabaseAgent, MultiAgentOrchestrator, SessionManager
 
 logger = logging.getLogger("internal")
 
@@ -15,7 +15,8 @@ _project_root = Path(__file__).resolve().parent.parent.parent.parent
 
 class AgentRepository:
     """
-    Repository layer for the MCP DatabaseAgent (lifecycle + calls).
+    Repository layer for MCP agents. Builds a MultiAgentOrchestrator per user
+    (with one or more agents) so the app can use multi-agent routing.
     """
 
     def __init__(
@@ -23,12 +24,15 @@ class AgentRepository:
         default_servers: Optional[list[str]] = None,
         model: str = "gpt-4o-mini",
     ):
-        self._default_servers = default_servers or ["database/database.py", "excel-summary/excel_summary.py"]
+        self._default_servers = default_servers or [
+            "database/database.py",
+            "excel-summary/excel_summary.py",
+        ]
         self._model = model
         self._db_pool = None
 
-        # Per-user agents (so each user has isolated SessionManager/history)
-        self._agents: dict[str, DatabaseAgent] = {}
+        # Per-user orchestrators (each has its own SessionManager and agents)
+        self._orchestrators: dict[str, MultiAgentOrchestrator] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
     def set_db_pool(self, db_pool) -> None:
@@ -39,30 +43,30 @@ class AgentRepository:
             self._locks[user_key] = asyncio.Lock()
         return self._locks[user_key]
 
-    async def get_agent(self, user_key: str = "anonymous") -> DatabaseAgent:
+    async def get_agent(self, user_key: str = "anonymous") -> MultiAgentOrchestrator:
         """
-        Get or create an agent for a given user.
-
-        Each user gets their own SessionManager directory so chat history/sessions are isolated.
+        Get or create a multi-agent orchestrator for the user.
+        Each user gets their own SessionManager and agents (orchestrator).
         """
         user_key = (user_key or "anonymous").strip() or "anonymous"
 
-        existing = self._agents.get(user_key)
+        existing = self._orchestrators.get(user_key)
         if existing is not None and existing.sessions:
             return existing
 
         async with self._user_lock(user_key):
-            existing = self._agents.get(user_key)
+            existing = self._orchestrators.get(user_key)
             if existing is not None and existing.sessions:
                 return existing
 
-            # Guest: no DB needed (session in-memory only). Logged-in: require DB.
             if user_key != "anonymous" and self._db_pool is None:
                 raise RuntimeError("Database pool is not initialized. Sessions require Postgres storage.")
 
-            logger.info("Initializing DatabaseAgent...")
+            logger.info("Initializing multi-agent orchestrator...")
             session_manager = SessionManager(db_pool=self._db_pool, user_id=user_key)
-            agent = DatabaseAgent(model=self._model, session_manager=session_manager)
+            # Single agent for now: DatabaseAgent connected to all default servers.
+            # Add more agents here later (e.g. ExcelAgent with excel server only) for true multi-agent routing.
+            agent = DatabaseAgent(model=self._model, session_manager=session_manager, agent_id="database")
 
             connected_count = 0
             base_path = _project_root
@@ -75,7 +79,6 @@ class AgentRepository:
                 if not full_path.exists():
                     logger.warning(f"⚠️  Server not found: {full_path}")
                     continue
-
                 server_name = full_path.stem
                 try:
                     logger.info(f"Attempting to connect to {server_name} at {full_path}")
@@ -90,10 +93,15 @@ class AgentRepository:
                     f"No MCP servers connected. Checked paths: {[base_path / sp for sp in self._default_servers]}"
                 )
 
-            await session_manager.create_session()
-            logger.info(f"✅ Agent initialized with {connected_count} server(s) connected")
+            orchestrator = MultiAgentOrchestrator(
+                agents=[agent],
+                session_manager=session_manager,
+                router_model=self._model,
+            )
+            # Don't create session automatically - session will be created when user sends first message
+            logger.info(f"✅ Orchestrator initialized with {connected_count} server(s), 1 agent")
             logger.info(f"Agent sessions: {list(agent.sessions.keys())}")
 
-            self._agents[user_key] = agent
-            return agent
+            self._orchestrators[user_key] = orchestrator
+            return orchestrator
 

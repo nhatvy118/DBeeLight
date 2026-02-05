@@ -6,8 +6,6 @@ import settingsIcon from '../../assets/icons/Settings.svg';
 import gridIcon from '../../assets/icons/Grid.svg';
 import penIcon from '../../assets/icons/Pen.svg';
 import databaseIcon from '../../assets/icons/Database.svg';
-import libraryIcon from '../../assets/icons/Library.svg';
-import fileIcon from '../../assets/icons/File.svg';
 import folderPlusIcon from '../../assets/icons/Folder plus.svg';
 import folderIcon from '../../assets/icons/Folder.svg';
 import userIcon from '../../assets/icons/User.svg';
@@ -50,13 +48,35 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
     void loadUser();
   }, []);
 
+  // Sync selectedProjectId with URL - URL is source of truth
+  useEffect(() => {
+    const updateFromURL = () => {
+      const path = window.location.pathname;
+      const parts = path.split('/').filter(Boolean);
+      if (parts.length >= 2 && parts[0] === 'chat') {
+        const id = parts[1];
+        // Check if it's a project ID (UUID format) or session ID (short format)
+        if (id.includes('-') && id.length > 20) {
+          // Likely a project ID (UUID)
+          setSelectedProjectId(id);
+          return;
+        }
+      }
+      // No project in URL
+      setSelectedProjectId(null);
+    };
+
+    updateFromURL();
+    window.addEventListener('popstate', updateFromURL);
+    return () => window.removeEventListener('popstate', updateFromURL);
+  }, []);
+
   // Fetch projects from API for the current user only (not from localStorage)
   useEffect(() => {
     if (!user) {
       setProjects([]);
       setSelectedProjectId(null);
       localStorage.removeItem('projects');
-      localStorage.removeItem('selectedProjectId');
       return;
     }
     let cancelled = false;
@@ -73,13 +93,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
           }));
           setProjects(list);
           localStorage.setItem('projects', JSON.stringify(list));
-          const savedId = localStorage.getItem('selectedProjectId');
-          if (savedId && !list.some((pr) => pr.id === savedId)) {
-            localStorage.removeItem('selectedProjectId');
-            setSelectedProjectId(null);
-          } else if (savedId) {
-            setSelectedProjectId(savedId);
-          }
+          // Don't set selectedProjectId from localStorage - URL is source of truth
+          // selectedProjectId will be set from URL via AppRoutes
         } else {
           setProjects([]);
         }
@@ -108,11 +123,6 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
 
   useEffect(() => {
     void fetchSessions();
-    // Refresh sessions every 5 seconds
-    const interval = setInterval(() => {
-      void fetchSessions();
-    }, 5000);
-    return () => clearInterval(interval);
   }, []);
 
   // Listen for changes in projectSessions to update the display
@@ -136,13 +146,12 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
       // Create new session without project (unassigned)
       const res = await createSession(null, null);
       if (res.success && res.session_id) {
-        // Clear selected project when creating new chat from sidebar
-        // This makes it an unassigned chat
-        localStorage.removeItem('selectedProjectId');
+        // Clear selected project state
         setSelectedProjectId(null);
-        window.dispatchEvent(new CustomEvent('projectSelected'));
 
         await fetchSessions(); // Refresh list
+        // Navigate to /chat/sessionId for unassigned session (URL is source of truth)
+        navigate(`/chat/${res.session_id}`);
         if (onSessionSelect) {
           onSessionSelect(res.session_id);
         }
@@ -164,12 +173,18 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
     // Find the session to check if it has a project_id
     const session = sessions.find(s => s.session_id === sessionId);
 
-    // If session doesn't have a project_id (unassigned), clear selectedProjectId
+    // Navigate based on session type (URL is source of truth)
     if (session && !session.project_id) {
-      localStorage.removeItem('selectedProjectId');
+      // Unassigned session
       setSelectedProjectId(null);
-      // Dispatch event to notify other components
-      window.dispatchEvent(new CustomEvent('projectSelected'));
+      navigate(`/chat/${sessionId}`);
+    } else if (session && session.project_id) {
+      // Project session
+      setSelectedProjectId(session.project_id);
+      navigate(`/chat/${session.project_id}/${sessionId}`);
+    } else {
+      // Fallback: navigate to /chat/sessionId
+      navigate(`/chat/${sessionId}`);
     }
 
     if (onSessionSelect) {
@@ -244,154 +259,150 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
           minWidth: isCollapsed ? '80px' : '200px'
         }}
       >
-        {/* Logo Section */}
-        <div className="p-4 border-b-2 border-gray-300 relative group">
-          <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-2'}`}>
-            <img
-              src={beeLogo}
-              alt="LightDBee"
-              className={`w-8 h-8 transition-opacity ${isCollapsed ? 'group-hover:opacity-0' : ''}`}
-            />
-            {!isCollapsed && (
-              <span className="text-xl font-semibold text-gray-900">LightDBee</span>
-            )}
-          </div>
-          {/* Sidebar Icon - Show on hover when collapsed */}
-          {isCollapsed && (
-            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
-                onClick={() => setIsCollapsed(!isCollapsed)}
-                className="text-gray-600 hover:text-gray-900 transition-colors"
-                type="button"
-              >
-                <img src={sidebarIcon} alt="Sidebar" className="w-10 h-10" />
-              </button>
+        {/* Main Content Area - Flex container for proportional sections */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Logo Section - Smaller */}
+          <div className="p-4 border-b-2 border-gray-300 relative group flex-shrink-0" style={{ flex: '0 0 auto', minHeight: '60px' }}>
+            <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-2'}`}>
+              <img
+                src={beeLogo}
+                alt="LightDBee"
+                className={`w-8 h-8 transition-opacity ${isCollapsed ? 'group-hover:opacity-0' : ''}`}
+              />
+              {!isCollapsed && (
+                <span className="text-xl font-semibold text-gray-900">LightDBee</span>
+              )}
             </div>
-          )}
-          {/* Sidebar Icon - Always visible when expanded */}
-          {!isCollapsed && (
-            <div className="absolute top-4 right-4 z-10">
-              <button
-                onClick={() => setIsCollapsed(!isCollapsed)}
-                className="text-gray-600 hover:text-gray-900 transition-colors"
-                type="button"
-              >
-                <img src={sidebarIcon} alt="Sidebar" className="w-10 h-10" />
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Top Section */}
-        <div className="p-4">
-          {/* Navigation Items */}
-          <div className="space-y-1">
-            <button
-              onClick={handleNewChat}
-              className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left`}
-              type="button"
-              title={isCollapsed ? 'New chat' : undefined}
-            >
-              <img src={penIcon} alt="New chat" className="w-6 h-6" />
-              {!isCollapsed && <span className="text-base font-medium">New chat</span>}
-            </button>
-
-            <button
-              onClick={() => setIsDatabasePopupOpen(true)}
-              className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left`}
-              type="button"
-              title={isCollapsed ? 'Connect Database' : undefined}
-            >
-              <img src={databaseIcon} alt="Connect Database" className="w-6 h-6" />
-              {!isCollapsed && <span className="text-base font-medium">Connect Database</span>}
-            </button>
-
-            <button
-              className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left`}
-              type="button"
-              title={isCollapsed ? 'Library' : undefined}
-            >
-              <img src={libraryIcon} alt="Library" className="w-6 h-6" />
-              {!isCollapsed && <span className="text-base font-medium">Library</span>}
-            </button>
-
-            <button
-              className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left`}
-              type="button"
-              title={isCollapsed ? 'Files' : undefined}
-            >
-              <img src={fileIcon} alt="Files" className="w-6 h-6" />
-              {!isCollapsed && <span className="text-base font-medium">Files</span>}
-            </button>
-
-            <button
-              onClick={() => setIsProjectModalOpen(true)}
-              className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left`}
-              type="button"
-              title={isCollapsed ? 'Add Project' : undefined}
-            >
-              <img src={folderPlusIcon} alt="Add Project" className="w-6 h-6" />
-              {!isCollapsed && <span className="text-base font-medium">Add Project</span>}
-            </button>
-          </div>
-        </div>
-
-        {/* Projects Section */}
-        {projects.length > 0 && !isCollapsed && (
-          <div className="px-4 py-3">
-            <h2 className="text-base font-semibold text-gray-700 mb-2">Projects</h2>
-            <div className="space-y-1">
-              {projects.map((project) => (
+            {/* Sidebar Icon - Show on hover when collapsed */}
+            {isCollapsed && (
+              <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
-                  key={project.id}
-                  onClick={() => {
-                    setSelectedProjectId(project.id);
-                    localStorage.setItem('selectedProjectId', project.id);
-                    // Dispatch custom event to notify other components
-                    window.dispatchEvent(new CustomEvent('projectSelected'));
-                    // Clear selected session when switching projects
-                    if (onSessionSelect) {
-                      onSessionSelect(null as any);
-                    }
-                  }}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left ${selectedProjectId === project.id ? 'bg-gray-100 font-semibold' : ''}`}
+                  onClick={() => setIsCollapsed(!isCollapsed)}
+                  className="text-gray-600 hover:text-gray-900 transition-colors"
                   type="button"
                 >
-                  <img src={folderIcon} alt="Folder" className="w-6 h-6" />
-                  <span className="text-base font-medium truncate">{project.name}</span>
+                  <img src={sidebarIcon} alt="Sidebar" className="w-10 h-10" />
                 </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Chats Section - Only show unassigned chats */}
-        {!isCollapsed && (
-          <div className="flex-1 overflow-y-auto px-4 py-3">
-            <h2 className="text-base font-semibold text-gray-700 mb-2">Chats</h2>
-            {isLoading ? (
-              <div className="text-sm text-gray-500">Loading...</div>
-            ) : getUnassignedSessions().length === 0 ? (
-              <div className="text-sm text-gray-500">No unassigned chats yet</div>
-            ) : (
-              <div className="space-y-1">
-                {getUnassignedSessions().map((session) => (
-                  <button
-                    key={session.session_id}
-                    onClick={() => handleSessionClick(session.session_id)}
-                    className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors text-base ${currentSessionId === session.session_id
-                      ? 'bg-gray-100 text-gray-900 font-medium'
-                      : 'hover:bg-gray-50 text-gray-700'
-                      }`}
-                    type="button"
-                  >
-                    <span className="truncate block">{formatSessionName(session)}</span>
-                  </button>
-                ))}
+              </div>
+            )}
+            {/* Sidebar Icon - Always visible when expanded */}
+            {!isCollapsed && (
+              <div className="absolute top-4 right-4 z-10">
+                <button
+                  onClick={() => setIsCollapsed(!isCollapsed)}
+                  className="text-gray-600 hover:text-gray-900 transition-colors"
+                  type="button"
+                >
+                  <img src={sidebarIcon} alt="Sidebar" className="w-10 h-10" />
+                </button>
               </div>
             )}
           </div>
-        )}
+
+          {/* Top Section - Smaller */}
+          <div className="p-4 flex-shrink-0 overflow-y-auto" style={{ flex: '0 0 auto' }}>
+            {/* Navigation Items */}
+            <div className="space-y-0.5">
+              <button
+                onClick={handleNewChat}
+                className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-1.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left`}
+                type="button"
+                title={isCollapsed ? 'New chat' : undefined}
+              >
+                <img src={penIcon} alt="New chat" className="w-6 h-6" />
+                {!isCollapsed && <span className="text-base font-medium">New chat</span>}
+              </button>
+
+              <button
+                onClick={() => setIsDatabasePopupOpen(true)}
+                className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-1.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left`}
+                type="button"
+                title={isCollapsed ? 'Connect Database' : undefined}
+              >
+                <img src={databaseIcon} alt="Connect Database" className="w-6 h-6" />
+                {!isCollapsed && <span className="text-base font-medium">Connect Database</span>}
+              </button>
+
+              <button
+                onClick={() => setIsProjectModalOpen(true)}
+                className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-1.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left`}
+                type="button"
+                title={isCollapsed ? 'Add Project' : undefined}
+              >
+                <img src={folderPlusIcon} alt="Add Project" className="w-6 h-6" />
+                {!isCollapsed && <span className="text-base font-medium">Add Project</span>}
+              </button>
+            </div>
+          </div>
+
+          {/* Projects Section - 3 parts */}
+          {!isCollapsed && (
+            <div className="border-t border-gray-200 flex-shrink-0 flex flex-col overflow-hidden" style={{ flex: '3 1 0' }}>
+              <div className="px-4 py-3 flex-shrink-0">
+                <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Projects</h2>
+              </div>
+              <div className="flex-1 overflow-y-auto px-4 pb-3">
+                {projects.length === 0 ? (
+                  <div className="text-sm text-gray-400 italic">No projects yet</div>
+                ) : (
+                  <div className="space-y-1">
+                    {projects.map((project) => (
+                      <button
+                        key={project.id}
+                        onClick={() => {
+                          setSelectedProjectId(project.id);
+                          // Navigate to project view (no session) - URL is source of truth
+                          navigate(`/chat/${project.id}`);
+                          // Clear selected session when switching projects
+                          if (onSessionSelect) {
+                            onSessionSelect(null as any);
+                          }
+                        }}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left ${selectedProjectId === project.id ? 'bg-gray-100 font-semibold' : ''}`}
+                        type="button"
+                      >
+                        <img src={folderIcon} alt="Folder" className="w-5 h-5 flex-shrink-0" />
+                        <span className="text-sm font-medium truncate">{project.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Chats Section - 3 parts */}
+          {!isCollapsed && (
+            <div className="border-t border-gray-200 flex-shrink-0 flex flex-col overflow-hidden" style={{ flex: '3 1 0' }}>
+              <div className="px-4 py-3 flex-shrink-0">
+                <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Chat History</h2>
+              </div>
+              <div className="flex-1 overflow-y-auto px-4 pb-3">
+                {isLoading ? (
+                  <div className="text-sm text-gray-500">Loading...</div>
+                ) : getUnassignedSessions().length === 0 ? (
+                  <div className="text-sm text-gray-400 italic">No unassigned chats yet</div>
+                ) : (
+                  <div className="space-y-1">
+                    {getUnassignedSessions().map((session) => (
+                      <button
+                        key={session.session_id}
+                        onClick={() => handleSessionClick(session.session_id)}
+                        className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors text-sm ${currentSessionId === session.session_id
+                          ? 'bg-gray-100 text-gray-900 font-medium'
+                          : 'hover:bg-gray-50 text-gray-700'
+                          }`}
+                        type="button"
+                      >
+                        <span className="truncate block">{formatSessionName(session)}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* Bottom Profile - Always at bottom */}
         <div className={`mt-auto p-5`}>

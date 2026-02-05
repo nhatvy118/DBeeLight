@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Optional
 
 from fastapi import HTTPException
 
 from internal.repositories.agent_repository import AgentRepository
+from internal.repositories.project_repository import ProjectRepository
 
 logger = logging.getLogger(__name__)
 
 
 class ChatUseCase:
-    def __init__(self, agent_repo: AgentRepository):
+    def __init__(self, agent_repo: AgentRepository, project_repo: Optional[ProjectRepository] = None):
         self._agent_repo = agent_repo
+        self._project_repo = project_repo
 
     async def chat(self, user_key: str, message: str, session_id: str | None, project_id: str | None = None) -> tuple[str, str | None]:
         logger.info(f"UseCase: Processing chat message, user_key={user_key}, session_id={session_id}, project_id={project_id}")
@@ -51,6 +54,30 @@ class ChatUseCase:
                     logger.info(f"UseCase: Using project_id={project_id_uuid}")
                 except (ValueError, TypeError):
                     logger.warning(f"UseCase: Invalid project_id UUID: {project_id!r}, ignoring")
+
+        # Auto-connect/disconnect database based on context:
+        # - In project: connect to project's SQLite .db file
+        # - Outside project: disconnect any existing database connection
+        if project_id_uuid and self._project_repo:
+            try:
+                project = await self._project_repo.get_project_by_id(project_id_uuid, user_key)
+                if project and project.get("db_url"):
+                    db_url = project["db_url"]
+                    # Only auto-connect if it's a SQLite path (not placeholder)
+                    if db_url and not db_url.startswith("placeholder://"):
+                        logger.info(f"UseCase: Auto-connecting to project database: {db_url}")
+                        connect_result = await agent.connect_to_project_db(db_url)
+                        logger.info(f"UseCase: Database connection result: {connect_result}")
+            except Exception as e:
+                logger.warning(f"UseCase: Failed to auto-connect project database: {e}")
+        else:
+            # Outside project: disconnect any existing database connection
+            try:
+                logger.info("UseCase: Chatting outside project, disconnecting database if connected")
+                disconnect_result = await agent.disconnect_database()
+                logger.info(f"UseCase: Database disconnection result: {disconnect_result}")
+            except Exception as e:
+                logger.warning(f"UseCase: Failed to disconnect database: {e}")
 
         # Nếu có session_id → cố gắng load session đó
         loaded = False

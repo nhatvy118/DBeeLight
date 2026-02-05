@@ -137,4 +137,22 @@ export async function createProject(name: string, description?: string, db_url: 
   return (await response.json()) as CreateProjectResponse;
 }
 
+export type GenerateShareLinkResponse =
+  | { success: true; share_token: string; share_url: string }
+  | { success: false; error: string };
+
+export async function generateShareLink(sessionId: string | null = null, projectId: string | null = null): Promise<GenerateShareLinkResponse> {
+  const response = await fetch(url('/api/share/generate'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, project_id: projectId }),
+  });
+  if (!response.ok) {
+    const data = (await response.json()) as { error?: string };
+    return { success: false, error: data.error || 'Failed to generate share link' };
+  }
+  return (await response.json()) as GenerateShareLinkResponse;
+}
+
 

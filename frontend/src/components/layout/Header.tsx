@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { generateShareLink } from '../../services/api';
 import settingsIcon from '../../assets/icons/Settings.svg';
 import logoutIcon from '../../assets/icons/Logout.svg';
 import userIcon from '../../assets/icons/User.svg';
@@ -17,6 +18,9 @@ export default function Header() {
   const { user, isLoading, setUser } = useAuth();
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string>('');
+  const [isGeneratingShare, setIsGeneratingShare] = useState(false);
   const avatarMenuRef = useRef<HTMLDivElement>(null);
 
   // Close avatar menu when clicking outside
@@ -32,43 +36,101 @@ export default function Header() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [avatarMenuOpen]);
 
-  // Load selected project from localStorage
-  // Show project whenever it's selected (even if it has no sessions yet)
-  const loadSelectedProject = () => {
-    const selectedProjectId = localStorage.getItem('selectedProjectId');
-    if (selectedProjectId) {
-      const projects = JSON.parse(localStorage.getItem('projects') || '[]');
-      const project = projects.find((p: Project) => p.id === selectedProjectId);
-      if (project) {
-        setSelectedProject(project);
-      } else {
-        setSelectedProject(null);
+  // Load selected project from URL - URL is source of truth
+  useEffect(() => {
+    const updateProjectFromURL = () => {
+      const path = window.location.pathname;
+      // Parse URL: /chat/:projectId or /chat/:projectId/:sessionId
+      const parts = path.split('/').filter(Boolean);
+      if (parts.length >= 2 && parts[0] === 'chat') {
+        const projectId = parts[1];
+        // Check if it's a project ID (UUID format) or session ID (short format)
+        if (projectId.includes('-') && projectId.length > 20) {
+          // Likely a project ID (UUID)
+          const projects = JSON.parse(localStorage.getItem('projects') || '[]');
+          const project = projects.find((p: Project) => p.id === projectId);
+          if (project) {
+            setSelectedProject(project);
+            return;
+          }
+        }
       }
-    } else {
+      // No project in URL
       setSelectedProject(null);
+    };
+
+    updateProjectFromURL();
+
+    // Listen for URL changes
+    const handlePopState = () => {
+      updateProjectFromURL();
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
+  // Handle share button click
+  const handleShareClick = async () => {
+    try {
+      setIsGeneratingShare(true);
+      const path = window.location.pathname;
+      const parts = path.split('/').filter(Boolean);
+      
+      let sessionId: string | null = null;
+      let projectId: string | null = null;
+
+      // Parse URL to get session_id and project_id
+      if (parts.length >= 2 && parts[0] === 'chat') {
+        if (parts.length === 3) {
+          // /chat/:projectId/:sessionId
+          projectId = parts[1];
+          sessionId = parts[2];
+        } else if (parts.length === 2) {
+          const id = parts[1];
+          // Check if it's a project ID (UUID) or session ID (short)
+          if (id.includes('-') && id.length > 20) {
+            projectId = id;
+          } else {
+            sessionId = id;
+          }
+        }
+      }
+
+      // Check if both are null - show notice
+      if (!sessionId && !projectId) {
+        window.alert('Please select a chat or project to share');
+        return;
+      }
+
+      const result = await generateShareLink(sessionId, projectId);
+      if (result.success) {
+        setShareUrl(result.share_url);
+        setShareModalOpen(true);
+      } else {
+        window.alert(`Failed to generate share link: ${result.error}`);
+      }
+    } catch (err) {
+      console.error('Failed to generate share link:', err);
+      window.alert(`Failed to generate share link: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setIsGeneratingShare(false);
     }
   };
 
-  useEffect(() => {
-    loadSelectedProject();
-
-    // Listen for project selection changes
-    const handleProjectSelected = () => {
-      loadSelectedProject();
-    };
-
-    window.addEventListener('projectSelected', handleProjectSelected);
-
-    // Also poll localStorage periodically to catch changes
-    const interval = setInterval(() => {
-      loadSelectedProject();
-    }, 500);
-
-    return () => {
-      window.removeEventListener('projectSelected', handleProjectSelected);
-      clearInterval(interval);
-    };
-  }, []);
+  // Copy share URL to clipboard
+  const handleCopyShareUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      window.alert('Share URL copied to clipboard!');
+      setShareModalOpen(false);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+      window.alert('Failed to copy URL. Please copy manually.');
+    }
+  };
 
   const handleLogin = () => {
     const next = window.location.pathname === '/' ? '/chat' : window.location.pathname;
@@ -86,7 +148,8 @@ export default function Header() {
     } finally {
       setUser(null);
       localStorage.removeItem('projects');
-      localStorage.removeItem('selectedProjectId');
+      localStorage.removeItem('lastSessionId');
+      localStorage.removeItem('lastSessionIdForProject');
       window.history.pushState({}, '', '/');
       window.dispatchEvent(new PopStateEvent('popstate'));
     }
@@ -130,7 +193,10 @@ export default function Header() {
             {/* Share Button */}
             <button
               type="button"
-              className="hover:opacity-80 transition-opacity"
+              onClick={handleShareClick}
+              disabled={isGeneratingShare}
+              className="hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Share"
             >
               <img src={shareIcon} alt="Share" className="h-10" />
             </button>
@@ -250,6 +316,42 @@ export default function Header() {
           </>
         )}
       </div>
+
+      {/* Share Modal */}
+      {shareModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Share Link</h3>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Copy this link to share:
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={shareUrl}
+                  readOnly
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm bg-gray-50"
+                />
+                <button
+                  type="button"
+                  onClick={handleCopyShareUrl}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm font-medium"
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShareModalOpen(false)}
+              className="w-full px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm font-medium"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

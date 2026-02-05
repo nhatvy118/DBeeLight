@@ -103,18 +103,29 @@ class SessionManager:
         return sessions
 
     async def get_current_messages(self) -> List[Dict[str, Any]]:
-        """Get messages from current session."""
+        """Get messages from current session. Only returns 'user' and 'assistant' messages, filters out 'tool' messages."""
         if not self.current_session_id:
             return []
         data = await self._get_session(self.current_session_id)
         if not data:
             return []
-        return data.get("messages", [])
+        all_messages = data.get("messages", [])
+        # Filter out tool messages, only keep user and assistant
+        return [msg for msg in all_messages if msg.get("role") in ("user", "assistant")]
 
     async def add_message(self, role: str, content: str, tool_calls: Optional[List] = None):
-        """Add a message to the current session."""
+        """Add a message to the current session. Only saves 'user' and 'assistant' messages, not 'tool' messages."""
         if not self.current_session_id:
             return
+        
+        # Only save user and assistant messages, skip tool messages
+        if role not in ("user", "assistant"):
+            return
+        
+        # Don't save assistant messages with empty content (only tool_calls, no text)
+        if role == "assistant" and not content.strip():
+            return
+        
         data = await self._get_session(self.current_session_id)
         if not data:
             data = {

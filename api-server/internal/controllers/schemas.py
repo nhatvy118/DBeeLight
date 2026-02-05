@@ -37,3 +37,8 @@ class CreateProjectRequest(BaseModel):
     description: Optional[str] = None
     db_url: Optional[str] = None
 
+
+class GenerateShareLinkRequest(BaseModel):
+    session_id: Optional[str] = None
+    project_id: Optional[str] = None
+
