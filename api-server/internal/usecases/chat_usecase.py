@@ -55,9 +55,9 @@ class ChatUseCase:
                 except (ValueError, TypeError):
                     logger.warning(f"UseCase: Invalid project_id UUID: {project_id!r}, ignoring")
 
-        # Auto-connect/disconnect database based on context:
+        # Auto-connect database based on context:
         # - In project: connect to project's SQLite .db file
-        # - Outside project: disconnect any existing database connection
+        # - Outside project: leave as-is (user manages PostgreSQL connection manually via chat)
         if project_id_uuid and self._project_repo:
             try:
                 project = await self._project_repo.get_project_by_id(project_id_uuid, user_key)
@@ -70,14 +70,6 @@ class ChatUseCase:
                         logger.info(f"UseCase: Database connection result: {connect_result}")
             except Exception as e:
                 logger.warning(f"UseCase: Failed to auto-connect project database: {e}")
-        else:
-            # Outside project: disconnect any existing database connection
-            try:
-                logger.info("UseCase: Chatting outside project, disconnecting database if connected")
-                disconnect_result = await agent.disconnect_database()
-                logger.info(f"UseCase: Database disconnection result: {disconnect_result}")
-            except Exception as e:
-                logger.warning(f"UseCase: Failed to disconnect database: {e}")
 
         # Nếu có session_id → cố gắng load session đó
         loaded = False
