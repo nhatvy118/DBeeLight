@@ -13,6 +13,7 @@ from internal.usecases.auth_usecase import AuthUseCase
 from internal.usecases.chat_usecase import ChatUseCase
 from internal.usecases.project_usecase import ProjectUseCase
 from internal.usecases.sessions_usecase import SessionsUseCase
+from internal.utils.redis_client import get_redis_client
 
 
 @lru_cache
@@ -75,3 +76,10 @@ def get_project_repository(request: Request) -> ProjectRepository:
 
 def get_project_usecase(request: Request) -> ProjectUseCase:
     return ProjectUseCase(get_project_repository(request))
+
+async def get_redis_client_dependency() -> object:
+    """
+    Dependency function to get Redis client.
+    Returns Redis client or None if not available.
+    """
+    return await get_redis_client()

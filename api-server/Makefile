@@ -6,8 +6,8 @@
 #   make migrate-down DB_URL=postgres://...
 #
 
-# export DATABASE_URL ?= postgres://pila_vyhuynh:postgres@localhost:5432/mcp-api-server?sslmode=disable
-export DATABASE_URL = postgres://postgres:postgres@localhost:5432/database_app?sslmode=disable
+export DATABASE_URL ?= postgres://pila_vyhuynh:postgres@localhost:5432/mcp-api-server?sslmode=disable
+# export DATABASE_URL = postgres://postgres:postgres@localhost:5432/database_app?sslmode=disable
 help:
 	@echo "Targets:"
 	@echo "  migrate-up / migrate-down  (metadata Postgres via golang-migrate)"

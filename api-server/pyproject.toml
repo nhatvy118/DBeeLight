@@ -12,8 +12,17 @@ dependencies = [
     "mcp>=1.22.0",
     "openai>=2.8.1",
     "mcp-client",
+    "redis[hiredis]>=5.0.0",
 ]
-scripts = { api-server = "internal:main" }
+
+[project.scripts]
+api-server = "internal:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+]
 
 [build-system]
 requires = ["hatchling"]

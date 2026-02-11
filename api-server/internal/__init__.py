@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 
 import uvicorn
 from dotenv import load_dotenv
@@ -20,6 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from internal.controllers import auth_controller, chat_controller, health_controller, project_controller, sessions_controller, share_controller
 from internal.db import close_db, init_db
+from internal.utils.redis_client import close_redis_client, init_redis_client
 
 load_dotenv()
 
@@ -27,8 +29,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("internal")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events."""
+    # Startup
+    await init_db(app)
+    await init_redis_client()
+    yield
+    # Shutdown
+    await close_db(app)
+    await close_redis_client()
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="MCP API Server", version="0.1.0")
+    app = FastAPI(
+        title="MCP API Server",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
 
     # Session cookie (used for OAuth login state + user session)
     # IMPORTANT: set SESSION_SECRET in production.
@@ -58,14 +76,6 @@ def create_app() -> FastAPI:
     app.include_router(sessions_controller.router)
     app.include_router(project_controller.router)
     app.include_router(share_controller.router)
-
-    @app.on_event("startup")
-    async def _startup() -> None:
-        await init_db(app)
-
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        await close_db(app)
 
     return app
 

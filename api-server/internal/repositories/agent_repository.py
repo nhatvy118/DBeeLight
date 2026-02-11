@@ -63,7 +63,11 @@ class AgentRepository:
                 raise RuntimeError("Database pool is not initialized. Sessions require Postgres storage.")
 
             logger.info("Initializing multi-agent orchestrator...")
-            session_manager = SessionManager(db_pool=self._db_pool, user_id=user_key)
+            session_manager = SessionManager(
+                db_pool=self._db_pool,
+                user_id=user_key,
+                summarize_model=self._model,
+            )
             # Single agent for now: DatabaseAgent connected to all default servers.
             # Add more agents here later (e.g. ExcelAgent with excel server only) for true multi-agent routing.
             agent = DatabaseAgent(model=self._model, session_manager=session_manager, agent_id="database")

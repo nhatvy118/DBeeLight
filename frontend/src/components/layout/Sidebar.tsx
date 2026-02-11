@@ -193,20 +193,10 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
   };
 
   const formatSessionName = (session: SessionInfo): string => {
-    if (session.session_name && session.session_name !== `Session ${session.session_id}`) {
+    if (session.session_name && session.session_name.trim()) {
       return session.session_name;
     }
-    // Format date from created_at
-    if (session.created_at) {
-      try {
-        const date = new Date(session.created_at);
-        const timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-        return `Chat ${timeStr}`;
-      } catch {
-        return `Chat ${session.session_id.slice(0, 8)}`;
-      }
-    }
-    return `Chat ${session.session_id.slice(0, 8)}`;
+    return 'New chat';
   };
 
   const handleCreateProject = async (name: string, description?: string) => {
