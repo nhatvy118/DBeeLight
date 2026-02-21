@@ -161,6 +161,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       const res = await sendMessage(text, sessionId, selectedProject?.id || null);
       if (res.success) {
         setMessages((prev) => [...prev, { text: res.response, isUser: false }]);
+        
         if (res.session_id) {
           const newSessionId = res.session_id;
           const isNewSession = sessionId !== newSessionId;
