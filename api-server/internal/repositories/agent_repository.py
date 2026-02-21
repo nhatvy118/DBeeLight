@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from mcp_agent import DatabaseAgent, MultiAgentOrchestrator, SessionManager
+from mcp_agent import DatabaseAgent, ExcelAgent, MultiAgentOrchestrator, SessionManager
 
 logger = logging.getLogger("internal")
 
@@ -28,6 +28,11 @@ class AgentRepository:
             "database/database.py",
             "excel-summary/excel_summary.py",
         ]
+        # Which servers each agent connects to (agent_id -> list of server path suffixes)
+        self._agent_servers: dict[str, list[str]] = {
+            "database": ["database/database.py"],
+            "excel": ["excel-summary/excel_summary.py"],
+        }
         self._model = model
         self._db_pool = None
 
@@ -68,29 +73,28 @@ class AgentRepository:
                 user_id=user_key,
                 summarize_model=self._model,
             )
-            # Single agent for now: DatabaseAgent connected to all default servers.
-            # Add more agents here later (e.g. ExcelAgent with excel server only) for true multi-agent routing.
-            agent = DatabaseAgent(model=self._model, session_manager=session_manager, agent_id="database")
+            db_agent = DatabaseAgent(model=self._model, session_manager=session_manager, agent_id="database")
+            excel_agent = ExcelAgent(model=self._model, session_manager=session_manager, agent_id="excel")
+            agents = [db_agent, excel_agent]
 
-            connected_count = 0
             base_path = _project_root
-            logger.info(f"Project root: {base_path}")
-            logger.info(f"Looking for servers: {self._default_servers}")
-
-            for rel in self._default_servers:
-                full_path = base_path / rel
-                logger.info(f"Checking server: {full_path} (exists: {full_path.exists()})")
-                if not full_path.exists():
-                    logger.warning(f"⚠️  Server not found: {full_path}")
-                    continue
-                server_name = full_path.stem
-                try:
-                    logger.info(f"Attempting to connect to {server_name} at {full_path}")
-                    await agent.connect_to_server(server_name, str(full_path))
-                    connected_count += 1
-                    logger.info(f"✅ Connected to {server_name}")
-                except Exception as e:
-                    logger.exception(f"❌ Failed to connect to {server_name}: {e}")
+            connected_count = 0
+            for agent in agents:
+                server_paths = self._agent_servers.get(agent.agent_id, [])
+                for rel in server_paths:
+                    full_path = base_path / rel
+                    logger.info(f"Checking server: {full_path} (exists: {full_path.exists()})")
+                    if not full_path.exists():
+                        logger.warning(f"⚠️  Server not found: {full_path}")
+                        continue
+                    server_name = full_path.stem
+                    try:
+                        logger.info(f"Attempting to connect {agent.agent_id} to {server_name} at {full_path}")
+                        await agent.connect_to_server(server_name, str(full_path))
+                        connected_count += 1
+                        logger.info(f"✅ {agent.agent_id} connected to {server_name}")
+                    except Exception as e:
+                        logger.exception(f"❌ Failed to connect {agent.agent_id} to {server_name}: {e}")
 
             if connected_count == 0:
                 raise RuntimeError(
@@ -98,13 +102,14 @@ class AgentRepository:
                 )
 
             orchestrator = MultiAgentOrchestrator(
-                agents=[agent],
+                agents=agents,
                 session_manager=session_manager,
                 router_model=self._model,
             )
             # Don't create session automatically - session will be created when user sends first message
-            logger.info(f"✅ Orchestrator initialized with {connected_count} server(s), 1 agent")
-            logger.info(f"Agent sessions: {list(agent.sessions.keys())}")
+            logger.info(f"✅ Orchestrator initialized with {connected_count} server(s), {len(agents)} agents")
+            for agent in agents:
+                logger.info(f"  {agent.agent_id} sessions: {list(agent.sessions.keys())}")
 
             self._orchestrators[user_key] = orchestrator
             return orchestrator

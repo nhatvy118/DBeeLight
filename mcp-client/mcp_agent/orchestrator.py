@@ -1,8 +1,11 @@
 """Multi-agent orchestrator: routes queries to the appropriate agent(s)."""
 
+import logging
 from typing import Any, Dict, List
 
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 from mcp_agent.base_agent import BaseAgent
 from mcp_agent.session import SessionManager
@@ -51,7 +54,7 @@ Reply with ONLY the agent id (one word), nothing else. No explanation."""
         if not choice.message or not choice.message.content:
             return next(iter(self._agents.keys()))
         agent_id = choice.message.content.strip().lower().split()[0] if choice.message.content else ""
-        return self._agents.get(agent_id) or next(iter(self._agents.keys()))
+        return agent_id if agent_id in self._agents else next(iter(self._agents.keys()))
 
     @property
     def sessions(self) -> Dict[str, Any]:
@@ -59,13 +62,14 @@ Reply with ONLY the agent id (one word), nothing else. No explanation."""
         first = next(iter(self._agents.values()))
         return first.sessions
 
-    async def process_query(self, query: str, verbose: bool = False) -> str:
-        """Route the query to the appropriate agent and return its response."""
+    async def process_query(self, query: str, verbose: bool = False) -> tuple[str, str]:
+        """Route the query to the appropriate agent and return (response_text, agent_id)."""
         agent_id = await self._route(query)
         agent = self._agents[agent_id]
         if verbose:
             print(f"[Orchestrator] Routing to agent: {agent_id}")
-        return await agent.process_query(query, verbose=verbose)
+        response_text = await agent.process_query(query, verbose=verbose)
+        return response_text, agent_id
 
     async def connect_to_project_db(self, db_url: str) -> str:
         """

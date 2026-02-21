@@ -90,10 +90,10 @@ class ChatUseCase:
 
         logger.info(f"UseCase: Processing query: {query[:100]}...")
         try:
-            response_text = await agent.process_query(query, verbose=False)
+            response_text, agent_id = await agent.process_query(query, verbose=False)
             session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
             current_session_id = session_info.get("session_id") if session_info else None
-            logger.info(f"UseCase: Query processed successfully, session_id={current_session_id}")
+            logger.info(f"UseCase: Query processed successfully, session_id={current_session_id}, agent={agent_id}")
             return response_text, current_session_id
         except Exception as e:
             logger.error(f"UseCase: Error processing query: {e}", exc_info=True)

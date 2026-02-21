@@ -6,6 +6,7 @@ using OpenAI GPT models. Supports multi-agent setup via BaseAgent and MultiAgent
 """
 
 from mcp_agent.database_agent import DatabaseAgent
+from mcp_agent.excel_agent import ExcelAgent
 from mcp_agent.base_agent import BaseAgent
 from mcp_agent.orchestrator import MultiAgentOrchestrator
 from mcp_agent.session import SessionManager
@@ -13,6 +14,7 @@ from mcp_agent.session import SessionManager
 __all__ = [
     "BaseAgent",
     "DatabaseAgent",
+    "ExcelAgent",
     "MultiAgentOrchestrator",
     "SessionManager",
 ]
