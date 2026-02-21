@@ -14,15 +14,15 @@ export default function MessageList({ messages, onRefreshResponse }: MessageList
   if (messages.length === 0) return null;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-1">
       {messages.map((msg, index) => (
-        <div key={index} className={!msg.isUser ? 'flex flex-col items-start' : ''}>
+        <div key={index} className={msg.isUser ? '' : 'w-full border-b border-gray-100 last:border-b-0'}>
           <ChatMessage message={msg.text} isUser={msg.isUser} />
           {!msg.isUser && onRefreshResponse && (
             <button
               type="button"
               onClick={() => void onRefreshResponse(index)}
-              className="mt-2 flex items-center gap-1 text-gray-500 hover:text-gray-700 text-xs transition-colors"
+              className="mt-2 mb-2 flex items-center gap-1 text-gray-500 hover:text-gray-700 text-xs transition-colors"
             >
               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path

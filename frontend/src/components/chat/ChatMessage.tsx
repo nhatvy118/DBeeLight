@@ -132,80 +132,78 @@ export default function ChatMessage({ message, isUser, enableTyping = true }: Ch
   }, [message]);
 
   // -------------------------
-  // AI MESSAGE
+  // AI MESSAGE - Full width (ChatGPT style), no bubble
   // -------------------------
   return (
-    <div className="flex justify-start">
-      <div className="max-w-2xl">
-        <div className="bg-white rounded-2xl rounded-tl-sm px-4 py-3 shadow-md">
-          <div className="prose prose-sm max-w-none">
-            {/* IMPORTANT:
-                While typing -> render plain text only.
-                When finished -> render markdown.
-            */}
-            {isTyping ? (
-              <p className="text-sm text-gray-800 whitespace-pre-wrap break-words leading-relaxed">
-                {displayedText}
-                <span className="inline-block w-2 h-4 bg-gray-800 ml-1 animate-pulse align-middle" />
-              </p>
-            ) : (
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeHighlight]}
-                components={{
-                  code: ({ className, children, ...props }) => {
-                    const isInline = !className;
-                    if (isInline) {
-                      return (
-                        <code className="bg-gray-100 text-pink-600 px-1.5 py-0.5 rounded font-mono text-xs font-semibold" {...props}>
+    <div className="w-full">
+      <div className="py-3">
+        <div className="prose prose-sm prose-slate max-w-none prose-headings:font-semibold prose-a:text-indigo-600 prose-a:no-underline hover:prose-a:underline prose-table:border-collapse prose-th:border prose-th:border-gray-300 prose-th:bg-gray-50 prose-th:px-3 prose-th:py-2 prose-td:border prose-td:border-gray-200 prose-td:px-3 prose-td:py-2 prose-ul:list-disc prose-ol:list-decimal prose-pre:bg-gray-900 prose-pre:rounded-lg prose-pre:overflow-x-auto">
+          {/* IMPORTANT:
+              While typing -> render plain text only.
+              When finished -> render markdown.
+          */}
+          {isTyping ? (
+            <p className="text-sm text-gray-800 whitespace-pre-wrap break-words leading-relaxed">
+              {displayedText}
+              <span className="inline-block w-2 h-4 bg-gray-800 ml-1 animate-pulse align-middle" />
+            </p>
+          ) : (
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeHighlight]}
+              components={{
+                code: ({ className, children, ...props }) => {
+                  const isInline = !className;
+                  if (isInline) {
+                    return (
+                      <code className="bg-gray-100 text-pink-600 px-1.5 py-0.5 rounded font-mono text-xs font-semibold" {...props}>
+                        {children}
+                      </code>
+                    );
+                  }
+
+                  // Block code - copy button always visible (especially for SQL)
+                  const codeBlockIndex = codeBlockIndexRef.current++;
+                  const codeString = extractCodeText(children).replace(/\n$/, '');
+                  const isCopied = copiedIndex === codeBlockIndex;
+
+                  return (
+                    <div className="relative group my-3 not-prose">
+                      <button
+                        type="button"
+                        onClick={() => handleCopyCode(codeString, codeBlockIndex)}
+                        className="absolute top-2 right-2 z-10 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs rounded transition-colors flex items-center gap-1.5"
+                        aria-label="Copy code"
+                      >
+                        {isCopied ? (
+                          <>
+                            <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                            Copied
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                            Copy
+                          </>
+                        )}
+                      </button>
+                      <pre className="bg-gray-900 rounded-lg p-4 pr-24 overflow-x-auto">
+                        <code className={`${className} text-gray-100 text-sm font-mono block`} {...props}>
                           {children}
                         </code>
-                      );
-                    }
-
-                    // Block code - add copy button
-                    const codeBlockIndex = codeBlockIndexRef.current++;
-                    const codeString = extractCodeText(children).replace(/\n$/, '');
-                    const isCopied = copiedIndex === codeBlockIndex;
-
-                    return (
-                      <div className="relative group my-3">
-                        <button
-                          type="button"
-                          onClick={() => handleCopyCode(codeString, codeBlockIndex)}
-                          className="absolute top-2 right-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs rounded transition-colors opacity-0 group-hover:opacity-100"
-                          aria-label="Copy code"
-                        >
-                          {isCopied ? (
-                            <span className="flex items-center gap-1">
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                              </svg>
-                              Copied
-                            </span>
-                          ) : (
-                            <span className="flex items-center gap-1">
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                              </svg>
-                              Copy
-                            </span>
-                          )}
-                        </button>
-                        <pre className="bg-gray-900 rounded-lg p-4 overflow-x-auto">
-                          <code className={`${className} text-gray-100 text-sm font-mono`} {...props}>
-                            {children}
-                          </code>
-                        </pre>
-                      </div>
-                    );
-                  },
-                }}
-              >
-                {normalizedMessage}
-              </ReactMarkdown>
-            )}
-          </div>
+                      </pre>
+                    </div>
+                  );
+                },
+              }}
+            >
+              {normalizedMessage}
+            </ReactMarkdown>
+          )}
         </div>
       </div>
     </div>

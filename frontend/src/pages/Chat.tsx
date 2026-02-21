@@ -42,7 +42,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const [query, setQuery] = useState<string>('');
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [sessionId, setSessionId] = useState<string | null>(propSessionId || null);
+  // Don't init from propSessionId: so on reload with URL like /chat/projectId/sessionId,
+  // the "load session" effect sees propSessionId set but sessionId null and fetches messages.
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<{ id: string; name: string } | null>(null);
   const [projectSessions, setProjectSessions] = useState<SessionInfo[]>([]);
   const [sessionPreviews, setSessionPreviews] = useState<Record<string, string>>({});
@@ -353,8 +355,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     <div className="flex flex-col h-full bg-white">
       {/* Chat Content */}
       {messages.length > 0 && (
-        <div className="flex-1 overflow-y-auto px-8 py-6">
-          <div className="max-w-4xl mx-auto">
+        <div className="flex-1 overflow-y-auto px-6 py-6">
+          <div className="max-w-5xl mx-auto w-full">
             <MessageList messages={messages} onRefreshResponse={(idx) => void handleRefreshResponse(idx)} />
             <div ref={messagesEndRef} />
           </div>
