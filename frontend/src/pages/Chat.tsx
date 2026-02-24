@@ -96,7 +96,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const canSend = useMemo(() => !isLoading && query.trim().length > 0, [isLoading, query]);
 
-  // Load session when sessionId prop changes
+  // Load session when sessionId from URL (propSessionId) is set. Must run when URL has
+  // a session (e.g. /chat/87c3eb73) including on full reload, so we load whenever
+  // propSessionId is present — not only when it differs from state (on reload state
+  // is initialized from the same prop, so propSessionId === sessionId and we'd skip loading).
   useEffect(() => {
     const loadSession = async (sid: string) => {
       try {
@@ -122,10 +125,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       }
     };
 
-    if (propSessionId && propSessionId !== sessionId) {
+    if (propSessionId) {
       void loadSession(propSessionId);
-    } else if (!propSessionId && sessionId) {
-      console.log('Clearing session: switching to new project or new chat');
+    } else if (sessionId) {
+      // URL no longer has a session (e.g. navigated to /chat) — clear local state
       setMessages([]);
       setSessionId(null);
       onSessionIdChange?.(null);
@@ -170,6 +173,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           setSessionId(newSessionId);
           onSessionIdChange?.(newSessionId);
           saveLastSession(newSessionId, selectedProject?.id ?? null);
+
+          // Update URL so /chat becomes /chat/:sessionId (or /chat/:projectId/:sessionId)
+          if (selectedProject?.id) {
+            window.history.pushState({}, '', `/chat/${selectedProject.id}/${newSessionId}`);
+          } else {
+            window.history.pushState({}, '', `/chat/${newSessionId}`);
+          }
+          window.dispatchEvent(new PopStateEvent('popstate'));
 
           // Reload project sessions to update the history UI
           if (isNewSession) {
