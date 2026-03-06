@@ -155,4 +155,21 @@ export async function generateShareLink(sessionId: string | null = null, project
   return (await response.json()) as GenerateShareLinkResponse;
 }
 
+export type ExecuteSqlResponse = ChatResponse;
+
+export async function executeSql(sql: string, sessionId: string | null = null, projectId: string | null = null): Promise<ExecuteSqlResponse> {
+  const response = await fetch(url('/api/sql/execute'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql, session_id: sessionId, project_id: projectId }),
+  });
+
+  const data = (await response.json()) as ExecuteSqlResponse & { error?: string };
+  if (!response.ok) {
+    throw new Error((data as any).error || 'Failed to execute SQL');
+  }
+  return data;
+}
+
 

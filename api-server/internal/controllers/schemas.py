@@ -42,3 +42,9 @@ class GenerateShareLinkRequest(BaseModel):
     session_id: Optional[str] = None
     project_id: Optional[str] = None
 
+
+class ExecuteSqlRequest(BaseModel):
+    sql: str
+    session_id: Optional[str] = None
+    project_id: Optional[str] = None
+

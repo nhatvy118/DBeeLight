@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessageList, { type UiMessage } from '../components/chat/MessageList';
-import { getSession, sendMessage, getSessions, type SessionInfo } from '../services/api';
+import { getSession, sendMessage, getSessions, executeSql, type SessionInfo } from '../services/api';
 import plusIcon from '../assets/icons/Plus.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
 import arrowUpCircleIcon from '../assets/icons/Arrow-up-circle.svg';
@@ -79,6 +79,24 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
+  const extractLastMutationSqlBlock = (text: string): string | null => {
+    const regex = /```sql([\s\S]*?)```/gi;
+    let match: RegExpExecArray | null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let last: string | null = null;
+    // eslint-disable-next-line no-cond-assign
+    while ((match = regex.exec(text)) !== null) {
+      last = match[1].trim();
+    }
+    if (!last) return null;
+    const firstToken = last.split(/\s+/)[0]?.toUpperCase() ?? '';
+    const readOnlyVerbs = new Set(['SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN', 'WITH', 'PRAGMA']);
+    if (readOnlyVerbs.has(firstToken)) {
+      return null;
+    }
+    return last;
+  };
+
   // Close attachment menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -109,10 +127,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         const res = await getSession(sid);
         if (res.success && res.messages) {
           const convertedMessages: UiMessage[] = res.messages
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             .filter((msg: any) => msg.role === 'user' || msg.role === 'assistant')
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             .map((msg: any) => ({
               text: msg.content || '',
               isUser: msg.role === 'user',
+              sqlToExecute: msg.role === 'assistant' ? extractLastMutationSqlBlock(msg.content || '') : null,
             }));
           setMessages(convertedMessages);
           setSessionId(sid);
@@ -165,7 +186,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     try {
       const res = await sendMessage(text, sessionId, selectedProject?.id || null);
       if (res.success) {
-        setMessages((prev) => [...prev, { text: res.response, isUser: false }]);
+        setMessages((prev) => [
+          ...prev,
+          {
+            text: res.response,
+            isUser: false,
+            sqlToExecute: extractLastMutationSqlBlock(res.response),
+          },
+        ]);
         
         if (res.session_id) {
           const newSessionId = res.session_id;
@@ -223,7 +251,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       if (res.success) {
         setMessages((prev) => {
           const updated = [...prev];
-          updated[aiIndex] = { text: res.response, isUser: false };
+          updated[aiIndex] = {
+            text: res.response,
+            isUser: false,
+            sqlToExecute: extractLastMutationSqlBlock(res.response),
+          };
           return updated;
         });
       } else {
@@ -235,6 +267,55 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleExecuteSql = async (aiIndex: number) => {
+    const msg = messages[aiIndex];
+    if (!msg || !msg.sqlToExecute || isLoading) return;
+
+    setIsLoading(true);
+    try {
+      const res = await executeSql(msg.sqlToExecute, sessionId, selectedProject?.id || null);
+      if (res.success) {
+        setMessages((prev) => {
+          const updated = [...prev];
+          const current = updated[aiIndex];
+          if (current) {
+            // Clear sqlToExecute on the preview message so Execute SQL cannot be clicked again
+            updated[aiIndex] = { ...current, sqlToExecute: null };
+          }
+          return [
+            ...updated,
+            {
+              text: res.response,
+              isUser: false,
+              sqlToExecute: extractLastMutationSqlBlock(res.response),
+            },
+          ];
+        });
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          { text: `Error: ${res.error || 'Failed to execute SQL'}`, isUser: false },
+        ]);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to execute SQL';
+      setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCancelSql = (aiIndex: number) => {
+    const msg = messages[aiIndex];
+    if (!msg || !msg.sqlToExecute) return;
+    // Simply clear the sqlToExecute flag so the Execute button disappears.
+    setMessages((prev) => {
+      const updated = [...prev];
+      updated[aiIndex] = { ...msg, sqlToExecute: null };
+      return updated;
+    });
   };
 
   // When switching to a *different* project: save current session for the project we're leaving, then clear UI.
@@ -308,10 +389,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         const res = await getSession(sid);
         if (res.success && res.messages) {
           const convertedMessages: UiMessage[] = res.messages
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             .filter((msg: any) => msg.role === 'user' || msg.role === 'assistant')
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             .map((msg: any) => ({
               text: msg.content || '',
               isUser: msg.role === 'user',
+              sqlToExecute: msg.role === 'assistant' ? extractLastMutationSqlBlock(msg.content || '') : null,
             }));
           setMessages(convertedMessages);
           setSessionId(sid);
@@ -368,7 +452,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       {messages.length > 0 && (
         <div className="flex-1 overflow-y-auto px-6 py-6">
           <div className="max-w-5xl mx-auto w-full">
-            <MessageList messages={messages} onRefreshResponse={(idx) => void handleRefreshResponse(idx)} />
+            <MessageList
+              messages={messages}
+              onRefreshResponse={(idx) => void handleRefreshResponse(idx)}
+              onExecuteSql={(idx) => void handleExecuteSql(idx)}
+              onCancelSql={(idx) => void handleCancelSql(idx)}
+            />
             <div ref={messagesEndRef} />
           </div>
         </div>

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from internal.controllers.schemas import ChatOk, ChatRequest
+from internal.controllers.schemas import ChatOk, ChatRequest, ExecuteSqlRequest
 from internal.dependencies import get_chat_usecase, get_user_key
 from internal.usecases.chat_usecase import ChatUseCase
 
@@ -16,5 +16,22 @@ async def chat(
     usecase: ChatUseCase = Depends(get_chat_usecase),
 ) -> ChatOk:
     response_text, sid = await usecase.chat(user_key, req.message, req.session_id, req.project_id)
+    return ChatOk(response=response_text, session_id=sid)
+
+
+@router.post("/api/sql/execute", response_model=ChatOk)
+async def execute_sql(
+    req: ExecuteSqlRequest,
+    user_key: str = Depends(get_user_key),
+    usecase: ChatUseCase = Depends(get_chat_usecase),
+) -> ChatOk:
+    """
+    Execute a raw SQL statement that has already been previewed to the user.
+
+    - `sql`: the exact SQL to execute (taken from the last ```sql``` block shown in the UI)
+    - `session_id`: optional, to keep history linked to the same conversation
+    - `project_id`: optional, to auto-connect to the correct project database
+    """
+    response_text, sid = await usecase.execute_sql(user_key, req.sql, req.session_id, req.project_id)
     return ChatOk(response=response_text, session_id=sid)
 

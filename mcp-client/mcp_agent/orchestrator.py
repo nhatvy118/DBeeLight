@@ -128,6 +128,62 @@ Reply with ONLY the agent id (one word), nothing else. No explanation."""
         
         return "disconnect_database tool not found in any connected server"
 
+    async def execute_sql(self, sql: str) -> str:
+        """
+        Execute a raw SQL statement against the database using the database MCP server.
+
+        This is used after the UI shows the planned SQL to the user and the user
+        explicitly confirms execution (e.g. by clicking an Execute button).
+        """
+        db_agent = self._agents.get("database")
+        if not db_agent:
+            return "No database agent available"
+
+        # Prefer execute_query since it can handle both read and write statements.
+        # Fall back to run_mutation if needed.
+        for server_name, session in db_agent.sessions.items():
+            # Try execute_query first
+            try:
+                result = await session.call_tool("execute_query", {"query": sql})
+                result_content = result.content
+                # FastMCP usually returns a TextContent object or a list; unwrap to plain text
+                try:
+                    # Single content object with .text
+                    if hasattr(result_content, "text"):
+                        return str(result_content.text)
+                    # List of content blocks
+                    if isinstance(result_content, list) and result_content:
+                        first = result_content[0]
+                        if hasattr(first, "text"):
+                            return str(first.text)
+                    # Fallback: stringify
+                    return str(result_content)
+                except Exception:
+                    return str(result_content)
+            except Exception:
+                # Tool not found or error in this server, try next option
+                pass
+
+        # If execute_query is not available, try run_mutation as a fallback for write queries
+        for server_name, session in db_agent.sessions.items():
+            try:
+                result = await session.call_tool("run_mutation", {"sql": sql})
+                result_content = result.content
+                try:
+                    if hasattr(result_content, "text"):
+                        return str(result_content.text)
+                    if isinstance(result_content, list) and result_content:
+                        first = result_content[0]
+                        if hasattr(first, "text"):
+                            return str(first.text)
+                    return str(result_content)
+                except Exception:
+                    return str(result_content)
+            except Exception:
+                continue
+
+        return "No suitable SQL execution tool (execute_query/run_mutation) found in any connected server"
+
     async def cleanup(self) -> None:
         """Clean up all agents."""
         for agent in self._agents.values():
