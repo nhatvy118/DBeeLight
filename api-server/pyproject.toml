@@ -12,6 +12,7 @@ dependencies = [
     "mcp>=1.22.0",
     "openai>=2.8.1",
     "mcp-client",
+    "langgraph>=0.2.0",
     "redis[hiredis]>=5.0.0",
 ]
 

@@ -90,10 +90,21 @@ class ChatUseCase:
 
         logger.info(f"UseCase: Processing query: {query[:100]}...")
         try:
-            response_text, agent_id = await agent.process_query(query, verbose=False)
-            session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
-            current_session_id = session_info.get("session_id") if session_info else None
-            logger.info(f"UseCase: Query processed successfully, session_id={current_session_id}, agent={agent_id}")
+            result = await agent.process_query(query, verbose=False)
+
+            # HybridOrchestrator returns dict with response, agent_id, session_id, approach, intent
+            if isinstance(result, dict):
+                response_text = result.get("response", "")
+                agent_id = result.get("agent_id", "unknown")
+                session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
+                current_session_id = session_info.get("session_id") if session_info else result.get("session_id")
+                logger.info(f"UseCase: Query processed successfully, session_id={current_session_id}, agent={agent_id}, approach={result.get('approach')}")
+            else:
+                # Legacy format (tuple)
+                response_text, agent_id = result
+                session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
+                current_session_id = session_info.get("session_id") if session_info else None
+
             return response_text, current_session_id
         except Exception as e:
             logger.error(f"UseCase: Error processing query: {e}", exc_info=True)
@@ -169,10 +180,17 @@ class ChatUseCase:
 
         logger.info(f"UseCase: Executing SQL (first 200 chars): {query[:200]}...")
         try:
-            # Bypass LLM routing: call orchestrator helper to run SQL directly on DB MCP server
-            result_text = await agent.execute_sql(query, lang=lang)
-            session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
-            current_session_id = session_info.get("session_id") if session_info else None
+            # HybridOrchestrator may have approve_and_execute method
+            if hasattr(agent, 'approve_and_execute'):
+                # Use the new approval flow
+                session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
+                current_session_id = session_info.get("session_id") if session_info else None
+                result_text = await agent.approve_and_execute(session_id=current_session_id, approved=True)
+            else:
+                # Legacy: call execute_sql directly
+                result_text = await agent.execute_sql(query, lang=lang)
+                session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
+                current_session_id = session_info.get("session_id") if session_info else None
             logger.info(f"UseCase: SQL executed successfully, session_id={current_session_id}")
             return result_text, current_session_id
         except Exception as e:

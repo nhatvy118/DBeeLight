@@ -79,6 +79,36 @@ uv sync  # Tạo .venv và cài đặt dependencies
 - `mcp-client` chỉ là package/library (không còn CLI).
 - Được dùng bởi `api-server` để cung cấp REST API.
 
+**Kiến trúc (Hybrid Orchestrator):**
+
+```
+User Prompt
+      │
+      ▼
+┌──────────────────┐
+│  IntentRouter    │  ← LLM classify: simple/complex/conversational
+│  .classify()     │
+└────────┬─────────┘
+         │
+    ┌────┴────┬────────────┐
+    ▼         ▼            ▼
+Simple   Complex    Conversational
+    │         │            │
+    ▼         ▼            ▼
+LLM-driven  Workflow   Continue
+(BaseAgent)  (LangGraph) conversation
+```
+
+**Hybrid Approach:**
+- **Simple queries** ("list tables", "show schema", "select data"): Dùng LLM-driven (BaseAgent) - nhanh, trực tiếp
+- **Complex queries** ("insert data", "create report"): Dùng LangGraph workflow - sequential stages + human approval
+- **Conversational**: Tiếp tục conversation với context
+
+**LangGraph Workflow:**
+- Mỗi agent (database, excel) có workflow riêng
+- Nodes delegate cho BaseAgent để execute tools
+- Hỗ trợ human-in-the-loop (chờ user approve SQL)
+
 **Lưu ý về Virtual Environment:**
 - Client tự động phát hiện và sử dụng Python từ `.venv` của server (nếu có)
 - Điều này đảm bảo server chạy với đúng dependencies đã được cài đặt
