@@ -157,12 +157,12 @@ export async function generateShareLink(sessionId: string | null = null, project
 
 export type ExecuteSqlResponse = ChatResponse;
 
-export async function executeSql(sql: string, sessionId: string | null = null, projectId: string | null = null): Promise<ExecuteSqlResponse> {
+export async function executeSql(sql: string, sessionId: string | null = null, projectId: string | null = null, lang: string = 'en'): Promise<ExecuteSqlResponse> {
   const response = await fetch(url('/api/sql/execute'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sql, session_id: sessionId, project_id: projectId }),
+    body: JSON.stringify({ sql, session_id: sessionId, project_id: projectId, lang }),
   });
 
   const data = (await response.json()) as ExecuteSqlResponse & { error?: string };
@@ -170,6 +170,97 @@ export async function executeSql(sql: string, sessionId: string | null = null, p
     throw new Error((data as any).error || 'Failed to execute SQL');
   }
   return data;
+}
+
+export async function exportData(
+  tableName: string,
+  columns: string = '*',
+  whereClause: string | null = null,
+  format: 'csv' | 'excel' = 'csv',
+  sessionId: string | null = null,
+  projectId: string | null = null
+): Promise<void> {
+  const params = new URLSearchParams();
+  params.append('table_name', tableName);
+  params.append('columns', columns);
+  if (whereClause) params.append('where_clause', whereClause);
+  params.append('format', format);
+  if (sessionId) params.append('session_id', sessionId);
+  if (projectId) params.append('project_id', projectId);
+
+  const response = await fetch(url(`/api/export?${params.toString()}`), {
+    method: 'POST',
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error((data as { detail?: string }).detail || 'Failed to export data');
+  }
+
+  // Get filename from Content-Disposition header or generate one
+  const contentDisposition = response.headers.get('Content-Disposition');
+  let filename = `${tableName}.${format}`;
+  if (contentDisposition) {
+    const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    if (match) {
+      filename = match[1].replace(/['"]/g, '');
+    }
+  }
+
+  // Download file
+  const blob = await response.blob();
+  const blobUrl = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(blobUrl);
+  a.remove();
+}
+
+export type UploadExcelResponse =
+  | {
+      success: true;
+      file: {
+        original_name: string;
+        stored_name: string;
+        server_path: string;
+        size_bytes: number;
+        session_id?: string | null;
+        project_id?: string | null;
+      };
+    }
+  | { success: false; error: string };
+
+export async function uploadExcel(
+  file: File,
+  sessionId: string | null = null,
+  projectId: string | null = null
+): Promise<UploadExcelResponse> {
+  const form = new FormData();
+  form.append('file', file);
+  if (sessionId) form.append('session_id', sessionId);
+  if (projectId) form.append('project_id', projectId);
+
+  const response = await fetch(url('/api/excel/upload'), {
+    method: 'POST',
+    credentials: 'include',
+    body: form,
+  });
+
+  if (!response.ok) {
+    let detail = 'Failed to upload file';
+    try {
+      const data = (await response.json()) as { detail?: string; error?: string };
+      detail = data.detail || data.error || detail;
+    } catch {
+      // ignore JSON parse errors
+    }
+    return { success: false, error: detail };
+  }
+  return (await response.json()) as UploadExcelResponse;
 }
 
 

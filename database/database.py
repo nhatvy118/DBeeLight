@@ -6,8 +6,13 @@ to support both PostgreSQL and SQLite databases transparently.
 """
 
 import sys
+import logging
 from pathlib import Path
 from typing import Any, Optional
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Add parent directory to path so we can import adapters when running as script
 _this_dir = Path(__file__).parent.resolve()
@@ -17,6 +22,9 @@ if str(_this_dir) not in sys.path:
 from mcp.server.fastmcp import FastMCP
 
 from adapters import DatabaseAdapter, DatabaseAdapterFactory
+
+# Default limit for SELECT queries to prevent large result sets
+DEFAULT_LIMIT = 1000
 
 # Initialize FastMCP server
 mcp = FastMCP("database")
@@ -256,16 +264,16 @@ async def select_data(
     table_name: str,
     columns: str = "*",
     where_clause: Optional[str] = None,
-    limit: Optional[int] = None,
+    limit: int = DEFAULT_LIMIT,
     order_by: Optional[str] = None
 ) -> str:
     """Select data from a table.
-    
+
     Args:
         table_name: Name of the table
         columns: Column names to select (default: "*")
         where_clause: Optional WHERE clause (e.g., "age > 18")
-        limit: Optional limit on number of rows
+        limit: Number of rows to return (default: 1000)
         order_by: Optional ORDER BY clause (e.g., "name ASC")
     """
     adapter = get_adapter()
@@ -325,15 +333,122 @@ async def preview_table(table_name: str, limit: int = 10) -> str:
 # =============================================================================
 
 
+def _add_limit(query: str) -> str:
+    """Auto-add LIMIT to SELECT queries if not present."""
+    query = query.strip()
+    query_upper = query.upper()
+
+    # Only add limit to SELECT queries
+    if not query_upper.startswith("SELECT"):
+        return query
+
+    # Skip if already has LIMIT
+    if "LIMIT" in query_upper:
+        return query
+
+    # Add LIMIT
+    return f"{query} LIMIT {DEFAULT_LIMIT}"
+
+
 @mcp.tool()
 async def execute_query(query: str) -> str:
     """Execute a custom SQL query.
-    
+
     Args:
         query: SQL query to execute
     """
+    # Auto-add LIMIT to prevent large result sets
+    query = _add_limit(query)
+
     adapter = get_adapter()
     return await adapter.execute_query(query)
+
+
+@mcp.tool()
+async def execute_query_no_limit(query: str) -> str:
+    """Execute a SELECT query WITHOUT auto-LIMIT (for exports).
+
+    Args:
+        query: SQL SELECT query to execute (no limit will be added)
+    """
+    adapter = get_adapter()
+    return await adapter.execute_query(query)
+
+
+@mcp.tool()
+async def export_table_to_excel(
+    table_name: str,
+    columns: str = "*",
+    where_clause: str | None = None
+) -> dict:
+    """Export table data to Excel file. Returns dict with base64 content and filename.
+
+    Args:
+        table_name: Name of the table to export
+        columns: Column names to export (default: "*")
+        where_clause: Optional WHERE clause to filter data
+    """
+    import base64
+    import io
+    import json
+    import logging
+    import pandas as pd
+
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Build query
+        query = f"SELECT {columns} FROM {table_name}"
+        if where_clause:
+            query += f" WHERE {where_clause}"
+
+        logger.info(f"[export_table_to_excel] table={table_name}, query={query}")
+
+        # Execute query without limit
+        adapter = get_adapter()
+        result = await adapter.execute_query_no_limit(query)
+        logger.info(f"[export_table_to_excel] query result length: {len(result)}")
+
+        # Parse JSON result
+        try:
+            data = json.loads(result)
+            if not isinstance(data, list):
+                data = [data]
+        except json.JSONDecodeError:
+            import re
+            match = re.search(r'\[.*\]', result, re.DOTALL)
+            if match:
+                data = json.loads(match.group(0))
+            else:
+                logger.error(f"[export_table_to_excel] parse error: {result[:200]}")
+                return {"error": f"Could not parse query result: {result[:200]}"}
+
+        logger.info(f"[export_table_to_excel] parsed {len(data)} rows")
+
+        if not data:
+            return {"error": "No data found"}
+
+        # Create Excel
+        df = pd.DataFrame(data)
+        output = io.BytesIO()
+        df.to_excel(output, index=False)
+        output.seek(0)
+
+        # Encode to base64
+        b64 = base64.b64encode(output.read()).decode('utf-8')
+        filename = f"{table_name}.xlsx"
+
+        logger.info(f"[export_table_to_excel] success: {len(data)} rows, base64 length: {len(b64)}")
+
+        return {
+            "base64": b64,
+            "filename": filename,
+            "row_count": len(data)
+        }
+    except Exception as e:
+        logger.error(f"[export_table_to_excel] ERROR: {str(e)}")
+        return {"error": str(e)}
 
 
 @mcp.tool()
@@ -430,6 +545,138 @@ async def manage_trigger(
     """
     adapter = get_adapter()
     return await adapter.manage_trigger(action, trigger_name, table_name, trigger_def)
+
+
+# =============================================================================
+# Excel/CSV Import Tools
+# =============================================================================
+
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+
+
+@mcp.tool()
+async def import_excel_to_db(
+    file_path: str,
+    table_name: str,
+    column_mapping: Optional[str] = None,
+    if_exists: str = "append"
+) -> str:
+    """Import data from Excel file directly into database table.
+
+    Args:
+        file_path: Path to Excel file (.xlsx or .xls)
+        table_name: Target database table name
+        column_mapping: Optional mapping like "excel_col1:db_col1,excel_col2:db_col2"
+        if_exists: What to do if table exists - "append", "fail", "replace" (default: "append")
+    """
+    if not PANDAS_AVAILABLE:
+        return "Error: pandas is required. Please install: pip install pandas openpyxl"
+
+    from pathlib import Path
+
+    try:
+        file = Path(file_path)
+        if not file.exists():
+            return f"Error: File not found at '{file_path}'"
+
+        # Read Excel
+        df = pd.read_excel(file_path)
+
+        # Apply column mapping if provided
+        if column_mapping:
+            mappings = {}
+            for pair in column_mapping.split(","):
+                if ":" in pair:
+                    exc, dbc = pair.split(":")
+                    mappings[exc.strip()] = dbc.strip()
+            df = df.rename(columns=mappings)
+
+        columns = df.columns.tolist()
+        records = df.to_dict(orient="records")
+
+        # Get adapter and insert
+        adapter = get_adapter()
+
+        # Insert in batches
+        batch_size = 100
+        inserted = 0
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i+batch_size]
+            for record in batch:
+                try:
+                    await adapter.insert_data(table_name, record)
+                    inserted += 1
+                except Exception as e:
+                    return f"Error inserting row {i}: {str(e)}"
+
+        return f"Successfully imported {inserted} rows from '{file_path}' into table '{table_name}'. Columns: {columns}"
+    except Exception as e:
+        return f"Error importing Excel to database: {str(e)}"
+
+
+@mcp.tool()
+async def import_csv_to_db(
+    file_path: str,
+    table_name: str,
+    column_mapping: Optional[str] = None,
+    if_exists: str = "append",
+    delimiter: str = ","
+) -> str:
+    """Import data from CSV file directly into database table.
+
+    Args:
+        file_path: Path to CSV file
+        table_name: Target database table name
+        column_mapping: Optional mapping like "csv_col1:db_col1,csv_col2:db_col2"
+        if_exists: What to do if table exists - "append", "fail", "replace" (default: "append")
+        delimiter: CSV delimiter (default: ",")
+    """
+    try:
+        from pathlib import Path
+
+        file = Path(file_path)
+        if not file.exists():
+            return f"Error: File not found at '{file_path}'"
+
+        # Read CSV
+        df = pd.read_csv(file_path, delimiter=delimiter)
+
+        # Apply column mapping if provided
+        if column_mapping:
+            mappings = {}
+            for pair in column_mapping.split(","):
+                if ":" in pair:
+                    exc, dbc = pair.split(":")
+                    mappings[exc.strip()] = dbc.strip()
+            df = df.rename(columns=mappings)
+
+        columns = df.columns.tolist()
+        records = df.to_dict(orient="records")
+
+        # Get adapter and insert
+        adapter = get_adapter()
+
+        # Insert in batches
+        batch_size = 100
+        inserted = 0
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i+batch_size]
+            for record in batch:
+                try:
+                    await adapter.insert_data(table_name, record)
+                    inserted += 1
+                except Exception as e:
+                    return f"Error inserting row {i}: {str(e)}"
+
+        return f"Successfully imported {inserted} rows from '{file_path}' into table '{table_name}'. Columns: {columns}"
+    except ImportError:
+        return "Error: pandas is required. Please install: pip install pandas"
+    except Exception as e:
+        return f"Error importing CSV to database: {str(e)}"
 
 
 # =============================================================================

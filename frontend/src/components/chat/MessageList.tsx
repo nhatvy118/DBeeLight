@@ -1,9 +1,17 @@
 import ChatMessage from './ChatMessage';
 
+export type ExportData = {
+  base64?: string;
+  filename?: string;
+  rowCount?: number;
+  tableName?: string; // For backward compatibility
+};
+
 export type UiMessage = {
   text: string;
   isUser: boolean;
   sqlToExecute?: string | null;
+  exportToExcel?: ExportData | null;
 };
 
 type MessageListProps = {
@@ -11,9 +19,10 @@ type MessageListProps = {
   onRefreshResponse?: (aiIndex: number) => void;
   onExecuteSql?: (aiIndex: number) => void;
   onCancelSql?: (aiIndex: number) => void;
+  onExportExcel?: (aiIndex: number) => void;
 };
 
-export default function MessageList({ messages, onRefreshResponse, onExecuteSql, onCancelSql }: MessageListProps) {
+export default function MessageList({ messages, onRefreshResponse, onExecuteSql, onCancelSql, onExportExcel }: MessageListProps) {
   if (messages.length === 0) return null;
 
   return (
@@ -38,6 +47,23 @@ export default function MessageList({ messages, onRefreshResponse, onExecuteSql,
                     />
                   </svg>
                   <span>Refresh response</span>
+                </button>
+              )}
+              {msg.exportToExcel && onExportExcel && (
+                <button
+                  type="button"
+                  onClick={() => void onExportExcel(index)}
+                  className="flex items-center gap-1 text-blue-600 hover:text-blue-700 transition-colors"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                    />
+                  </svg>
+                  <span>Export Excel</span>
                 </button>
               )}
               {msg.sqlToExecute && onExecuteSql && (

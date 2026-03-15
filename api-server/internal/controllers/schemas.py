@@ -47,4 +47,19 @@ class ExecuteSqlRequest(BaseModel):
     sql: str
     session_id: Optional[str] = None
     project_id: Optional[str] = None
+    lang: Optional[str] = "en"  # Language for translation
+
+
+class ExportRequest(BaseModel):
+    table_name: str
+    columns: Optional[str] = "*"
+    where_clause: Optional[str] = None
+    session_id: Optional[str] = None
+    project_id: Optional[str] = None
+    format: Optional[str] = "csv"  # "csv" or "excel"
+
+
+class UploadExcelOk(BaseModel):
+    success: bool = True
+    file: dict[str, Any]
 

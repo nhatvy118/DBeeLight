@@ -19,7 +19,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from internal.controllers import auth_controller, chat_controller, health_controller, project_controller, sessions_controller, share_controller
+from internal.controllers import (
+    auth_controller,
+    chat_controller,
+    excel_controller,
+    health_controller,
+    project_controller,
+    sessions_controller,
+    share_controller,
+)
 from internal.db import close_db, init_db
 from internal.utils.redis_client import close_redis_client, init_redis_client
 
@@ -73,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(health_controller.router)
     app.include_router(auth_controller.router)
     app.include_router(chat_controller.router)
+    app.include_router(excel_controller.router)
     app.include_router(sessions_controller.router)
     app.include_router(project_controller.router)
     app.include_router(share_controller.router)

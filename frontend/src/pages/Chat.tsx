@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import MessageList, { type UiMessage } from '../components/chat/MessageList';
-import { getSession, sendMessage, getSessions, executeSql, type SessionInfo } from '../services/api';
+import MessageList, { type UiMessage, type ExportData } from '../components/chat/MessageList';
+import { getSession, sendMessage, getSessions, executeSql, exportData, uploadExcel, type SessionInfo } from '../services/api';
 import plusIcon from '../assets/icons/Plus.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
 import arrowUpCircleIcon from '../assets/icons/Arrow-up-circle.svg';
@@ -12,6 +12,15 @@ const MIN_TEXTAREA_HEIGHT = 60;
 
 const STORAGE_LAST_SESSION_ID = 'lastSessionId';
 const STORAGE_LAST_SESSION_PROJECT = 'lastSessionIdForProject';
+
+// Detect language from text (simple heuristic)
+function detectLanguage(text: string): string {
+  const vietnameseChars = /[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]/i;
+  if (vietnameseChars.test(text)) {
+    return 'vi';
+  }
+  return 'en';
+}
 
 function saveLastSession(sessionId: string | null, projectId: string | null) {
   if (sessionId) {
@@ -48,10 +57,17 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const [selectedProject, setSelectedProject] = useState<{ id: string; name: string } | null>(null);
   const [projectSessions, setProjectSessions] = useState<SessionInfo[]>([]);
   const [sessionPreviews, setSessionPreviews] = useState<Record<string, string>>({});
-  const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState<boolean>(false);
+  const [inputKey, setInputKey] = useState(0);
   const previousProjectIdRef = useRef<string | null>(null);
   const hasRestoredSessionRef = useRef(false);
-  const attachmentMenuRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [isUploadingExcel, setIsUploadingExcel] = useState(false);
+  const [attachedExcel, setAttachedExcel] = useState<{
+    originalName: string;
+    serverPath: string;
+    sizeBytes: number;
+  } | null>(null);
 
   // Load selected project from URL (propProjectId) - URL is source of truth
   useEffect(() => {
@@ -97,24 +113,61 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return last;
   };
 
-  // Close attachment menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (attachmentMenuRef.current && !attachmentMenuRef.current.contains(event.target as Node)) {
-        setIsAttachmentMenuOpen(false);
-      }
-    };
+  // Extract Excel export info (base64 or simple text sentence)
+  const extractExportData = (text: string): ExportData | null => {
+    // 1. Preferred: new format with base64 data from database_agent
+    const base64Match = text.match(/\[EXCEL_BASE64_START\]([\s\S]*?)\[EXCEL_BASE64_END\]/);
+    const filenameMatch = text.match(/\[FILENAME_START\]([\s\S]*?)\[FILENAME_END\]/);
+    const rowCountMatch = text.match(/\[ROW_COUNT_START\](\d+)\[ROW_COUNT_END\]/);
 
-    if (isAttachmentMenuOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
+    if (base64Match && filenameMatch) {
+      return {
+        base64: base64Match[1].trim(),
+        filename: filenameMatch[1].trim(),
+        rowCount: rowCountMatch ? parseInt(rowCountMatch[1], 10) : 0,
+      };
     }
+    return null;
+  };
 
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isAttachmentMenuOpen]);
+  const canSend = useMemo(() => {
+    const hasText = query.trim().length > 0;
+    const hasAttachment = attachedExcel != null;
+    return !isLoading && !isUploadingExcel && (hasText || hasAttachment);
+  }, [isLoading, isUploadingExcel, query, attachedExcel]);
 
-  const canSend = useMemo(() => !isLoading && query.trim().length > 0, [isLoading, query]);
+  const handleExcelFileSelected = async (file: File) => {
+    setIsUploadingExcel(true);
+    try {
+      const res = await uploadExcel(file, sessionId, selectedProject?.id || null);
+      if (!res.success) {
+        window.alert(res.error || 'Failed to upload Excel file');
+        return;
+      }
+      setAttachedExcel({
+        originalName: res.file.original_name,
+        serverPath: res.file.server_path,
+        sizeBytes: res.file.size_bytes,
+      });
+      if (query.trim().length === 0) {
+        setQuery(`Tóm tắt file Excel "${res.file.original_name}"`);
+        setTimeout(() => textareaRef.current?.focus(), 0);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to upload Excel file';
+      window.alert(message);
+    } finally {
+      setIsUploadingExcel(false);
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // allow re-selecting same file
+    e.target.value = '';
+    if (!file) return;
+    void handleExcelFileSelected(file);
+  };
 
   // Load session when sessionId from URL (propSessionId) is set. Must run when URL has
   // a session (e.g. /chat/87c3eb73) including on full reload, so we load whenever
@@ -134,6 +187,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               text: msg.content || '',
               isUser: msg.role === 'user',
               sqlToExecute: msg.role === 'assistant' ? extractLastMutationSqlBlock(msg.content || '') : null,
+              exportToExcel: msg.role === 'assistant' ? extractExportData(msg.content || '') : null,
             }));
           setMessages(convertedMessages);
           setSessionId(sid);
@@ -192,6 +246,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             text: res.response,
             isUser: false,
             sqlToExecute: extractLastMutationSqlBlock(res.response),
+            exportToExcel: extractExportData(res.response),
           },
         ]);
         
@@ -231,12 +286,30 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   };
 
   const handleSend = async () => {
-    const text = query.trim();
-    if (!text || isLoading) return;
+    if (isLoading || isUploadingExcel) return;
+    const hasText = query.trim().length > 0;
+    if (!hasText && !attachedExcel) return;
 
-    setMessages((prev) => [...prev, { text, isUser: true }]);
+    const displayText = hasText ? query.trim() : `Uploaded Excel: ${attachedExcel?.originalName ?? ''}`.trim();
+    let sendText = displayText;
+    if (attachedExcel) {
+      const prompt =
+        hasText && displayText
+          ? displayText
+          : `Hãy đọc và tóm tắt file Excel "${attachedExcel.originalName}".`;
+      sendText =
+        `${prompt}\n\n` +
+        `[UPLOADED_EXCEL_PATH_START]\n${attachedExcel.serverPath}\n[UPLOADED_EXCEL_PATH_END]\n` +
+        `[UPLOADED_EXCEL_NAME_START]\n${attachedExcel.originalName}\n[UPLOADED_EXCEL_NAME_END]\n`;
+    }
+
+    setMessages((prev) => [...prev, { text: displayText, isUser: true }]);
     setQuery('');
-    await doSend(text);
+    // Forcefully reset the textarea to avoid any IME/browser ghost text by
+    // both clearing state and remounting the textarea component.
+    setInputKey((k) => k + 1);
+    await doSend(sendText);
+    if (attachedExcel) setAttachedExcel(null);
   };
 
   const handleRefreshResponse = async (aiIndex: number) => {
@@ -255,6 +328,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             text: res.response,
             isUser: false,
             sqlToExecute: extractLastMutationSqlBlock(res.response),
+            exportToExcel: extractExportData(res.response),
           };
           return updated;
         });
@@ -273,9 +347,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const msg = messages[aiIndex];
     if (!msg || !msg.sqlToExecute || isLoading) return;
 
+    // Detect language from user's last message
+    const userMessages = messages.filter(m => m.isUser);
+    const lastUserMsg = userMessages[userMessages.length - 1];
+    const lang = lastUserMsg ? detectLanguage(lastUserMsg.text) : 'en';
+
     setIsLoading(true);
     try {
-      const res = await executeSql(msg.sqlToExecute, sessionId, selectedProject?.id || null);
+      const res = await executeSql(msg.sqlToExecute, sessionId, selectedProject?.id || null, lang);
       if (res.success) {
         setMessages((prev) => {
           const updated = [...prev];
@@ -290,6 +369,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               text: res.response,
               isUser: false,
               sqlToExecute: extractLastMutationSqlBlock(res.response),
+              exportToExcel: extractExportData(res.response),
             },
           ];
         });
@@ -301,6 +381,50 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to execute SQL';
+      setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleExportExcel = async (aiIndex: number) => {
+    const msg = messages[aiIndex];
+    if (!msg || !msg.exportToExcel || isLoading) return;
+
+    setIsLoading(true);
+    try {
+      const exportDataObj = msg.exportToExcel;
+
+      if (exportDataObj.base64) {
+        // New flow: download directly from base64
+        const byteCharacters = atob(exportDataObj.base64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = exportDataObj.filename || 'export.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        a.remove();
+      }
+
+      setMessages((prev) => {
+        const updated = [...prev];
+        const current = updated[aiIndex];
+        if (current) {
+          // Clear exportToExcel so button disappears after download
+          updated[aiIndex] = { ...current, exportToExcel: null };
+        }
+        return updated;
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to export';
       setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);
     } finally {
       setIsLoading(false);
@@ -396,6 +520,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               text: msg.content || '',
               isUser: msg.role === 'user',
               sqlToExecute: msg.role === 'assistant' ? extractLastMutationSqlBlock(msg.content || '') : null,
+              exportToExcel: msg.role === 'assistant' ? extractExportData(msg.content || '') : null,
             }));
           setMessages(convertedMessages);
           setSessionId(sid);
@@ -457,6 +582,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               onRefreshResponse={(idx) => void handleRefreshResponse(idx)}
               onExecuteSql={(idx) => void handleExecuteSql(idx)}
               onCancelSql={(idx) => void handleCancelSql(idx)}
+              onExportExcel={(idx) => void handleExportExcel(idx)}
             />
             <div ref={messagesEndRef} />
           </div>
@@ -473,90 +599,96 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             </div>
           )}
           <div className="relative bg-white border-2 border-gray-300 rounded-3xl px-4 shadow-lg">
-            <div className="flex items-center gap-3 min-h-[48px]">
-              <div className="relative flex-shrink-0" ref={attachmentMenuRef}>
-                <button
-                  type="button"
-                  onClick={() => setIsAttachmentMenuOpen(!isAttachmentMenuOpen)}
-                  className="text-gray-500 hover:text-gray-700 transition-colors"
-                  aria-label="Attach file"
-                >
-                  <img src={plusIcon} alt="Add" className="w-5 h-5" />
-                </button>
-                
-                {/* Attachment Menu Dropdown */}
-                {isAttachmentMenuOpen && (
-                  <div className="absolute bottom-full left-0 mb-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-2 z-50">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        // Trigger file input
-                        const input = document.createElement('input');
-                        input.type = 'file';
-                        input.multiple = false;
-                        input.accept = '*/*';
-                        input.onchange = (e) => {
-                          const file = (e.target as HTMLInputElement).files?.[0];
-                          if (file) {
-                            console.log('File selected:', file.name);
-                            // TODO: Handle file upload
-                            // You can add file upload logic here
-                            alert(`File selected: ${file.name}\n(File upload functionality to be implemented)`);
-                          }
-                          setIsAttachmentMenuOpen(false);
-                        };
-                        input.click();
-                        setIsAttachmentMenuOpen(false);
-                      }}
-                      className="w-full flex items-center gap-3 px-4 py-2.5 text-left text-gray-700 hover:bg-gray-50 transition-colors"
-                    >
-                      <img src={fileIcon} alt="File" className="w-5 h-5" />
-                      <span className="text-sm font-medium">Attach File</span>
-                    </button>
-                  </div>
-                )}
-              </div>
+            <div className="flex flex-col">
+              {(attachedExcel || isUploadingExcel) && (
+                <div className="flex items-center gap-2 pt-3 pb-1">
+                  {isUploadingExcel && (
+                    <span className="text-xs text-gray-500">Uploading…</span>
+                  )}
+                  {attachedExcel && (
+                    <>
+                      <span className="inline-flex items-center gap-2 text-xs bg-gray-100 text-gray-700 px-3 py-1 rounded-full">
+                        <img src={fileIcon} alt="" className="w-4 h-4" />
+                        <span className="max-w-[240px] truncate">{attachedExcel.originalName}</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setAttachedExcel(null)}
+                        className="text-xs text-gray-500 hover:text-gray-700"
+                      >
+                        Remove
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
 
-              <textarea
-                ref={textareaRef}
-                value={query}
-                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
-                  setQuery(e.target.value)
-                }
-                onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    void handleSend();
+              <div className="flex items-center gap-3 min-h-[48px]">
+                <div className="relative flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="text-gray-500 hover:text-gray-700 transition-colors"
+                    aria-label="Attach file"
+                  >
+                    <img src={plusIcon} alt="Add" className="w-5 h-5" />
+                  </button>
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    multiple={false}
+                    accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+                    onChange={handleFileInputChange}
+                  />
+                </div>
+
+                <textarea
+                  key={inputKey}
+                  ref={textareaRef}
+                  value={query}
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                    setQuery(e.target.value)
                   }
-                }}
-                placeholder={
-                  selectedProject
-                    ? `New chat in ${selectedProject.name}`
-                    : "Ask anything"
-                }
-                rows={1}
-                className="flex-1 resize-none outline-none text-lg"
-                style={{
-                  maxHeight: `${MAX_TEXTAREA_HEIGHT}px`,
-                  minHeight: "60px",
-                  paddingTop: "20px",
-                  paddingBottom: "20px",
-                }}
-              />
+                  onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleSend();
+                    }
+                  }}
+                  placeholder={
+                    selectedProject
+                      ? `New chat in ${selectedProject.name}`
+                      : "Ask anything"
+                  }
+                  rows={1}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="flex-1 resize-none outline-none text-lg"
+                  style={{
+                    maxHeight: `${MAX_TEXTAREA_HEIGHT}px`,
+                    minHeight: "60px",
+                    paddingTop: "20px",
+                    paddingBottom: "20px",
+                  }}
+                />
 
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <button type="button" onClick={(): void => {}} aria-label="Microphone">
-                  <img src={microphoneIcon} alt="Microphone" className="w-5 h-5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={(): void => { void handleSend(); }}
-                  disabled={!canSend}
-                  className="flex items-center justify-center w-10 h-10 rounded-full p-0 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
-                  aria-label="Send"
-                >
-                  <img src={arrowUpCircleIcon} alt="" className="w-20 h-20" />
-                </button>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button type="button" onClick={(): void => {}} aria-label="Microphone">
+                    <img src={microphoneIcon} alt="Microphone" className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(): void => { void handleSend(); }}
+                    disabled={!canSend}
+                    className="flex items-center justify-center w-10 h-10 rounded-full p-0 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+                    aria-label="Send"
+                  >
+                    <img src={arrowUpCircleIcon} alt="" className="w-20 h-20" />
+                  </button>
+                </div>
               </div>
             </div>
           </div>

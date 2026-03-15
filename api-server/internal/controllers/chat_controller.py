@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 
-from internal.controllers.schemas import ChatOk, ChatRequest, ExecuteSqlRequest
+from internal.controllers.schemas import ChatOk, ChatRequest, ExecuteSqlRequest, ExportRequest  # noqa: F401
 from internal.dependencies import get_chat_usecase, get_user_key
 from internal.usecases.chat_usecase import ChatUseCase
 
@@ -32,6 +33,7 @@ async def execute_sql(
     - `session_id`: optional, to keep history linked to the same conversation
     - `project_id`: optional, to auto-connect to the correct project database
     """
-    response_text, sid = await usecase.execute_sql(user_key, req.sql, req.session_id, req.project_id)
+    response_text, sid = await usecase.execute_sql(user_key, req.sql, req.session_id, req.project_id, req.lang)
     return ChatOk(response=response_text, session_id=sid)
+
 

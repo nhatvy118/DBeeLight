@@ -99,7 +99,7 @@ class ChatUseCase:
             logger.error(f"UseCase: Error processing query: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to process query: {str(e)}") from e
 
-    async def execute_sql(self, user_key: str, sql: str, session_id: str | None, project_id: str | None = None) -> tuple[str, str | None]:
+    async def execute_sql(self, user_key: str, sql: str, session_id: str | None, project_id: str | None = None, lang: str = "en") -> tuple[str, str | None]:
         """
         Execute a raw SQL statement that was previously previewed to the user.
         This reuses the same agent + project DB auto-connect + session logic as chat().
@@ -170,7 +170,7 @@ class ChatUseCase:
         logger.info(f"UseCase: Executing SQL (first 200 chars): {query[:200]}...")
         try:
             # Bypass LLM routing: call orchestrator helper to run SQL directly on DB MCP server
-            result_text = await agent.execute_sql(query)
+            result_text = await agent.execute_sql(query, lang=lang)
             session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
             current_session_id = session_info.get("session_id") if session_info else None
             logger.info(f"UseCase: SQL executed successfully, session_id={current_session_id}")

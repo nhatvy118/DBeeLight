@@ -8,5 +8,7 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "asyncpg>=0.29.0",
     "mcp[cli]>=1.22.0",
+    "pandas>=2.0.0",
+    "openpyxl>=3.0.0",
 ]
 

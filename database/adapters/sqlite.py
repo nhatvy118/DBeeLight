@@ -352,6 +352,12 @@ class SQLiteAdapter(DatabaseAdapter):
     # --- Query execution ---
 
     async def execute_query(self, query: str) -> str:
+        # Auto-add LIMIT for regular queries
+        query = self._add_limit(query)
+        return await self.execute_query_no_limit(query)
+
+    async def execute_query_no_limit(self, query: str) -> str:
+        """Execute query WITHOUT auto-LIMIT."""
         if not self._db_path:
             return "Database not connected."
         try:
@@ -364,13 +370,23 @@ class SQLiteAdapter(DatabaseAdapter):
                     if not rows:
                         return "Query executed successfully. No rows returned."
                     results = [dict(row) for row in rows]
-                    return f"Query returned {len(results)} row(s):\n{results}"
+                    import json
+                    return json.dumps(results)
                 else:
                     await conn.execute(query)
                     await conn.commit()
                     return "Query executed successfully."
         except Exception as e:
             return f"Error executing query: {str(e)}"
+
+    def _add_limit(self, query: str) -> str:
+        """Auto-add LIMIT to prevent large result sets."""
+        query_upper = query.strip().upper()
+        if not query_upper.startswith("SELECT"):
+            return query
+        if "LIMIT" in query_upper:
+            return query
+        return f"{query} LIMIT 1000"
 
     async def run_mutation(self, sql: str) -> str:
         sql_upper = sql.strip().upper()

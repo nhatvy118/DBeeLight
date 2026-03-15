@@ -200,6 +200,7 @@ class BaseAgent(ABC):
                             "role": "tool", "tool_call_id": tc.id, "name": tool_name, "content": err,
                         })
                         continue
+                    print(f"[{self.agent_id}] [{target_server}] Calling tool: {tool_name} {tool_args}")
                     if verbose:
                         print(f"[{self.agent_id}] [{target_server}] {tool_name} {tool_args}")
                     try:

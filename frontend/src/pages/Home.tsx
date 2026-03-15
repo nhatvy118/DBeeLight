@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import MessageList, { type UiMessage } from '../components/chat/MessageList';
-import { sendMessage } from '../services/api';
+import { sendMessage, uploadExcel } from '../services/api';
 import plusIcon from '../assets/icons/Plus.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
 import arrowUpCircleIcon from '../assets/icons/Arrow-up-circle.svg';
@@ -13,20 +13,65 @@ export default function Home() {
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [isUploadingExcel, setIsUploadingExcel] = useState(false);
+  const [attachedExcel, setAttachedExcel] = useState<{ originalName: string; serverPath: string } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const canSend = !isLoading && query.trim().length > 0;
+  const canSend = !isLoading && !isUploadingExcel && (query.trim().length > 0 || attachedExcel != null);
 
-  const sendText = async (textToSend: string) => {
-    const text = textToSend.trim();
-    if (!text || isLoading) return;
+  const handleExcelFileSelected = async (file: File) => {
+    setIsUploadingExcel(true);
+    try {
+      const res = await uploadExcel(file, sessionId, null);
+      if (!res.success) {
+        window.alert(res.error || 'Failed to upload Excel file');
+        return;
+      }
+      setAttachedExcel({ originalName: res.file.original_name, serverPath: res.file.server_path });
+      if (query.trim().length === 0) {
+        setQuery(`Tóm tắt file Excel "${res.file.original_name}"`);
+        setTimeout(() => textareaRef.current?.focus(), 0);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to upload Excel file';
+      window.alert(message);
+    } finally {
+      setIsUploadingExcel(false);
+    }
+  };
 
-    setMessages((prev) => [...prev, { text, isUser: true }]);
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    void handleExcelFileSelected(file);
+  };
+
+  const sendText = async () => {
+    if (isLoading || isUploadingExcel) return;
+    const hasText = query.trim().length > 0;
+    if (!hasText && !attachedExcel) return;
+
+    const displayText = hasText ? query.trim() : `Uploaded Excel: ${attachedExcel?.originalName ?? ''}`.trim();
+    let sendPayload = displayText;
+    if (attachedExcel) {
+      const prompt =
+        hasText && displayText
+          ? displayText
+          : `Hãy đọc và tóm tắt file Excel "${attachedExcel.originalName}".`;
+      sendPayload =
+        `${prompt}\n\n` +
+        `[UPLOADED_EXCEL_PATH_START]\n${attachedExcel.serverPath}\n[UPLOADED_EXCEL_PATH_END]\n` +
+        `[UPLOADED_EXCEL_NAME_START]\n${attachedExcel.originalName}\n[UPLOADED_EXCEL_NAME_END]\n`;
+    }
+
+    setMessages((prev) => [...prev, { text: displayText, isUser: true }]);
     setQuery('');
     setIsLoading(true);
     try {
-      const res = await sendMessage(text, sessionId, null);
+      const res = await sendMessage(sendPayload, sessionId, null);
       if (res.success) {
         setMessages((prev) => [...prev, { text: res.response, isUser: false }]);
         if (res.session_id) setSessionId(res.session_id);
@@ -43,10 +88,11 @@ export default function Home() {
       setIsLoading(false);
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
+    if (attachedExcel) setAttachedExcel(null);
   };
 
   const handleSend = () => {
-    void sendText(query);
+    void sendText();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -94,9 +140,22 @@ export default function Home() {
           {/* Khung input giống Chat: border-2 gray-300, rounded-3xl, shadow-lg, + / Ask anything / loa + mic */}
           <div className="relative bg-white border-2 border-gray-300 rounded-3xl px-4 shadow-lg">
             <div className="flex items-center gap-3 min-h-[48px]">
-              <button type="button" className="text-gray-500 hover:text-gray-700 flex-shrink-0">
+              <button
+                type="button"
+                className="text-gray-500 hover:text-gray-700 flex-shrink-0"
+                onClick={() => fileInputRef.current?.click()}
+                aria-label="Upload Excel"
+              >
                 <img src={plusIcon} alt="Add" className="w-5 h-5" />
               </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                multiple={false}
+                accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+                onChange={handleFileInputChange}
+              />
               <textarea
                 ref={textareaRef}
                 value={query}
