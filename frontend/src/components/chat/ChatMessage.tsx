@@ -9,6 +9,8 @@ type ChatMessageProps = {
   message: string;
   isUser: boolean;
   enableTyping?: boolean;
+  onTypingStateChange?: (isTyping: boolean) => void;
+  typingStopSignal?: number;
 };
 
 function extractCodeText(children: any): string {
@@ -50,13 +52,14 @@ function normalizeInlineCode(text: string): string {
     .join('');
 }
 
-export default function ChatMessage({ message, isUser, enableTyping = true }: ChatMessageProps) {
+export default function ChatMessage({ message, isUser, enableTyping = true, onTypingStateChange, typingStopSignal = 0 }: ChatMessageProps) {
   const [displayedText, setDisplayedText] = useState<string>('');
   const [isTyping, setIsTyping] = useState<boolean>(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentIndexRef = useRef<number>(0);
   const codeBlockIndexRef = useRef<number>(0);
+  const lastHandledStopSignalRef = useRef<number>(typingStopSignal);
 
   useEffect(() => {
     if (timeoutRef.current) {
@@ -97,6 +100,24 @@ export default function ChatMessage({ message, isUser, enableTyping = true }: Ch
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, [message, isUser, enableTyping]);
+
+  useEffect(() => {
+    if (!onTypingStateChange || isUser) return;
+    onTypingStateChange(isTyping);
+  }, [isTyping, isUser, onTypingStateChange]);
+
+  useEffect(() => {
+    if (isUser || !enableTyping || typingStopSignal === 0) return;
+    if (typingStopSignal === lastHandledStopSignalRef.current) return;
+    lastHandledStopSignalRef.current = typingStopSignal;
+
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    // Stop immediately at the current cursor position (keep partial text as-is)
+    setIsTyping(false);
+  }, [typingStopSignal, isUser, enableTyping]);
 
   // -------------------------
   // USER MESSAGE
@@ -142,10 +163,10 @@ export default function ChatMessage({ message, isUser, enableTyping = true }: Ch
               While typing -> render plain text only.
               When finished -> render markdown.
           */}
-          {isTyping ? (
+          {isTyping || displayedText !== message ? (
             <p className="text-sm text-gray-800 whitespace-pre-wrap break-words leading-relaxed">
               {displayedText}
-              <span className="inline-block w-2 h-4 bg-gray-800 ml-1 animate-pulse align-middle" />
+              {isTyping && <span className="inline-block w-2 h-4 bg-gray-800 ml-1 animate-pulse align-middle" />}
             </p>
           ) : (
             <ReactMarkdown

@@ -20,16 +20,33 @@ type MessageListProps = {
   onExecuteSql?: (aiIndex: number) => void;
   onCancelSql?: (aiIndex: number) => void;
   onExportExcel?: (aiIndex: number) => void;
+  onAssistantTypingChange?: (isTyping: boolean) => void;
+  typingStopSignal?: number;
 };
 
-export default function MessageList({ messages, onRefreshResponse, onExecuteSql, onCancelSql, onExportExcel }: MessageListProps) {
+export default function MessageList({
+  messages,
+  onRefreshResponse,
+  onExecuteSql,
+  onCancelSql,
+  onExportExcel,
+  onAssistantTypingChange,
+  typingStopSignal = 0,
+}: MessageListProps) {
   if (messages.length === 0) return null;
 
   return (
     <div className="space-y-1">
       {messages.map((msg, index) => (
         <div key={index} className={msg.isUser ? '' : 'w-full border-b border-gray-100 last:border-b-0'}>
-          <ChatMessage message={msg.text} isUser={msg.isUser} />
+          <ChatMessage
+            message={msg.text}
+            isUser={msg.isUser}
+            onTypingStateChange={
+              !msg.isUser && index === messages.length - 1 ? onAssistantTypingChange : undefined
+            }
+            typingStopSignal={!msg.isUser && index === messages.length - 1 ? typingStopSignal : 0}
+          />
           {!msg.isUser && (
             <div className="mt-2 mb-2 flex items-center gap-3 text-xs">
               {onRefreshResponse && (

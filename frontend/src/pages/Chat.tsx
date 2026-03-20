@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessageList, { type UiMessage, type ExportData } from '../components/chat/MessageList';
-import { getSession, sendMessage, getSessions, executeSql, exportData, uploadExcel, type SessionInfo } from '../services/api';
+import { getSession, sendMessage, getSessions, executeSql, uploadExcel, type SessionInfo } from '../services/api';
 import plusIcon from '../assets/icons/Plus.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
 import arrowUpCircleIcon from '../assets/icons/Arrow-up-circle.svg';
-import helpIcon from '../assets/icons/Help.svg';
+import stopCircleIcon from '../assets/icons/Stop_circle.svg';
 import fileIcon from '../assets/icons/File.svg';
 
 const MAX_TEXTAREA_HEIGHT = 200;
@@ -68,6 +68,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     serverPath: string;
     sizeBytes: number;
   } | null>(null);
+  const [isAssistantTyping, setIsAssistantTyping] = useState(false);
+  const [typingStopSignal, setTypingStopSignal] = useState(0);
+  const sendAbortControllerRef = useRef<AbortController | null>(null);
 
   // Load selected project from URL (propProjectId) - URL is source of truth
   useEffect(() => {
@@ -130,11 +133,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return null;
   };
 
+  const isStopVisible = isLoading || isAssistantTyping;
+
   const canSend = useMemo(() => {
     const hasText = query.trim().length > 0;
     const hasAttachment = attachedExcel != null;
-    return !isLoading && !isUploadingExcel && (hasText || hasAttachment);
-  }, [isLoading, isUploadingExcel, query, attachedExcel]);
+    return !isStopVisible && !isUploadingExcel && (hasText || hasAttachment);
+  }, [isStopVisible, isUploadingExcel, query, attachedExcel]);
 
   const handleExcelFileSelected = async (file: File) => {
     setIsUploadingExcel(true);
@@ -235,11 +240,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const doSend = async (text: string) => {
     setIsLoading(true);
+    setIsAssistantTyping(false);
+    const controller = new AbortController();
+    sendAbortControllerRef.current = controller;
     console.log('Sending message with sessionId:', sessionId);
     console.log('Selected project:', selectedProject);
     try {
-      const res = await sendMessage(text, sessionId, selectedProject?.id || null);
+      const res = await sendMessage(text, sessionId, selectedProject?.id || null, controller.signal);
       if (res.success) {
+        setIsAssistantTyping(true);
         setMessages((prev) => [
           ...prev,
           {
@@ -275,18 +284,36 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           }
         }
       } else {
+        setIsAssistantTyping(false);
         setMessages((prev) => [...prev, { text: `Error: ${res.error || 'Failed to get response'}`, isUser: false }]);
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return;
+      }
+      setIsAssistantTyping(false);
       const message = err instanceof Error ? err.message : 'Failed to connect to server';
       setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);
     } finally {
+      sendAbortControllerRef.current = null;
       setIsLoading(false);
     }
   };
 
+  const handleStopResponse = () => {
+    if (sendAbortControllerRef.current) {
+      sendAbortControllerRef.current.abort();
+      sendAbortControllerRef.current = null;
+    }
+    if (isAssistantTyping) {
+      setTypingStopSignal((prev) => prev + 1);
+    }
+    setIsLoading(false);
+    setIsAssistantTyping(false);
+  };
+
   const handleSend = async () => {
-    if (isLoading || isUploadingExcel) return;
+    if (isStopVisible || isUploadingExcel) return;
     const hasText = query.trim().length > 0;
     if (!hasText && !attachedExcel) return;
 
@@ -583,6 +610,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               onExecuteSql={(idx) => void handleExecuteSql(idx)}
               onCancelSql={(idx) => void handleCancelSql(idx)}
               onExportExcel={(idx) => void handleExportExcel(idx)}
+              onAssistantTypingChange={setIsAssistantTyping}
+              typingStopSignal={typingStopSignal}
             />
             <div ref={messagesEndRef} />
           </div>
@@ -654,6 +683,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                   onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
+                      if (isStopVisible) return;
                       void handleSend();
                     }
                   }}
@@ -681,12 +711,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                   </button>
                   <button
                     type="button"
-                    onClick={(): void => { void handleSend(); }}
-                    disabled={!canSend}
+                    onClick={(): void => { if (isStopVisible) { handleStopResponse(); return; } void handleSend(); }}
+                    disabled={!isStopVisible && !canSend}
                     className="flex items-center justify-center w-10 h-10 rounded-full p-0 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
-                    aria-label="Send"
+                    aria-label={isStopVisible ? "Stop" : "Send"}
                   >
-                    <img src={arrowUpCircleIcon} alt="" className="w-20 h-20" />
+                    <img src={isStopVisible ? stopCircleIcon : arrowUpCircleIcon} alt="" className="w-20 h-20" />
                   </button>
                 </div>
               </div>

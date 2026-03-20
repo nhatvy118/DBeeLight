@@ -32,12 +32,18 @@ function url(path: string) {
   return API_BASE_URL.startsWith('http') ? `${API_BASE_URL}${path}` : path;
 }
 
-export async function sendMessage(message: string, sessionId: string | null = null, projectId: string | null = null): Promise<ChatResponse> {
+export async function sendMessage(
+  message: string,
+  sessionId: string | null = null,
+  projectId: string | null = null,
+  signal?: AbortSignal
+): Promise<ChatResponse> {
   const response = await fetch(url('/api/chat'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, session_id: sessionId, project_id: projectId }),
+    signal,
   });
 
   const data = (await response.json()) as ChatResponse & { error?: string };
