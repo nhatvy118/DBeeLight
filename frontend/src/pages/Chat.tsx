@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessageList, { type UiMessage, type ExportData, type SchemaPreviewData } from '../components/chat/MessageList';
-import { getSession, sendMessage, getSessions, executeSql, uploadExcel, type SessionInfo, type ToolEvent } from '../services/api';
+import { getSession, sendMessage, getSessions, executeSql, uploadExcel, type SessionInfo, type ToolEvent, type GetSessionResponse } from '../services/api';
 import plusIcon from '../assets/icons/Plus.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
 import arrowUpCircleIcon from '../assets/icons/Arrow-up-circle.svg';
@@ -12,6 +12,7 @@ const MIN_TEXTAREA_HEIGHT = 60;
 
 const STORAGE_LAST_SESSION_ID = 'lastSessionId';
 const STORAGE_LAST_SESSION_PROJECT = 'lastSessionIdForProject';
+
 
 // Detect language from text (simple heuristic)
 function detectLanguage(text: string): string {
@@ -41,6 +42,7 @@ function getLastSession(projectId: string | null): string | null {
   return stored;
 }
 
+
 type ChatProps = {
   projectId?: string | null;
   sessionId?: string | null;
@@ -60,6 +62,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const [inputKey, setInputKey] = useState(0);
   const previousProjectIdRef = useRef<string | null>(null);
   const hasRestoredSessionRef = useRef(false);
+  const previousPropSessionIdRef = useRef<string | null | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [isUploadingExcel, setIsUploadingExcel] = useState(false);
@@ -97,6 +100,24 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const hashString = (input: string): string => {
+    let hash = 0;
+    for (let i = 0; i < input.length; i += 1) {
+      hash = ((hash << 5) - hash + input.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash).toString(36);
+  };
+
+  const buildSqlActionId = (
+    sid: string | null,
+    messageContent: string,
+    sqlText: string,
+    sqlOrdinal: number,
+  ): string => {
+    const base = `${sid ?? 'nosession'}|${sqlOrdinal}|${messageContent}|${sqlText}`;
+    return `sqlact_${hashString(base)}`;
+  };
 
   const extractLastMutationSqlBlock = (text: string): string | null => {
     const regex = /```sql([\s\S]*?)```/gi;
@@ -202,6 +223,26 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     };
   };
 
+  const getSqlActionStatesFromSessionResponse = (res: GetSessionResponse): Record<string, 'pending' | 'running' | 'executed' | 'cancelled'> => {
+    if (!res.success) return {};
+    const raw = (res.session_info as any)?.sql_action_states;
+    if (!raw || typeof raw !== 'object') return {};
+    const out: Record<string, 'pending' | 'running' | 'executed' | 'cancelled'> = {};
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      const value = String(v || '').toLowerCase();
+      if (value === 'pending' || value === 'running' || value === 'executed' || value === 'cancelled') {
+        out[String(k)] = value;
+      }
+    }
+    return out;
+  };
+
+  const extractSqlActionId = (text: string): string | undefined => {
+    const m = text.match(/\[SQL_ACTION_ID_START\]([\s\S]*?)\[SQL_ACTION_ID_END\]/);
+    const id = m?.[1]?.trim();
+    return id || undefined;
+  };
+
   const stripInternalPayloads = (text: string): string => {
     let cleaned = text
       .replace(/\n?\[CREATE_TABLE_SCHEMA_JSON_START\][\s\S]*?\[CREATE_TABLE_SCHEMA_JSON_END\]\n?/g, '\n')
@@ -234,6 +275,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
 
     cleaned = cleaned.replace(/^\[CREATE_TABLE_SCHEMA_PREVIEW\]\s*/i, '');
+    cleaned = cleaned.replace(/\n?\[SQL_ACTION_ID_START\][\s\S]*?\[SQL_ACTION_ID_END\]\n?/g, '\n');
 
     return cleaned.trim();
   };
@@ -306,18 +348,30 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         setIsLoading(true);
         const res = await getSession(sid);
         if (res.success && res.messages) {
+          const sqlActionStates = getSqlActionStatesFromSessionResponse(res);
+          let sqlOrdinal = 0;
           const convertedMessages: UiMessage[] = res.messages
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             .filter((msg: any) => msg.role === 'user' || msg.role === 'assistant')
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             .map((msg: any) => {
-              const cleanedText = stripInternalPayloads(msg.content || '');
-              const schemaPreview = msg.role === 'assistant' ? extractSchemaPreview(msg.content || '') : null;
+              const rawContent = msg.content || '';
+              const cleanedText = stripInternalPayloads(rawContent);
+              const schemaPreview =
+                msg.role === 'assistant'
+                  ? extractSchemaPreviewFromToolEvents((msg as any).tool_events) || extractSchemaPreview(rawContent)
+                  : null;
+              const sqlToExecute = msg.role === 'assistant' ? extractLastMutationSqlBlock(rawContent) : null;
+              const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
+              const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
+              const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
               return {
                 text: cleanedText,
                 isUser: msg.role === 'user',
-                sqlToExecute: msg.role === 'assistant' ? extractLastMutationSqlBlock(msg.content || '') : null,
-                exportToExcel: msg.role === 'assistant' ? extractExportData(msg.content || '') : null,
+                sqlToExecute,
+                sqlActionId,
+                sqlActionState: sqlToExecute ? (persistedSqlState ?? ('pending' as const)) : undefined,
+                exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
                 schemaPreview,
                 schemaLocked: msg.role === 'assistant' ? !!schemaPreview : undefined,
               };
@@ -336,9 +390,16 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       }
     };
 
+    const prevPropSessionId = previousPropSessionIdRef.current;
+    previousPropSessionIdRef.current = propSessionId;
+
     if (propSessionId) {
       void loadSession(propSessionId);
-    } else if (sessionId) {
+      return;
+    }
+
+    const sessionWasExplicitlyRemoved = prevPropSessionId != null;
+    if (sessionWasExplicitlyRemoved && sessionId) {
       // URL no longer has a session (e.g. navigated to /chat) — clear local state
       setMessages([]);
       setSessionId(null);
@@ -384,6 +445,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             text: stripInternalPayloads(res.response),
             isUser: false,
             sqlToExecute: extractLastMutationSqlBlock(res.response),
+            sqlActionId: extractSqlActionId(res.response),
+            sqlActionState: extractLastMutationSqlBlock(res.response) ? ('pending' as const) : undefined,
             exportToExcel: extractExportData(res.response),
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
             schemaLocked: false,
@@ -500,6 +563,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             text: stripInternalPayloads(res.response),
             isUser: false,
             sqlToExecute: extractLastMutationSqlBlock(res.response),
+            sqlActionId: extractSqlActionId(res.response),
+            sqlActionState: extractLastMutationSqlBlock(res.response) ? ('pending' as const) : undefined,
             exportToExcel: extractExportData(res.response),
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
           };
@@ -638,6 +703,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             text: stripInternalPayloads(res.response),
             isUser: false,
             sqlToExecute: extractLastMutationSqlBlock(res.response),
+            sqlActionId: extractSqlActionId(res.response),
+            sqlActionState: extractLastMutationSqlBlock(res.response) ? ('pending' as const) : undefined,
             exportToExcel: extractExportData(res.response),
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
           },
@@ -667,7 +734,17 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const handleExecuteSql = async (aiIndex: number) => {
     const msg = messages[aiIndex];
-    if (!msg || !msg.sqlToExecute || isLoading) return;
+    if (!msg || !msg.sqlToExecute || isLoading || msg.sqlActionState === 'running' || msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled') return;
+
+    // Lock SQL actions permanently after first click (single-run behavior)
+    setMessages((prev) => {
+      const updated = [...prev];
+      const current = updated[aiIndex];
+      if (current) {
+        updated[aiIndex] = { ...current, sqlActionState: 'executed' };
+      }
+      return updated;
+    });
 
     // Detect language from user's last message
     const userMessages = messages.filter(m => m.isUser);
@@ -676,14 +753,21 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     setIsLoading(true);
     try {
-      const res = await executeSql(msg.sqlToExecute, sessionId, selectedProject?.id || null, lang);
+      const fallbackActionId =
+        msg.sqlActionId || buildSqlActionId(
+          sessionId,
+          msg.text,
+          msg.sqlToExecute,
+          Math.max(0, messages.slice(0, aiIndex + 1).filter((m) => !!m.sqlToExecute).length - 1),
+        );
+      const res = await executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, lang, true, 'executed');
       if (res.success) {
         setMessages((prev) => {
           const updated = [...prev];
           const current = updated[aiIndex];
           if (current) {
-            // Clear sqlToExecute on the preview message so Execute SQL cannot be clicked again
-            updated[aiIndex] = { ...current, sqlToExecute: null };
+            // Keep SQL preview visible but disable actions after execution
+            updated[aiIndex] = { ...current, sqlActionState: 'executed' };
           }
           return [
             ...updated,
@@ -691,6 +775,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               text: stripInternalPayloads(res.response),
               isUser: false,
               sqlToExecute: extractLastMutationSqlBlock(res.response),
+              sqlActionId: extractSqlActionId(res.response),
               exportToExcel: extractExportData(res.response),
               schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
             },
@@ -772,9 +857,17 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     // Simply clear the sqlToExecute flag so the Execute button disappears.
     setMessages((prev) => {
       const updated = [...prev];
-      updated[aiIndex] = { ...msg, sqlToExecute: null };
+      updated[aiIndex] = { ...msg, sqlActionState: 'cancelled' };
       return updated;
     });
+    const fallbackActionId =
+      msg.sqlActionId || buildSqlActionId(
+        sessionId,
+        msg.text,
+        msg.sqlToExecute,
+        Math.max(0, messages.slice(0, aiIndex + 1).filter((m) => !!m.sqlToExecute).length - 1),
+      );
+    void executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, 'en', true, 'cancelled');
   };
 
   // When switching to a *different* project: save current session for the project we're leaving, then clear UI.
@@ -847,18 +940,30 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         setIsLoading(true);
         const res = await getSession(sid);
         if (res.success && res.messages) {
+          const sqlActionStates = getSqlActionStatesFromSessionResponse(res);
+          let sqlOrdinal = 0;
           const convertedMessages: UiMessage[] = res.messages
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             .filter((msg: any) => msg.role === 'user' || msg.role === 'assistant')
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             .map((msg: any) => {
-              const cleanedText = stripInternalPayloads(msg.content || '');
-              const schemaPreview = msg.role === 'assistant' ? extractSchemaPreview(msg.content || '') : null;
+              const rawContent = msg.content || '';
+              const cleanedText = stripInternalPayloads(rawContent);
+              const schemaPreview =
+                msg.role === 'assistant'
+                  ? extractSchemaPreviewFromToolEvents((msg as any).tool_events) || extractSchemaPreview(rawContent)
+                  : null;
+              const sqlToExecute = msg.role === 'assistant' ? extractLastMutationSqlBlock(rawContent) : null;
+              const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
+              const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
+              const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
               return {
                 text: cleanedText,
                 isUser: msg.role === 'user',
-                sqlToExecute: msg.role === 'assistant' ? extractLastMutationSqlBlock(msg.content || '') : null,
-                exportToExcel: msg.role === 'assistant' ? extractExportData(msg.content || '') : null,
+                sqlToExecute,
+                sqlActionId,
+                sqlActionState: sqlToExecute ? (persistedSqlState ?? ('pending' as const)) : undefined,
+                exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
                 schemaPreview,
                 schemaLocked: msg.role === 'assistant' ? !!schemaPreview : undefined,
               };

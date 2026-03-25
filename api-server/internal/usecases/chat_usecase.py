@@ -18,6 +18,23 @@ class ChatUseCase:
         self._agent_repo = agent_repo
         self._project_repo = project_repo
 
+    @staticmethod
+    def _extract_last_mutation_sql_block(text: str) -> str | None:
+        matches = re.findall(r"```sql([\s\S]*?)```", text or "", flags=re.IGNORECASE)
+        if not matches:
+            return None
+        last = (matches[-1] or "").strip()
+        if not last:
+            return None
+        first_token = (last.split()[:1] or [""])[0].upper()
+        if first_token in {"SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "WITH", "PRAGMA"}:
+            return None
+        return last
+
+    @staticmethod
+    def _attach_sql_action_id_marker(text: str, action_id: str) -> str:
+        return f"{text}\n\n[SQL_ACTION_ID_START]{action_id}[SQL_ACTION_ID_END]"
+
     async def chat(self, user_key: str, message: str, session_id: str | None, project_id: str | None = None) -> tuple[str, str | None, list[dict]]:
         logger.info(f"UseCase: Processing chat message, user_key={user_key}, session_id={session_id}, project_id={project_id}")
         query = (message or "").strip()
@@ -101,14 +118,34 @@ class ChatUseCase:
             if isinstance(result, dict):
                 response_text = result.get("response", "")
                 agent_id = result.get("agent_id", "unknown")
+                approach = result.get("approach")
                 session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
                 current_session_id = session_info.get("session_id") if session_info else result.get("session_id")
-                logger.info(f"UseCase: Query processed successfully, session_id={current_session_id}, agent={agent_id}, approach={result.get('approach')}")
+
+                sql_preview = self._extract_last_mutation_sql_block(response_text)
+                if sql_preview:
+                    action_id = str(uuid.uuid4())
+                    response_text = self._attach_sql_action_id_marker(response_text, action_id)
+
+                logger.info(f"UseCase: Query processed successfully, session_id={current_session_id}, agent={agent_id}, approach={approach}")
+
+                # Workflow path bypasses BaseAgent chat loop, so persist user + assistant here.
+                if approach == "workflow":
+                    await agent.session_manager.add_message("user", query)
+                    if (response_text or "").strip():
+                        await agent.session_manager.add_message("assistant", response_text)
             else:
                 # Legacy format (tuple)
                 response_text, agent_id = result
                 session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
                 current_session_id = session_info.get("session_id") if session_info else None
+
+            # Legacy tuple path may also contain SQL preview; attach action_id marker if missing.
+            if not re.search(r"\[SQL_ACTION_ID_START\].*?\[SQL_ACTION_ID_END\]", response_text or "", flags=re.DOTALL):
+                sql_preview = self._extract_last_mutation_sql_block(response_text)
+                if sql_preview:
+                    action_id = str(uuid.uuid4())
+                    response_text = self._attach_sql_action_id_marker(response_text, action_id)
 
             tool_events: list[dict] = []
             if isinstance(result, dict):
@@ -121,7 +158,17 @@ class ChatUseCase:
             logger.error(f"UseCase: Error processing query: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to process query: {str(e)}") from e
 
-    async def execute_sql(self, user_key: str, sql: str, session_id: str | None, project_id: str | None = None, lang: str = "en") -> tuple[str, str | None, list[dict]]:
+    async def execute_sql(
+        self,
+        user_key: str,
+        sql: str,
+        action_id: str | None,
+        session_id: str | None,
+        project_id: str | None = None,
+        lang: str = "en",
+        lock_only: bool = False,
+        lock_state: str | None = None,
+    ) -> tuple[str, str | None, list[dict]]:
         """
         Execute a raw SQL statement that was previously previewed to the user.
         This reuses the same agent + project DB auto-connect + session logic as chat().
@@ -189,6 +236,20 @@ class ChatUseCase:
             logger.info(f"UseCase: Creating new session for execute_sql, project_id={project_id_uuid}")
             await agent.session_manager.create_session(session_name=None, project_id=project_id_uuid)
 
+        session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
+        current_session_id = session_info.get("session_id") if session_info else None
+
+        # lock_only path: persist one-time lock in DB without executing SQL.
+        if lock_only and current_session_id:
+            if not (action_id or "").strip():
+                raise HTTPException(status_code=400, detail="action_id is required for SQL action locking")
+            state_to_store = (lock_state or "executed").strip().lower()
+            if state_to_store not in {"executed", "cancelled"}:
+                state_to_store = "executed"
+            await agent.session_manager.set_sql_action_state(current_session_id, action_id, state_to_store)
+            logger.info(f"UseCase: SQL action locked (lock_only={state_to_store}), session_id={current_session_id}, action_id={action_id}")
+            return "SQL action locked", current_session_id, []
+
         # Guardrail: CREATE TABLE can only be executed if session has
         # pending approval payload kind=create_table_after_schema_confirm
         # and SQL exactly matches the approved pending SQL.
@@ -242,6 +303,8 @@ class ChatUseCase:
                 result_text = str(result)
                 tool_events = []
 
+            if current_session_id and (action_id or "").strip():
+                await agent.session_manager.set_sql_action_state(current_session_id, action_id, "executed")
             logger.info(f"UseCase: SQL executed successfully, session_id={current_session_id}")
             return result_text, current_session_id, tool_events
         except Exception as e:

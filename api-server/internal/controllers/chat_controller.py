@@ -33,7 +33,16 @@ async def execute_sql(
     - `session_id`: optional, to keep history linked to the same conversation
     - `project_id`: optional, to auto-connect to the correct project database
     """
-    response_text, sid, tool_events = await usecase.execute_sql(user_key, req.sql, req.session_id, req.project_id, req.lang)
+    response_text, sid, tool_events = await usecase.execute_sql(
+        user_key,
+        req.sql,
+        req.action_id,
+        req.session_id,
+        req.project_id,
+        req.lang,
+        req.lock_only or False,
+        req.lock_state,
+    )
     return ChatOk(response=response_text, session_id=sid, tool_events=tool_events)
 
 

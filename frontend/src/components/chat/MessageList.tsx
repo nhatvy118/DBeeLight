@@ -46,6 +46,8 @@ export type UiMessage = {
   text: string;
   isUser: boolean;
   sqlToExecute?: string | null;
+  sqlActionId?: string;
+  sqlActionState?: 'pending' | 'running' | 'executed' | 'cancelled';
   exportToExcel?: ExportData | null;
   schemaPreview?: SchemaPreviewData | null;
   schemaLocked?: boolean;
@@ -263,7 +265,8 @@ export default function MessageList({
                     <button
                       type="button"
                       onClick={() => void onCancelSql(index)}
-                      className="flex items-center gap-1 text-gray-400 hover:text-gray-600 transition-colors"
+                      disabled={msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled' || msg.sqlActionState === 'running'}
+                      className="flex items-center gap-1 text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path
@@ -279,7 +282,8 @@ export default function MessageList({
                   <button
                     type="button"
                     onClick={() => void onExecuteSql(index)}
-                    className="flex items-center gap-1 text-emerald-600 hover:text-emerald-700 transition-colors"
+                    disabled={msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled' || msg.sqlActionState === 'running'}
+                    className="flex items-center gap-1 text-emerald-600 hover:text-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path
