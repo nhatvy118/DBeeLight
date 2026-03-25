@@ -59,6 +59,12 @@ class BaseAgentWorkflow(ABC):
         workflow.add_node("START", start_handler)
         workflow.add_node("ERROR", self._error_handler)
 
+        # Ensure DONE node exists because transitions may point to DONE.
+        async def done_handler(state):
+            return {**state, "current_stage": StageType.DONE.value}
+
+        workflow.add_node(StageType.DONE.value, done_handler)
+
         # Set entry point
         workflow.set_entry_point("START")
 
@@ -78,7 +84,7 @@ class BaseAgentWorkflow(ABC):
                             stage_name,
                             self._should_wait,
                             {
-                                "wait": stage_name,  # Stay at same stage
+                                "wait": END,  # Stop graph and return current waiting state to caller
                                 "proceed": next_stage,
                             }
                         )

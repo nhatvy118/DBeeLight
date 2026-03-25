@@ -322,6 +322,41 @@ class SessionManager:
             "project_id": data.get("project_id"),
         }
 
+    async def set_pending_approval(self, session_id: str, payload: Dict[str, Any]) -> None:
+        """Persist pending approval payload into session content."""
+        if not session_id:
+            return
+        data = await self._get_session(session_id)
+        if not data:
+            return
+        data["pending_approval"] = payload
+        data["updated_at"] = datetime.now().isoformat()
+        session_name = data.pop("session_name", None)
+        await self._save_session(session_id, data, session_name=session_name)
+
+    async def get_pending_approval(self, session_id: str) -> Dict[str, Any] | None:
+        """Read pending approval payload from session content."""
+        if not session_id:
+            return None
+        data = await self._get_session(session_id)
+        if not data:
+            return None
+        pending = data.get("pending_approval")
+        return pending if isinstance(pending, dict) else None
+
+    async def clear_pending_approval(self, session_id: str) -> None:
+        """Clear pending approval payload from session content."""
+        if not session_id:
+            return
+        data = await self._get_session(session_id)
+        if not data:
+            return
+        if "pending_approval" in data:
+            data.pop("pending_approval", None)
+            data["updated_at"] = datetime.now().isoformat()
+            session_name = data.pop("session_name", None)
+            await self._save_session(session_id, data, session_name=session_name)
+
     async def _get_session(self, session_id: str) -> Dict[str, Any] | None:
         if self._pool is None:
             return self._memory.get(session_id)

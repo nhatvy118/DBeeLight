@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Optional
 
@@ -17,7 +18,7 @@ class ChatUseCase:
         self._agent_repo = agent_repo
         self._project_repo = project_repo
 
-    async def chat(self, user_key: str, message: str, session_id: str | None, project_id: str | None = None) -> tuple[str, str | None]:
+    async def chat(self, user_key: str, message: str, session_id: str | None, project_id: str | None = None) -> tuple[str, str | None, list[dict]]:
         logger.info(f"UseCase: Processing chat message, user_key={user_key}, session_id={session_id}, project_id={project_id}")
         query = (message or "").strip()
         if not query:
@@ -90,7 +91,11 @@ class ChatUseCase:
 
         logger.info(f"UseCase: Processing query: {query[:100]}...")
         try:
-            result = await agent.process_query(query, verbose=False)
+            # IMPORTANT: pass real chat session_id into orchestrator so pending approval state
+            # (e.g. SQL execute flow) is stored/retrieved under the same key.
+            session_info_before = await agent.session_manager.get_session_info() if agent.session_manager else None
+            active_session_id = session_info_before.get("session_id") if session_info_before else None
+            result = await agent.process_query(query, session_id=active_session_id, verbose=False)
 
             # HybridOrchestrator returns dict with response, agent_id, session_id, approach, intent
             if isinstance(result, dict):
@@ -105,12 +110,18 @@ class ChatUseCase:
                 session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
                 current_session_id = session_info.get("session_id") if session_info else None
 
-            return response_text, current_session_id
+            tool_events: list[dict] = []
+            if isinstance(result, dict):
+                tool_events = result.get("tool_events") or []
+                if not isinstance(tool_events, list):
+                    tool_events = []
+
+            return response_text, current_session_id, tool_events
         except Exception as e:
             logger.error(f"UseCase: Error processing query: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to process query: {str(e)}") from e
 
-    async def execute_sql(self, user_key: str, sql: str, session_id: str | None, project_id: str | None = None, lang: str = "en") -> tuple[str, str | None]:
+    async def execute_sql(self, user_key: str, sql: str, session_id: str | None, project_id: str | None = None, lang: str = "en") -> tuple[str, str | None, list[dict]]:
         """
         Execute a raw SQL statement that was previously previewed to the user.
         This reuses the same agent + project DB auto-connect + session logic as chat().
@@ -178,21 +189,61 @@ class ChatUseCase:
             logger.info(f"UseCase: Creating new session for execute_sql, project_id={project_id_uuid}")
             await agent.session_manager.create_session(session_name=None, project_id=project_id_uuid)
 
+        # Guardrail: CREATE TABLE can only be executed if session has
+        # pending approval payload kind=create_table_after_schema_confirm
+        # and SQL exactly matches the approved pending SQL.
+        is_create_table = bool(re.match(r"^\s*CREATE\s+TABLE\b", query, flags=re.IGNORECASE))
+        if is_create_table:
+            session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
+            current_session_id = session_info.get("session_id") if session_info else None
+            pending = await agent.session_manager.get_pending_approval(current_session_id) if current_session_id else None
+            if not pending:
+                raise HTTPException(
+                    status_code=400,
+                    detail="CREATE TABLE is blocked: no pending schema approval found. Please confirm schema first.",
+                )
+
+            pending_kind = str(pending.get("kind") or "")
+            pending_sql = str(pending.get("sql") or "").strip()
+            normalized_query = query.rstrip(";").strip()
+            normalized_pending_sql = pending_sql.rstrip(";").strip()
+
+            if pending_kind != "create_table_after_schema_confirm":
+                raise HTTPException(
+                    status_code=400,
+                    detail="CREATE TABLE is blocked: pending approval kind is invalid for table creation.",
+                )
+
+            if normalized_query != normalized_pending_sql:
+                raise HTTPException(
+                    status_code=400,
+                    detail="CREATE TABLE is blocked: SQL does not match the approved schema preview.",
+                )
+
         logger.info(f"UseCase: Executing SQL (first 200 chars): {query[:200]}...")
         try:
             # HybridOrchestrator may have approve_and_execute method
             if hasattr(agent, 'approve_and_execute'):
-                # Use the new approval flow
                 session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
                 current_session_id = session_info.get("session_id") if session_info else None
-                result_text = await agent.approve_and_execute(session_id=current_session_id, approved=True)
+                result = await agent.approve_and_execute(session_id=current_session_id, approved=True)
             else:
                 # Legacy: call execute_sql directly
-                result_text = await agent.execute_sql(query, lang=lang)
+                result = await agent.execute_sql(query, lang=lang)
                 session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
                 current_session_id = session_info.get("session_id") if session_info else None
+
+            if isinstance(result, dict):
+                result_text = str(result.get("response", ""))
+                tool_events = result.get("tool_events") or []
+                if not isinstance(tool_events, list):
+                    tool_events = []
+            else:
+                result_text = str(result)
+                tool_events = []
+
             logger.info(f"UseCase: SQL executed successfully, session_id={current_session_id}")
-            return result_text, current_session_id
+            return result_text, current_session_id, tool_events
         except Exception as e:
             logger.error(f"UseCase: Error executing SQL: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to execute SQL: {str(e)}") from e

@@ -32,6 +32,13 @@ mcp = FastMCP("database")
 # Current database adapter instance (can be PostgreSQL or SQLite)
 _adapter: Optional[DatabaseAdapter] = None
 
+# Store the latest reviewed CREATE TABLE proposal.
+# create_table() will only execute when it matches this reviewed proposal
+# and user_confirmed=True is explicitly provided.
+_pending_create_table_review: Optional[dict[str, Any]] = None
+
+# Allowed SQL types for interactive CREATE TABLE flow (must match UI dropdown options).
+
 
 def get_adapter() -> DatabaseAdapter:
     """Get the current database adapter, raising error if not connected."""
@@ -41,6 +48,60 @@ def get_adapter() -> DatabaseAdapter:
             "'connect_sqlite' (SQLite) tool first."
         )
     return _adapter
+
+
+def _split_column_defs(columns: str) -> list[str]:
+    """Split SQL column definitions by top-level commas.
+
+    Example: "a VARCHAR(10), b DECIMAL(10,2), c TEXT" ->
+    ["a VARCHAR(10)", "b DECIMAL(10,2)", "c TEXT"]
+    """
+    items: list[str] = []
+    current: list[str] = []
+    depth = 0
+
+    for ch in columns:
+        if ch == "(":
+            depth += 1
+        elif ch == ")" and depth > 0:
+            depth -= 1
+
+        if ch == "," and depth == 0:
+            part = "".join(current).strip()
+            if part:
+                items.append(part)
+            current = []
+            continue
+
+        current.append(ch)
+
+    last = "".join(current).strip()
+    if last:
+        items.append(last)
+
+    return items
+
+
+def _to_variable_type_rows(columns: str) -> list[tuple[str, str]]:
+    """Parse column definition string into (variable, type) rows."""
+    rows: list[tuple[str, str]] = []
+    constraints = {"primary", "foreign", "unique", "check", "constraint"}
+
+    for part in _split_column_defs(columns):
+        tokens = part.split()
+        if len(tokens) < 2:
+            continue
+
+        first = tokens[0].strip('"`').lower()
+        if first in constraints:
+            continue
+
+        variable = tokens[0].strip('"`')
+        dtype = tokens[1]
+        rows.append((variable, dtype))
+
+    return rows
+
 
 
 # =============================================================================
@@ -170,6 +231,66 @@ async def get_table_stats(table_name: str) -> str:
     return await adapter.get_table_stats(table_name)
 
 
+@mcp.tool()
+async def show_create_table_schema(
+    table_name: str,
+    columns: str,
+    primary_key: Optional[str] = None
+) -> str:
+    """Preview the CREATE TABLE schema and save it for user review before execution.
+
+    Args:
+        table_name: Name of the table to create
+        columns: Column definitions in SQL format
+        primary_key: Optional primary key column name (if not specified in columns)
+    """
+    global _pending_create_table_review
+
+    get_adapter()
+
+    rows = _to_variable_type_rows(columns)
+
+    _pending_create_table_review = {
+        "table_name": table_name,
+        "columns": columns,
+        "primary_key": primary_key,
+    }
+
+    if not rows:
+        return (
+            "[CREATE_TABLE_SCHEMA_PREVIEW]\n"
+            f"Proposed table: `{table_name}`\n"
+            "Không parse được danh sách cột từ input `columns`. "
+            "Vui lòng nhập theo format: `col_name TYPE, col2 TYPE, ...`"
+        )
+
+    table_md = ["| Variable | Type |", "|---|---|"]
+    for variable, dtype in rows:
+        table_md.append(f"| `{variable}` | `{dtype}` |")
+
+    pk_text = primary_key if primary_key else "(none)"
+
+    import json
+    payload = {
+        "table_name": table_name,
+        "primary_key": primary_key,
+        "columns": [{"variable": variable, "type": dtype} for variable, dtype in rows],
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False)
+
+    return (
+        "[CREATE_TABLE_SCHEMA_PREVIEW]\n"
+        f"Proposed table: `{table_name}`\n"
+        f"Primary key: `{pk_text}`\n\n"
+        "Hãy kiểm tra schema theo bảng sau:\n\n"
+        + "\n".join(table_md)
+        + "\n\nXác nhận tất cả type đúng rồi mới gọi `create_table` với `user_confirmed=True`.\n\n"
+        + "[CREATE_TABLE_SCHEMA_JSON_START]\n"
+        + payload_json
+        + "\n[CREATE_TABLE_SCHEMA_JSON_END]"
+    )
+
+
 # =============================================================================
 # DDL Operations (Create, Alter Tables)
 # =============================================================================
@@ -179,17 +300,51 @@ async def get_table_stats(table_name: str) -> str:
 async def create_table(
     table_name: str,
     columns: str,
-    primary_key: Optional[str] = None
+    primary_key: Optional[str] = None,
+    user_confirmed: bool = False
 ) -> str:
-    """Create a new table in the database.
+    """Create a new table in the database after schema review confirmation.
     
     Args:
         table_name: Name of the table to create
         columns: Column definitions in SQL format (e.g., "id INTEGER PRIMARY KEY, name TEXT, email TEXT")
         primary_key: Optional primary key column name (if not specified in columns)
+        user_confirmed: Must be True only after user has validated the schema preview
     """
+    global _pending_create_table_review
+
+    if not user_confirmed:
+        return (
+            "Blocked: create_table requires explicit confirmation. "
+            "Please call `show_create_table_schema` first, let user validate all column types, "
+            "then call `create_table` with `user_confirmed=True`."
+        )
+
+    if not _pending_create_table_review:
+        return (
+            "Blocked: no reviewed schema found. "
+            "Call `show_create_table_schema` first and get user confirmation before creating table."
+        )
+
+    expected = _pending_create_table_review
+    if (
+        expected.get("table_name") != table_name
+        or expected.get("columns") != columns
+        or expected.get("primary_key") != primary_key
+    ):
+        return (
+            "Blocked: schema mismatch with the reviewed proposal. "
+            "Please run `show_create_table_schema` again with the exact schema to be created, "
+            "then ask for confirmation."
+        )
+
     adapter = get_adapter()
-    return await adapter.create_table(table_name, columns, primary_key)
+    result = await adapter.create_table(table_name, columns, primary_key)
+
+    if "Error" not in result and "Failed" not in result:
+        _pending_create_table_review = None
+
+    return result
 
 
 @mcp.tool()

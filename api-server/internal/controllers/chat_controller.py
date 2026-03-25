@@ -16,8 +16,8 @@ async def chat(
     user_key: str = Depends(get_user_key),
     usecase: ChatUseCase = Depends(get_chat_usecase),
 ) -> ChatOk:
-    response_text, sid = await usecase.chat(user_key, req.message, req.session_id, req.project_id)
-    return ChatOk(response=response_text, session_id=sid)
+    response_text, sid, tool_events = await usecase.chat(user_key, req.message, req.session_id, req.project_id)
+    return ChatOk(response=response_text, session_id=sid, tool_events=tool_events)
 
 
 @router.post("/api/sql/execute", response_model=ChatOk)
@@ -33,7 +33,7 @@ async def execute_sql(
     - `session_id`: optional, to keep history linked to the same conversation
     - `project_id`: optional, to auto-connect to the correct project database
     """
-    response_text, sid = await usecase.execute_sql(user_key, req.sql, req.session_id, req.project_id, req.lang)
-    return ChatOk(response=response_text, session_id=sid)
+    response_text, sid, tool_events = await usecase.execute_sql(user_key, req.sql, req.session_id, req.project_id, req.lang)
+    return ChatOk(response=response_text, session_id=sid, tool_events=tool_events)
 
 

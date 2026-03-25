@@ -2,8 +2,14 @@
 // You can override with VITE_API_URL if you don't want to use the proxy.
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
+export type ToolEvent = {
+  tool: string;
+  type: string;
+  payload?: Record<string, unknown>;
+};
+
 export type ChatResponse =
-  | { success: true; response: string; session_id?: string | null }
+  | { success: true; response: string; session_id?: string | null; tool_events?: ToolEvent[] }
   | { success: false; error: string };
 
 export type SessionInfo = {

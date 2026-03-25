@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
@@ -20,6 +20,7 @@ class ChatOk(BaseModel):
     success: bool = True
     response: str
     session_id: Optional[str] = None
+    tool_events: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ErrorResp(BaseModel):

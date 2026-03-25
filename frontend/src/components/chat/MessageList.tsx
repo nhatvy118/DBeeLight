@@ -1,5 +1,24 @@
 import ChatMessage from './ChatMessage';
 
+const SQL_TYPE_OPTIONS = [
+  'INTEGER',
+  'BIGINT',
+  'SMALLINT',
+  'SERIAL',
+  'TEXT',
+  'VARCHAR(50)',
+  'VARCHAR(100)',
+  'VARCHAR(255)',
+  'BOOLEAN',
+  'DATE',
+  'TIMESTAMP',
+  'DECIMAL(10,2)',
+  'FLOAT',
+  'DOUBLE',
+  'JSON',
+  'JSONB',
+];
+
 export type ExportData = {
   base64?: string;
   filename?: string;
@@ -7,11 +26,29 @@ export type ExportData = {
   tableName?: string; // For backward compatibility
 };
 
+export type SchemaPreviewColumn = {
+  variable: string;
+  type: string;
+  notNull?: boolean;
+  unique?: boolean;
+  primaryKey?: boolean;
+  defaultValue?: string;
+  showOptions?: boolean;
+};
+
+export type SchemaPreviewData = {
+  tableName: string;
+  primaryKey?: string | null;
+  columns: SchemaPreviewColumn[];
+};
+
 export type UiMessage = {
   text: string;
   isUser: boolean;
   sqlToExecute?: string | null;
   exportToExcel?: ExportData | null;
+  schemaPreview?: SchemaPreviewData | null;
+  schemaLocked?: boolean;
 };
 
 type MessageListProps = {
@@ -20,6 +57,15 @@ type MessageListProps = {
   onExecuteSql?: (aiIndex: number) => void;
   onCancelSql?: (aiIndex: number) => void;
   onExportExcel?: (aiIndex: number) => void;
+  onSchemaTypeChange?: (aiIndex: number, variable: string, nextType: string) => void;
+  onToggleSchemaOptions?: (aiIndex: number, variable: string) => void;
+  onSchemaOptionChange?: (
+    aiIndex: number,
+    variable: string,
+    option: 'notNull' | 'unique' | 'primaryKey' | 'defaultValue',
+    value: boolean | string
+  ) => void;
+  onConfirmSchema?: (aiIndex: number) => void;
   onAssistantTypingChange?: (isTyping: boolean) => void;
   typingStopSignal?: number;
 };
@@ -30,6 +76,10 @@ export default function MessageList({
   onExecuteSql,
   onCancelSql,
   onExportExcel,
+  onSchemaTypeChange,
+  onToggleSchemaOptions,
+  onSchemaOptionChange,
+  onConfirmSchema,
   onAssistantTypingChange,
   typingStopSignal = 0,
 }: MessageListProps) {
@@ -47,6 +97,130 @@ export default function MessageList({
             }
             typingStopSignal={!msg.isUser && index === messages.length - 1 ? typingStopSignal : 0}
           />
+          {!msg.isUser && msg.schemaPreview && (
+            <div className="mt-3 mb-2 rounded-xl border border-gray-200 overflow-hidden">
+              <div className="px-3 py-2 bg-gray-50 text-xs font-medium text-gray-700">
+                Schema review: `{msg.schemaPreview.tableName}`
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-white">
+                    <tr>
+                      <th className="text-left px-3 py-2 border-b border-gray-200">Variable</th>
+                      <th className="text-left px-3 py-2 border-b border-gray-200">Type</th>
+                    </tr>
+                  </thead>
+                  {msg.schemaPreview.columns.map((col) => (
+                    <tbody key={col.variable}>
+                        <tr className="odd:bg-white even:bg-gray-50/40">
+                          <td className="px-3 py-2 border-b border-gray-100 font-mono text-gray-800">{col.variable}</td>
+                          <td className="px-3 py-2 border-b border-gray-100">
+                            <div className="flex items-center gap-2">
+                              <div className="w-full space-y-1">
+                                <select
+                                  className="w-full rounded-md border border-gray-300 px-2 py-1 bg-white disabled:bg-gray-100 disabled:text-gray-500"
+                                  value={SQL_TYPE_OPTIONS.includes(col.type) ? col.type : '__custom__'}
+                                  disabled={!!msg.schemaLocked}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    if (v !== '__custom__') {
+                                      onSchemaTypeChange?.(index, col.variable, v);
+                                    } else {
+                                      onSchemaTypeChange?.(index, col.variable, 'CUSTOM_TYPE');
+                                    }
+                                  }}
+                                >
+                                  {SQL_TYPE_OPTIONS.map((t) => (
+                                    <option key={t} value={t}>{t}</option>
+                                  ))}
+                                  <option value="__custom__">Custom type...</option>
+                                </select>
+                                {!SQL_TYPE_OPTIONS.includes(col.type) && (
+                                  <input
+                                    type="text"
+                                    className="w-full rounded-md border border-gray-300 px-2 py-1 bg-white disabled:bg-gray-100 disabled:text-gray-500"
+                                    value={col.type}
+                                    disabled={!!msg.schemaLocked}
+                                    onChange={(e) => onSchemaTypeChange?.(index, col.variable, e.target.value)}
+                                    placeholder="Nhập type tùy chỉnh"
+                                  />
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                disabled={!!msg.schemaLocked}
+                                onClick={() => onToggleSchemaOptions?.(index, col.variable)}
+                                className="w-7 h-7 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                title="More options"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                        {col.showOptions && (
+                          <tr>
+                            <td colSpan={2} className="px-3 py-2 border-b border-gray-100 bg-gray-50/50">
+                              <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
+                                <label className="flex items-center gap-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!col.notNull}
+                                    disabled={!!msg.schemaLocked}
+                                    onChange={(e) => onSchemaOptionChange?.(index, col.variable, 'notNull', e.target.checked)}
+                                  />
+                                  NOT NULL
+                                </label>
+                                <label className="flex items-center gap-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!col.unique}
+                                    disabled={!!msg.schemaLocked}
+                                    onChange={(e) => onSchemaOptionChange?.(index, col.variable, 'unique', e.target.checked)}
+                                  />
+                                  UNIQUE
+                                </label>
+                                <label className="flex items-center gap-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!col.primaryKey}
+                                    disabled={!!msg.schemaLocked}
+                                    onChange={(e) => onSchemaOptionChange?.(index, col.variable, 'primaryKey', e.target.checked)}
+                                  />
+                                  PRIMARY KEY
+                                </label>
+                                <label className="flex items-center gap-2">
+                                  <span>DEFAULT</span>
+                                  <input
+                                    type="text"
+                                    value={col.defaultValue || ''}
+                                    disabled={!!msg.schemaLocked}
+                                    onChange={(e) => onSchemaOptionChange?.(index, col.variable, 'defaultValue', e.target.value)}
+                                    className="w-full rounded-md border border-gray-300 px-2 py-1 bg-white disabled:bg-gray-100"
+                                    placeholder="value"
+                                  />
+                                </label>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                    </tbody>
+                  ))}
+                </table>
+              </div>
+              <div className="px-3 py-2 bg-white flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => onConfirmSchema?.(index)}
+                  disabled={!!msg.schemaLocked}
+                  className="text-xs px-3 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                  {msg.schemaLocked ? 'Schema confirmed' : 'Confirm schema'}
+                </button>
+              </div>
+            </div>
+          )}
+
           {!msg.isUser && (
             <div className="mt-2 mb-2 flex items-center gap-3 text-xs">
               {onRefreshResponse && (

@@ -2,7 +2,7 @@
 
 import logging
 import json
-from typing import Dict, Any
+from typing import Dict
 from openai import OpenAI
 
 from mcp_agent.graph.base_workflow import BaseAgentWorkflow
@@ -43,7 +43,80 @@ class DatabaseAgentWorkflow(BaseAgentWorkflow):
             StageType.SQL_EXECUTION.value: self.sql_execution,
         }
 
-    async def intent_parse(self, state: AgentState, agent) -> AgentState:
+    async def _call_tool(self, agent, tool_name: str, args: dict) -> str:
+        """Call MCP tool directly through agent sessions (no internal prompt)."""
+        if not agent:
+            raise RuntimeError("No agent available")
+
+        for _server_name, session in agent.sessions.items():
+            try:
+                result = await session.call_tool(tool_name, args)
+                content = result.content
+                if hasattr(content, "text"):
+                    return str(content.text)
+                if isinstance(content, list) and content:
+                    first = content[0]
+                    if hasattr(first, "text"):
+                        return str(first.text)
+                return str(content)
+            except Exception:
+                continue
+
+        raise RuntimeError(f"Tool '{tool_name}' not found in connected sessions")
+
+    async def _safe_list_tables_and_describe(self, agent, tables: list[str]) -> str:
+        """Run list_tables + describe_table directly for discovery/logging."""
+        logs: list[str] = []
+        try:
+            tables_result = await self._call_tool(agent, "list_tables", {})
+            logs.append(f"list_tables: {tables_result}")
+        except Exception as e:
+            logs.append(f"list_tables error: {e}")
+
+        for t in tables:
+            try:
+                d = await self._call_tool(agent, "describe_table", {"table_name": t})
+                logs.append(f"describe_table({t}): {d}")
+            except Exception as e:
+                logs.append(f"describe_table({t}) error: {e}")
+
+        return "\n".join(logs)
+
+    async def _extract_create_table_args(self, user_message: str) -> dict:
+        """Extract create-table tool args from user request as JSON."""
+        resp = self.llm.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract arguments for show_create_table_schema tool from user request. "
+                        "Return strict JSON with keys: table_name (string), columns (string), primary_key (string|null). "
+                        "columns must be SQL column list like: 'id SERIAL, name VARCHAR(100), dob DATE'."
+                    ),
+                },
+                {"role": "user", "content": user_message},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(resp.choices[0].message.content or "{}")
+        table_name = str(data.get("table_name") or "").strip()
+        columns = str(data.get("columns") or "").strip()
+        primary_key = data.get("primary_key")
+        if primary_key is not None:
+            primary_key = str(primary_key).strip() or None
+
+        if not table_name or not columns:
+            raise RuntimeError("Could not extract create_table arguments from user request")
+
+        return {
+            "table_name": table_name,
+            "columns": columns,
+            "primary_key": primary_key,
+        }
+
+    async def intent_parse(self, state: AgentState, _agent) -> AgentState:
         """Parse user intent and determine operation type."""
         user_message = state["user_message"]
         logger.info(f"[DB] Intent parse: {user_message[:50]}...")
@@ -98,14 +171,9 @@ class DatabaseAgentWorkflow(BaseAgentWorkflow):
             # No agent, skip
             return {**state, "table_schema": {}}
 
-        # Delegate to BaseAgent for tool execution
+        # Direct MCP tool calls (no internal prompt text)
         if tables:
-            # Ask agent to describe the tables
-            tables_str = ", ".join(tables)
-            response = await agent.process_query(
-                f"Show me the schema for tables: {tables_str}. Use list_tables and describe_table tools.",
-                verbose=False
-            )
+            response = await self._safe_list_tables_and_describe(agent, tables)
             logger.info(f"[DB] Schema discovery response: {response[:200]}...")
 
         return {
@@ -124,12 +192,33 @@ class DatabaseAgentWorkflow(BaseAgentWorkflow):
 
         operation = intent.get("operation", "SELECT").upper()
 
+        # CREATE TABLE special flow in workflow:
+        # 1) Always call show_create_table_schema first
+        # 2) Return tool output for frontend schema dropdown
+        # 3) Do not execute create directly here
+        if operation == "CREATE" and agent:
+            try:
+                args = await self._extract_create_table_args(user_message)
+                schema_response = await self._call_tool(agent, "show_create_table_schema", args)
+            except Exception as e:
+                schema_response = f"Error preparing schema preview: {e}"
+
+            return {
+                **state,
+                "wait_user": True,
+                "output": {
+                    "type": "schema_preview",
+                    "message": schema_response,
+                },
+            }
+
         # For simple SELECT, delegate to BaseAgent directly
         if operation == "SELECT" and not intent.get("exports"):
             if agent:
                 response = await agent.process_query(
                     f"Generate and execute: {user_message}",
-                    verbose=False
+                    verbose=False,
+                    persist_history=False,
                 )
                 return {
                     **state,
@@ -171,7 +260,7 @@ class DatabaseAgentWorkflow(BaseAgentWorkflow):
             }
         }
 
-    async def sql_preview(self, state: AgentState, agent) -> AgentState:
+    async def sql_preview(self, state: AgentState, _agent) -> AgentState:
         """Show SQL preview and wait for user approval.
 
         If user has approved, proceed to execution.
@@ -181,8 +270,18 @@ class DatabaseAgentWorkflow(BaseAgentWorkflow):
 
         logger.info(f"[DB] SQL preview, approved: {approved}")
 
+        # Preserve CREATE TABLE schema preview payload produced at SQL_GENERATION stage.
+        # Do not overwrite it with generic SQL preview text.
+        output = state.get("output") or {}
+        if output.get("type") == "schema_preview":
+            return {
+                **state,
+                "wait_user": True,
+                "output": output,
+            }
+
         if not approved:
-            # Stay at this stage, wait for user
+            # Wait for user approval
             return {
                 **state,
                 "wait_user": True,
@@ -214,11 +313,11 @@ class DatabaseAgentWorkflow(BaseAgentWorkflow):
                 "error": "No agent available"
             }
 
-        # Delegate to BaseAgent to execute the SQL
-        response = await agent.process_query(
-            f"Execute this SQL: {sql}",
-            verbose=False
-        )
+        # Direct MCP tool call to execute SQL (no internal prompt)
+        try:
+            response = await self._call_tool(agent, "execute_query", {"query": sql})
+        except Exception as e:
+            response = f"Error executing SQL: {e}"
 
         return {
             **state,

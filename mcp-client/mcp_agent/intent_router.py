@@ -159,6 +159,21 @@ Return JSON with: intent, complexity, requires_approval, requires_workflow, sugg
         result["requires_approval"] = result.get("requires_approval", False)
         result["requires_workflow"] = result.get("requires_workflow", False)
 
+        # Hard rules for DDL/mutation safety gates.
+        # CREATE TABLE (and similar DDL) must go through workflow + approval flow.
+        prompt_lower = (prompt or "").lower()
+        intent_lower = str(result.get("intent", "")).lower()
+        is_ddl_create = (
+            "create table" in prompt_lower
+            or "tạo bảng" in prompt_lower
+            or "tao bang" in prompt_lower
+            or intent_lower in {"create_table", "create", "ddl_create"}
+        )
+        if is_ddl_create:
+            result["complexity"] = "complex"
+            result["requires_approval"] = True
+            result["requires_workflow"] = True
+
         logger.info(f"[IntentRouter] Result: intent={result.get('intent')}, complexity={result.get('complexity')}")
 
         return result
