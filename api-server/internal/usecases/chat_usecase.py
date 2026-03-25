@@ -73,6 +73,7 @@ class ChatUseCase:
 
         # Nếu có session_id → cố gắng load session đó
         loaded = False
+        current_session_id: str | None = session_id
         if session_id:
             logger.info(f"UseCase: Attempting to load session: {session_id}")
             loaded = await agent.session_manager.load_session(session_id)
@@ -86,11 +87,17 @@ class ChatUseCase:
         # - Nếu không có project → tạo session mới global cho user
         if not loaded:
             logger.info(f"UseCase: Creating new session, project_id={project_id_uuid}")
-            await agent.session_manager.create_session(session_name=None, project_id=project_id_uuid)
+            current_session_id = await agent.session_manager.create_session(session_name=None, project_id=project_id_uuid)
+
+        # Important: pass the *same* session_id through to HybridOrchestrator so that
+        # the "preview/approval" flow can find the stored SQL state later.
+        if not current_session_id:
+            # Should never happen, but keep it safe: fallback to the value inside session_manager.
+            current_session_id = (await agent.session_manager.get_session_info()).get("session_id") or None
 
         logger.info(f"UseCase: Processing query: {query[:100]}...")
         try:
-            result = await agent.process_query(query, verbose=False)
+            result = await agent.process_query(query, verbose=False, session_id=current_session_id)
 
             # HybridOrchestrator returns dict with response, agent_id, session_id, approach, intent
             if isinstance(result, dict):
@@ -186,6 +193,18 @@ class ChatUseCase:
                 session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
                 current_session_id = session_info.get("session_id") if session_info else None
                 result_text = await agent.approve_and_execute(session_id=current_session_id, approved=True)
+                # Approval preview state is stored in-memory (RAM) inside HybridOrchestrator.
+                # If the server reloaded or state is missing, fallback to executing the SQL
+                # that the frontend already extracted from the preview message.
+                if isinstance(result_text, str) and (
+                    result_text.strip().startswith("Session ")
+                    and " not found" in result_text
+                ):
+                    logger.warning(
+                        "UseCase: approval state missing, falling back to direct execute_sql. session_id=%s",
+                        current_session_id,
+                    )
+                    result_text = await agent.execute_sql(query, lang=lang)
             else:
                 # Legacy: call execute_sql directly
                 result_text = await agent.execute_sql(query, lang=lang)
