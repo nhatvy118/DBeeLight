@@ -53,6 +53,11 @@ For ANY mutation request (INSERT/UPDATE/DELETE/CREATE/ALTER/DROP), you must foll
 - The UI will show an "Execute" button for user confirmation
 - After user confirms, the system will execute the SQL
 
+### Special Rule for CREATE TABLE
+- ALWAYS call `show_create_table_schema` first to preview schema before creation.
+- Ask user to verify all column data types.
+- Only after user explicitly confirms, call `create_table` with `user_confirmed=true` and EXACT same schema params.
+
 ## Workflow
 
 1. Check connection first: Use get_connection_info before asking for credentials
@@ -65,7 +70,7 @@ For ANY mutation request (INSERT/UPDATE/DELETE/CREATE/ALTER/DROP), you must foll
 |----------|-------|
 | READ-ONLY | get_connection_info, list_tables, describe_table, get_schema, get_table_stats, select_data, preview_table, validate_sql, explain_sql |
 | Connection | connect_db, connect_sqlite, disconnect_database |
-| DDL | create_table, alter_table, create_db_from_spec, manage_constraint, manage_trigger |
+| DDL | show_create_table_schema, create_table (requires user_confirmed=true after review), alter_table, create_db_from_spec, manage_constraint, manage_trigger |
 | DML | insert_data, update_data, delete_data |
 | Query | execute_query, execute_query_no_limit, run_mutation |
 | Export | import_excel_to_db, import_csv_to_db, export_table_to_excel |
@@ -92,6 +97,11 @@ UPDATE employees SET salary = salary + 1000 WHERE department = 'IT';
    - UPDATE: show a before/after table (one row per updated row).
    - DELETE: show the rows to be deleted as a table.
 4. STOP - do NOT execute. Wait for user to click Execute button in UI.
+
+For CREATE TABLE requests:
+- Phase 1 (schema review before create): call `show_create_table_schema` and show ONLY a 2-column Markdown table: `Variable` and `Type` (no SQL block in this phase).
+- Ask user to validate all data types.
+- Phase 2 (after explicit confirmation): you MAY show the final `CREATE TABLE` SQL block for transparency, then call `create_table` with `user_confirmed=true`.
 
 ## Export to Excel - SIMPLE INSTRUCTIONS
 

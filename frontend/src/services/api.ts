@@ -2,8 +2,14 @@
 // You can override with VITE_API_URL if you don't want to use the proxy.
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
+export type ToolEvent = {
+  tool: string;
+  type: string;
+  payload?: Record<string, unknown>;
+};
+
 export type ChatResponse =
-  | { success: true; response: string; session_id?: string | null }
+  | { success: true; response: string; session_id?: string | null; tool_events?: ToolEvent[] }
   | { success: false; error: string };
 
 export type SessionInfo = {
@@ -163,12 +169,20 @@ export async function generateShareLink(sessionId: string | null = null, project
 
 export type ExecuteSqlResponse = ChatResponse;
 
-export async function executeSql(sql: string, sessionId: string | null = null, projectId: string | null = null, lang: string = 'en'): Promise<ExecuteSqlResponse> {
+export async function executeSql(
+  sql: string,
+  actionId: string | null,
+  sessionId: string | null = null,
+  projectId: string | null = null,
+  lang: string = 'en',
+  lockOnly: boolean = false,
+  lockState: 'executed' | 'cancelled' | null = null,
+): Promise<ExecuteSqlResponse> {
   const response = await fetch(url('/api/sql/execute'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sql, session_id: sessionId, project_id: projectId, lang }),
+    body: JSON.stringify({ sql, action_id: actionId, session_id: sessionId, project_id: projectId, lang, lock_only: lockOnly, lock_state: lockState }),
   });
 
   const data = (await response.json()) as ExecuteSqlResponse & { error?: string };

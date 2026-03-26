@@ -203,6 +203,12 @@ class SessionManager:
             )
         return sessions
 
+    async def flush_current_session(self) -> None:
+        """Flush current session Redis stack to DB so history survives reload/restart."""
+        if not self.current_session_id:
+            return
+        await self._flush_stack_to_db(self.current_session_id)
+
     async def get_current_messages(self) -> List[Dict[str, Any]]:
         """
         Get messages from current session.
@@ -211,20 +217,20 @@ class SessionManager:
         """
         if not self.current_session_id:
             return []
-        
+
         all_messages: List[Dict[str, Any]] = []
-        
+
         # Get messages from DB
         data = await self._get_session(self.current_session_id)
         if data:
             all_messages.extend(data.get("messages", []))
-        
+
         # Get messages from Redis stack (if available)
         if self._pool is not None and REDIS_STACK_AVAILABLE:
             stack_key = self._get_stack_key(self.current_session_id)
             stack_messages = await redis_stack_get_all(stack_key)
             all_messages.extend(stack_messages)
-        
+
         # Filter out tool messages, only keep user and assistant
         return [msg for msg in all_messages if msg.get("role") in ("user", "assistant")]
 
@@ -321,6 +327,86 @@ class SessionManager:
             "message_count": len(data.get("messages", [])),
             "project_id": data.get("project_id"),
         }
+
+    async def set_pending_approval(self, session_id: str, payload: Dict[str, Any]) -> None:
+        """Persist pending approval payload into session content."""
+        if not session_id:
+            return
+        data = await self._get_session(session_id)
+        if not data:
+            return
+        data["pending_approval"] = payload
+        data["updated_at"] = datetime.now().isoformat()
+        session_name = data.pop("session_name", None)
+        await self._save_session(session_id, data, session_name=session_name)
+
+    async def get_pending_approval(self, session_id: str) -> Dict[str, Any] | None:
+        """Read pending approval payload from session content."""
+        if not session_id:
+            return None
+        data = await self._get_session(session_id)
+        if not data:
+            return None
+        pending = data.get("pending_approval")
+        return pending if isinstance(pending, dict) else None
+
+    async def clear_pending_approval(self, session_id: str) -> None:
+        """Clear pending approval payload from session content."""
+        if not session_id:
+            return
+        data = await self._get_session(session_id)
+        if not data:
+            return
+        if "pending_approval" in data:
+            data.pop("pending_approval", None)
+            data["updated_at"] = datetime.now().isoformat()
+            session_name = data.pop("session_name", None)
+            await self._save_session(session_id, data, session_name=session_name)
+
+    async def set_sql_action_state(self, session_id: str, action_id: str, state: str) -> None:
+        """Persist SQL action state for a preview action_id (pending/executed/cancelled)."""
+        if not session_id or not (action_id or "").strip():
+            return
+        data = await self._get_session(session_id)
+        if not data:
+            return
+        states = data.get("sql_action_states")
+        if not isinstance(states, dict):
+            states = {}
+        states[action_id.strip()] = state
+        data["sql_action_states"] = states
+        data["updated_at"] = datetime.now().isoformat()
+        session_name = data.pop("session_name", None)
+        await self._save_session(session_id, data, session_name=session_name)
+
+    async def get_sql_action_state(self, session_id: str, action_id: str) -> str | None:
+        """Get persisted SQL action state for a preview action_id."""
+        if not session_id or not (action_id or "").strip():
+            return None
+        data = await self._get_session(session_id)
+        if not data:
+            return None
+        states = data.get("sql_action_states")
+        if not isinstance(states, dict):
+            return None
+        value = states.get(action_id.strip())
+        return str(value) if value is not None else None
+
+    async def get_sql_action_states(self, session_id: str) -> Dict[str, str]:
+        """Get all persisted SQL action states for a session."""
+        if not session_id:
+            return {}
+        data = await self._get_session(session_id)
+        if not data:
+            return {}
+        states = data.get("sql_action_states")
+        if not isinstance(states, dict):
+            return {}
+        out: Dict[str, str] = {}
+        for k, v in states.items():
+            if isinstance(k, str) and isinstance(v, str):
+                out[k] = v
+        return out
 
     async def _get_session(self, session_id: str) -> Dict[str, Any] | None:
         if self._pool is None:

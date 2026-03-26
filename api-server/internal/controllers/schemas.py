@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
@@ -20,6 +20,7 @@ class ChatOk(BaseModel):
     success: bool = True
     response: str
     session_id: Optional[str] = None
+    tool_events: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ErrorResp(BaseModel):
@@ -45,9 +46,12 @@ class GenerateShareLinkRequest(BaseModel):
 
 class ExecuteSqlRequest(BaseModel):
     sql: str
+    action_id: Optional[str] = None
     session_id: Optional[str] = None
     project_id: Optional[str] = None
     lang: Optional[str] = "en"  # Language for translation
+    lock_only: Optional[bool] = False
+    lock_state: Optional[str] = None
 
 
 class ExportRequest(BaseModel):

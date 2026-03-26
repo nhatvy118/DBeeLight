@@ -105,8 +105,14 @@ class BaseAgent(ABC):
                 })
         return out
 
-    async def process_query(self, query: str, verbose: bool = False) -> str:
-        """Process user query: load history, call LLM with tools, execute tool calls, return final text."""
+    async def process_query(self, query: str, verbose: bool = False, persist_history: bool = True) -> str:
+        """Process user query: load history, call LLM with tools, execute tool calls, return final text.
+
+        Args:
+            query: Input text for this tool loop.
+            verbose: Print tool-call logs.
+            persist_history: If False, do not persist this run into session history.
+        """
         if not self.sessions:
             raise RuntimeError(
                 f"Agent {self.agent_id}: No MCP servers connected. Connect at least one server first."
@@ -134,7 +140,8 @@ class BaseAgent(ABC):
             })
 
         messages.append({"role": "user", "content": query})
-        await self.session_manager.add_message("user", query)
+        if persist_history:
+            await self.session_manager.add_message("user", query)
 
         final_chunks: List[str] = []
         max_iterations = 10
@@ -158,7 +165,7 @@ class BaseAgent(ABC):
 
                 # Only save assistant message when it's the FINAL answer (no more tool_calls)
                 if not tool_calls:
-                    if content_text:
+                    if content_text and persist_history:
                         await self.session_manager.add_message("assistant", content_text)
                     break
 
@@ -224,7 +231,8 @@ class BaseAgent(ABC):
                 final_chunks.append(f"Error: {e}")
                 # Save error message as final answer
                 error_message = f"Error: {e}"
-                await self.session_manager.add_message("assistant", error_message)
+                if persist_history:
+                    await self.session_manager.add_message("assistant", error_message)
                 break
 
         if iteration >= max_iterations:
@@ -232,7 +240,7 @@ class BaseAgent(ABC):
             final_chunks.append(warning_message)
             # Save warning as final answer
             final_answer = "\n".join(c for c in final_chunks if c).strip()
-            if final_answer:
+            if final_answer and persist_history:
                 await self.session_manager.add_message("assistant", final_answer)
         
         return "\n".join(c for c in final_chunks if c).strip()

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import MessageList, { type UiMessage, type ExportData } from '../components/chat/MessageList';
-import { getSession, sendMessage, getSessions, executeSql, uploadExcel, type SessionInfo } from '../services/api';
+import MessageList, { type UiMessage, type ExportData, type SchemaPreviewData } from '../components/chat/MessageList';
+import { getSession, sendMessage, getSessions, executeSql, uploadExcel, type SessionInfo, type ToolEvent, type GetSessionResponse } from '../services/api';
 import plusIcon from '../assets/icons/Plus.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
 import arrowUpCircleIcon from '../assets/icons/Arrow-up-circle.svg';
@@ -12,6 +12,7 @@ const MIN_TEXTAREA_HEIGHT = 60;
 
 const STORAGE_LAST_SESSION_ID = 'lastSessionId';
 const STORAGE_LAST_SESSION_PROJECT = 'lastSessionIdForProject';
+
 
 // Detect language from text (simple heuristic)
 function detectLanguage(text: string): string {
@@ -41,6 +42,7 @@ function getLastSession(projectId: string | null): string | null {
   return stored;
 }
 
+
 type ChatProps = {
   projectId?: string | null;
   sessionId?: string | null;
@@ -60,6 +62,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const [inputKey, setInputKey] = useState(0);
   const previousProjectIdRef = useRef<string | null>(null);
   const hasRestoredSessionRef = useRef(false);
+  const previousPropSessionIdRef = useRef<string | null | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [isUploadingExcel, setIsUploadingExcel] = useState(false);
@@ -98,6 +101,24 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
+  const hashString = (input: string): string => {
+    let hash = 0;
+    for (let i = 0; i < input.length; i += 1) {
+      hash = ((hash << 5) - hash + input.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash).toString(36);
+  };
+
+  const buildSqlActionId = (
+    sid: string | null,
+    messageContent: string,
+    sqlText: string,
+    sqlOrdinal: number,
+  ): string => {
+    const base = `${sid ?? 'nosession'}|${sqlOrdinal}|${messageContent}|${sqlText}`;
+    return `sqlact_${hashString(base)}`;
+  };
+
   const extractLastMutationSqlBlock = (text: string): string | null => {
     const regex = /```sql([\s\S]*?)```/gi;
     let match: RegExpExecArray | null;
@@ -114,6 +135,149 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       return null;
     }
     return last;
+  };
+
+  const extractSchemaPreviewFromToolEvents = (events?: ToolEvent[]): SchemaPreviewData | null => {
+    if (!events || !Array.isArray(events)) return null;
+
+    const schemaEvent = events.find(
+      (e) => e?.tool === 'show_create_table_schema' && e?.type === 'schema_preview' && e?.payload
+    );
+    if (!schemaEvent?.payload) return null;
+
+    const payload = schemaEvent.payload as Record<string, any>;
+    const tableName = payload.tableName || payload.table_name;
+    const primaryKey = payload.primaryKey ?? payload.primary_key ?? null;
+    const columnsRaw = Array.isArray(payload.columns) ? payload.columns : [];
+    const columns = columnsRaw
+      .map((c: any) => ({ variable: c?.variable, type: c?.type }))
+      .filter((c: any) => c.variable && c.type);
+
+    if (!tableName || columns.length === 0) return null;
+    return { tableName, primaryKey, columns };
+  };
+
+  const extractSchemaPreview = (text: string): SchemaPreviewData | null => {
+    // Preferred path: structured JSON payload from show_create_table_schema tool output.
+    const jsonMatch = text.match(/\[CREATE_TABLE_SCHEMA_JSON_START\]([\s\S]*?)\[CREATE_TABLE_SCHEMA_JSON_END\]/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[1].trim()) as SchemaPreviewData;
+        if (!parsed?.tableName && (parsed as any).table_name) {
+          return {
+            tableName: (parsed as any).table_name,
+            primaryKey: (parsed as any).primary_key ?? null,
+            columns: Array.isArray((parsed as any).columns) ? (parsed as any).columns : [],
+          };
+        }
+        return parsed;
+      } catch {
+        // continue to marker-based fallback
+      }
+    }
+
+    // Fallback for cases where agent called the tool but did not preserve JSON payload.
+    // Accept markdown Variable|Type table when message looks like create-table schema review.
+    const looksLikeSchemaReview =
+      text.includes('[CREATE_TABLE_SCHEMA_PREVIEW]') ||
+      /schema\s+đề\s+xuất\s+cho\s+bảng/i.test(text) ||
+      /proposed\s+schema\s+for\s+table/i.test(text) ||
+      /\bcreate_table\b/i.test(text) ||
+      /\bcreate table\b/i.test(text);
+
+    if (!looksLikeSchemaReview) return null;
+
+    const lines = text.split('\n').map((l) => l.trim());
+    const tableStart = lines.findIndex((l) => /^\|\s*Variable\s*\|\s*Type\s*\|$/i.test(l));
+    if (tableStart === -1) return null;
+
+    const columns: Array<{ variable: string; type: string }> = [];
+    for (let i = tableStart + 1; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (!line.startsWith('|')) break;
+      if (/^\|\s*-+\s*\|\s*-+\s*\|$/.test(line.replace(/:/g, ''))) continue;
+
+      const cells = line
+        .split('|')
+        .map((c) => c.trim())
+        .filter((_, idx, arr) => !(idx === 0 || idx === arr.length - 1));
+
+      if (cells.length < 2) continue;
+      const variable = cells[0].replace(/^`|`$/g, '');
+      const type = cells[1].replace(/^`|`$/g, '');
+      if (variable && type) columns.push({ variable, type });
+    }
+
+    if (columns.length === 0) return null;
+
+    const tableNameMatch =
+      text.match(/Proposed table:\s*`([^`]+)`/i) ||
+      text.match(/table\s+`([^`]+)`/i) ||
+      text.match(/bảng\s+`([^`]+)`/i);
+    const tableName = tableNameMatch?.[1] || 'new_table';
+
+    return {
+      tableName,
+      primaryKey: null,
+      columns,
+    };
+  };
+
+  const getSqlActionStatesFromSessionResponse = (res: GetSessionResponse): Record<string, 'pending' | 'running' | 'executed' | 'cancelled'> => {
+    if (!res.success) return {};
+    const raw = (res.session_info as any)?.sql_action_states;
+    if (!raw || typeof raw !== 'object') return {};
+    const out: Record<string, 'pending' | 'running' | 'executed' | 'cancelled'> = {};
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      const value = String(v || '').toLowerCase();
+      if (value === 'pending' || value === 'running' || value === 'executed' || value === 'cancelled') {
+        out[String(k)] = value;
+      }
+    }
+    return out;
+  };
+
+  const extractSqlActionId = (text: string): string | undefined => {
+    const m = text.match(/\[SQL_ACTION_ID_START\]([\s\S]*?)\[SQL_ACTION_ID_END\]/);
+    const id = m?.[1]?.trim();
+    return id || undefined;
+  };
+
+  const stripInternalPayloads = (text: string): string => {
+    let cleaned = text
+      .replace(/\n?\[CREATE_TABLE_SCHEMA_JSON_START\][\s\S]*?\[CREATE_TABLE_SCHEMA_JSON_END\]\n?/g, '\n')
+      .replace(/\n?\[SCHEMA_CONFIRM_INTERNAL_START\][\s\S]*?\[SCHEMA_CONFIRM_INTERNAL_END\]\n?/g, '\n');
+
+    // Hide backend internal execution prompts from history display
+    if (/^User has confirmed schema\./i.test(cleaned.trim()) && /User request:/i.test(cleaned)) {
+      const reqMatch = cleaned.match(/User request:\s*(.+)$/im);
+      if (reqMatch?.[1]) {
+        return reqMatch[1].trim();
+      }
+    }
+
+    // Hide internal schema-discovery prompt generated by workflow
+    if (/^Show me the schema for tables:/i.test(cleaned.trim()) && /Use list_tables and describe_table tools\.?$/i.test(cleaned.trim())) {
+      return '';
+    }
+
+    // Hide legacy wrapper text like "Generate SQL for: ... Show the SQL but do NOT execute it."
+    cleaned = cleaned.replace(/^Generate SQL for:\s*/i, '');
+    cleaned = cleaned.replace(/\.?\s*Show the SQL but do NOT execute it\.?\s*$/i, '');
+
+    // Hide internal schema-tool forcing prompt if it leaks to UI.
+    if (/^You MUST call tool `show_create_table_schema`/i.test(cleaned.trim())) {
+      const reqMatch = cleaned.match(/User request:\s*(.+)$/im);
+      if (reqMatch?.[1]) {
+        return reqMatch[1].trim();
+      }
+      return '';
+    }
+
+    cleaned = cleaned.replace(/^\[CREATE_TABLE_SCHEMA_PREVIEW\]\s*/i, '');
+    cleaned = cleaned.replace(/\n?\[SQL_ACTION_ID_START\][\s\S]*?\[SQL_ACTION_ID_END\]\n?/g, '\n');
+
+    return cleaned.trim();
   };
 
   // Extract Excel export info (base64 or simple text sentence)
@@ -184,16 +348,35 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         setIsLoading(true);
         const res = await getSession(sid);
         if (res.success && res.messages) {
+          const sqlActionStates = getSqlActionStatesFromSessionResponse(res);
+          let sqlOrdinal = 0;
           const convertedMessages: UiMessage[] = res.messages
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             .filter((msg: any) => msg.role === 'user' || msg.role === 'assistant')
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map((msg: any) => ({
-              text: msg.content || '',
-              isUser: msg.role === 'user',
-              sqlToExecute: msg.role === 'assistant' ? extractLastMutationSqlBlock(msg.content || '') : null,
-              exportToExcel: msg.role === 'assistant' ? extractExportData(msg.content || '') : null,
-            }));
+            .map((msg: any) => {
+              const rawContent = msg.content || '';
+              const cleanedText = stripInternalPayloads(rawContent);
+              const schemaPreview =
+                msg.role === 'assistant'
+                  ? extractSchemaPreviewFromToolEvents((msg as any).tool_events) || extractSchemaPreview(rawContent)
+                  : null;
+              const sqlToExecute = msg.role === 'assistant' ? extractLastMutationSqlBlock(rawContent) : null;
+              const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
+              const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
+              const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
+              return {
+                text: cleanedText,
+                isUser: msg.role === 'user',
+                sqlToExecute,
+                sqlActionId,
+                sqlActionState: sqlToExecute ? (persistedSqlState ?? ('pending' as const)) : undefined,
+                exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
+                schemaPreview,
+                schemaLocked: msg.role === 'assistant' ? !!schemaPreview : undefined,
+              };
+            })
+            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel);
           setMessages(convertedMessages);
           setSessionId(sid);
           onSessionIdChange?.(sid);
@@ -207,9 +390,16 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       }
     };
 
+    const prevPropSessionId = previousPropSessionIdRef.current;
+    previousPropSessionIdRef.current = propSessionId;
+
     if (propSessionId) {
       void loadSession(propSessionId);
-    } else if (sessionId) {
+      return;
+    }
+
+    const sessionWasExplicitlyRemoved = prevPropSessionId != null;
+    if (sessionWasExplicitlyRemoved && sessionId) {
       // URL no longer has a session (e.g. navigated to /chat) — clear local state
       setMessages([]);
       setSessionId(null);
@@ -252,10 +442,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         setMessages((prev) => [
           ...prev,
           {
-            text: res.response,
+            text: stripInternalPayloads(res.response),
             isUser: false,
             sqlToExecute: extractLastMutationSqlBlock(res.response),
+            sqlActionId: extractSqlActionId(res.response),
+            sqlActionState: extractLastMutationSqlBlock(res.response) ? ('pending' as const) : undefined,
             exportToExcel: extractExportData(res.response),
+            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
+            schemaLocked: false,
           },
         ]);
         
@@ -312,6 +506,19 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     setIsAssistantTyping(false);
   };
 
+  const lockAllSchemaPreviews = () => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.schemaPreview
+          ? {
+              ...m,
+              schemaLocked: true,
+            }
+          : m
+      )
+    );
+  };
+
   const handleSend = async () => {
     if (isStopVisible || isUploadingExcel) return;
     const hasText = query.trim().length > 0;
@@ -330,6 +537,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         `[UPLOADED_EXCEL_NAME_START]\n${attachedExcel.originalName}\n[UPLOADED_EXCEL_NAME_END]\n`;
     }
 
+    lockAllSchemaPreviews();
     setMessages((prev) => [...prev, { text: displayText, isUser: true }]);
     setQuery('');
     // Forcefully reset the textarea to avoid any IME/browser ghost text by
@@ -352,10 +560,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         setMessages((prev) => {
           const updated = [...prev];
           updated[aiIndex] = {
-            text: res.response,
+            text: stripInternalPayloads(res.response),
             isUser: false,
             sqlToExecute: extractLastMutationSqlBlock(res.response),
+            sqlActionId: extractSqlActionId(res.response),
+            sqlActionState: extractLastMutationSqlBlock(res.response) ? ('pending' as const) : undefined,
             exportToExcel: extractExportData(res.response),
+            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
           };
           return updated;
         });
@@ -370,9 +581,170 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
   };
 
+  const handleSchemaTypeChange = (aiIndex: number, variable: string, nextType: string) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: msg.schemaPreview.columns.map((c) =>
+            c.variable === variable ? { ...c, type: nextType } : c
+          ),
+        },
+      };
+      return updated;
+    });
+  };
+
+  const handleToggleSchemaOptions = (aiIndex: number, variable: string) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: msg.schemaPreview.columns.map((c) =>
+            c.variable === variable ? { ...c, showOptions: !c.showOptions } : c
+          ),
+        },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaOptionChange = (
+    aiIndex: number,
+    variable: string,
+    option: 'notNull' | 'unique' | 'primaryKey' | 'defaultValue',
+    value: boolean | string,
+  ) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: msg.schemaPreview.columns.map((c) => {
+            if (c.variable !== variable) return c;
+            return {
+              ...c,
+              [option]: value,
+            };
+          }),
+        },
+      };
+      return updated;
+    });
+  };
+
+  const handleConfirmSchema = async (aiIndex: number) => {
+    const msg = messages[aiIndex];
+    if (!msg?.schemaPreview || isLoading) return;
+
+    setMessages((prev) => {
+      const updated = [...prev];
+      const current = updated[aiIndex];
+      if (current?.schemaPreview) {
+        updated[aiIndex] = { ...current, schemaLocked: true };
+      }
+      return updated;
+    });
+
+    const schema = msg.schemaPreview;
+    const columnsDef = schema.columns
+      .map((c) => {
+        const parts: string[] = [`${c.variable} ${c.type}`];
+        if (c.notNull) parts.push('NOT NULL');
+        if (c.unique) parts.push('UNIQUE');
+        if (c.primaryKey) parts.push('PRIMARY KEY');
+        if ((c.defaultValue || '').trim()) parts.push(`DEFAULT ${String(c.defaultValue).trim()}`);
+        return parts.join(' ');
+      })
+      .join(', ');
+    const pkPart = schema.primaryKey ? `, primary_key="${schema.primaryKey}"` : '';
+
+    const confirmInstruction = [
+      `User confirmed schema for table ${schema.tableName}.`,
+      `Please execute this exact flow using tools:`,
+      `1) show_create_table_schema(table_name="${schema.tableName}", columns="${columnsDef}"${pkPart})`,
+      `2) create_table(table_name="${schema.tableName}", columns="${columnsDef}"${pkPart}, user_confirmed=true)`,
+      `Do not ask for Execute SQL button. Return only the final result.`,
+    ].join('\n');
+
+    const confirmPrompt = [
+      `Confirm schema table ${schema.tableName}`,
+      `[SCHEMA_CONFIRM_INTERNAL_START]`,
+      confirmInstruction,
+      `[SCHEMA_CONFIRM_INTERNAL_END]`,
+    ].join('\n');
+
+    setMessages((prev) => [
+      ...prev,
+      { text: `Confirm schema table ${schema.tableName}`, isUser: true },
+    ]);
+
+    setIsLoading(true);
+    try {
+      const res = await sendMessage(confirmPrompt, sessionId, selectedProject?.id || null);
+      if (res.success) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            text: stripInternalPayloads(res.response),
+            isUser: false,
+            sqlToExecute: extractLastMutationSqlBlock(res.response),
+            sqlActionId: extractSqlActionId(res.response),
+            sqlActionState: extractLastMutationSqlBlock(res.response) ? ('pending' as const) : undefined,
+            exportToExcel: extractExportData(res.response),
+            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
+          },
+        ]);
+
+        if ((res as any).session_id) {
+          const newSessionId = (res as any).session_id as string;
+          setSessionId(newSessionId);
+          onSessionIdChange?.(newSessionId);
+          saveLastSession(newSessionId, selectedProject?.id ?? null);
+          if (selectedProject?.id) {
+            window.history.replaceState({}, '', `/chat/${selectedProject.id}/${newSessionId}`);
+          } else {
+            window.history.replaceState({}, '', `/chat/${newSessionId}`);
+          }
+        }
+      } else {
+        setMessages((prev) => [...prev, { text: `Error: ${res.error || 'Failed to confirm schema'}`, isUser: false }]);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to confirm schema';
+      setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleExecuteSql = async (aiIndex: number) => {
     const msg = messages[aiIndex];
-    if (!msg || !msg.sqlToExecute || isLoading) return;
+    if (!msg || !msg.sqlToExecute || isLoading || msg.sqlActionState === 'running' || msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled') return;
+
+    // Lock SQL actions permanently after first click (single-run behavior)
+    setMessages((prev) => {
+      const updated = [...prev];
+      const current = updated[aiIndex];
+      if (current) {
+        updated[aiIndex] = { ...current, sqlActionState: 'executed' };
+      }
+      return updated;
+    });
 
     // Detect language from user's last message
     const userMessages = messages.filter(m => m.isUser);
@@ -381,25 +753,46 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     setIsLoading(true);
     try {
-      const res = await executeSql(msg.sqlToExecute, sessionId, selectedProject?.id || null, lang);
+      const fallbackActionId =
+        msg.sqlActionId || buildSqlActionId(
+          sessionId,
+          msg.text,
+          msg.sqlToExecute,
+          Math.max(0, messages.slice(0, aiIndex + 1).filter((m) => !!m.sqlToExecute).length - 1),
+        );
+      const res = await executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, lang, true, 'executed');
       if (res.success) {
         setMessages((prev) => {
           const updated = [...prev];
           const current = updated[aiIndex];
           if (current) {
-            // Clear sqlToExecute on the preview message so Execute SQL cannot be clicked again
-            updated[aiIndex] = { ...current, sqlToExecute: null };
+            // Keep SQL preview visible but disable actions after execution
+            updated[aiIndex] = { ...current, sqlActionState: 'executed' };
           }
           return [
             ...updated,
             {
-              text: res.response,
+              text: stripInternalPayloads(res.response),
               isUser: false,
               sqlToExecute: extractLastMutationSqlBlock(res.response),
+              sqlActionId: extractSqlActionId(res.response),
               exportToExcel: extractExportData(res.response),
+              schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
             },
           ];
         });
+
+        if ((res as any).session_id) {
+          const newSessionId = (res as any).session_id as string;
+          setSessionId(newSessionId);
+          onSessionIdChange?.(newSessionId);
+          saveLastSession(newSessionId, selectedProject?.id ?? null);
+          if (selectedProject?.id) {
+            window.history.replaceState({}, '', `/chat/${selectedProject.id}/${newSessionId}`);
+          } else {
+            window.history.replaceState({}, '', `/chat/${newSessionId}`);
+          }
+        }
       } else {
         setMessages((prev) => [
           ...prev,
@@ -464,9 +857,17 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     // Simply clear the sqlToExecute flag so the Execute button disappears.
     setMessages((prev) => {
       const updated = [...prev];
-      updated[aiIndex] = { ...msg, sqlToExecute: null };
+      updated[aiIndex] = { ...msg, sqlActionState: 'cancelled' };
       return updated;
     });
+    const fallbackActionId =
+      msg.sqlActionId || buildSqlActionId(
+        sessionId,
+        msg.text,
+        msg.sqlToExecute,
+        Math.max(0, messages.slice(0, aiIndex + 1).filter((m) => !!m.sqlToExecute).length - 1),
+      );
+    void executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, 'en', true, 'cancelled');
   };
 
   // When switching to a *different* project: save current session for the project we're leaving, then clear UI.
@@ -539,16 +940,35 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         setIsLoading(true);
         const res = await getSession(sid);
         if (res.success && res.messages) {
+          const sqlActionStates = getSqlActionStatesFromSessionResponse(res);
+          let sqlOrdinal = 0;
           const convertedMessages: UiMessage[] = res.messages
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             .filter((msg: any) => msg.role === 'user' || msg.role === 'assistant')
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map((msg: any) => ({
-              text: msg.content || '',
-              isUser: msg.role === 'user',
-              sqlToExecute: msg.role === 'assistant' ? extractLastMutationSqlBlock(msg.content || '') : null,
-              exportToExcel: msg.role === 'assistant' ? extractExportData(msg.content || '') : null,
-            }));
+            .map((msg: any) => {
+              const rawContent = msg.content || '';
+              const cleanedText = stripInternalPayloads(rawContent);
+              const schemaPreview =
+                msg.role === 'assistant'
+                  ? extractSchemaPreviewFromToolEvents((msg as any).tool_events) || extractSchemaPreview(rawContent)
+                  : null;
+              const sqlToExecute = msg.role === 'assistant' ? extractLastMutationSqlBlock(rawContent) : null;
+              const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
+              const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
+              const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
+              return {
+                text: cleanedText,
+                isUser: msg.role === 'user',
+                sqlToExecute,
+                sqlActionId,
+                sqlActionState: sqlToExecute ? (persistedSqlState ?? ('pending' as const)) : undefined,
+                exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
+                schemaPreview,
+                schemaLocked: msg.role === 'assistant' ? !!schemaPreview : undefined,
+              };
+            })
+            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel);
           setMessages(convertedMessages);
           setSessionId(sid);
           onSessionIdChange?.(sid);
@@ -610,6 +1030,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               onExecuteSql={(idx) => void handleExecuteSql(idx)}
               onCancelSql={(idx) => void handleCancelSql(idx)}
               onExportExcel={(idx) => void handleExportExcel(idx)}
+              onSchemaTypeChange={handleSchemaTypeChange}
+              onToggleSchemaOptions={handleToggleSchemaOptions}
+              onSchemaOptionChange={handleSchemaOptionChange}
+              onConfirmSchema={(idx) => void handleConfirmSchema(idx)}
               onAssistantTypingChange={setIsAssistantTyping}
               typingStopSignal={typingStopSignal}
             />

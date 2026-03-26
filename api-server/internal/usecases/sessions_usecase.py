@@ -74,8 +74,13 @@ class SessionsUseCase:
             agent = await self._agent_repo.get_agent(user_key=user_key)
             if agent.session_manager and await agent.session_manager.load_session(session_id):
                 logger.info(f"UseCase: Session loaded successfully: {session_id}")
+                # Ensure latest in-memory/Redis messages are persisted before returning history.
+                await agent.session_manager.flush_current_session()
                 session_info = await agent.session_manager.get_session_info()
                 messages = await agent.session_manager.get_current_messages()
+                sql_action_states = await agent.session_manager.get_sql_action_states(session_id)
+                if isinstance(session_info, dict):
+                    session_info["sql_action_states"] = sql_action_states
                 logger.info(f"UseCase: Found {len(messages)} messages in session")
                 return session_info, messages
             logger.warning(f"UseCase: Session not found: {session_id}")

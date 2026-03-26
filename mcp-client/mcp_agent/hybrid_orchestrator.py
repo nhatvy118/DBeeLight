@@ -8,8 +8,10 @@ Best practice:
 """
 
 import logging
+import json
+import re
 import uuid
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
@@ -116,12 +118,16 @@ class HybridOrchestrator:
 
         logger.info(f"[HybridOrchestrator] Classification: intent={classification.get('intent')}, complexity={complexity}")
 
+        # Force CREATE TABLE requests through workflow branch so schema preview markers
+        # are preserved for frontend dropdown rendering.
+        is_create_table = await self._is_create_table_request(query, classification)
+
         # Step 3: Route to appropriate handler
-        if complexity == QueryComplexity.CONVERSATIONAL:
+        if complexity == QueryComplexity.CONVERSATIONAL and not is_create_table:
             response = await self._handle_conversational(query, agent, session_id, verbose)
             handler = "conversational"
 
-        elif complexity == QueryComplexity.COMPLEX or classification.get("requires_workflow"):
+        elif is_create_table or complexity == QueryComplexity.COMPLEX or classification.get("requires_workflow"):
             response = await self._handle_workflow(query, agent_id, session_id, classification)
             handler = "workflow"
 
@@ -130,13 +136,40 @@ class HybridOrchestrator:
             response = await self._handle_llm_driven(query, agent, session_id, verbose)
             handler = "llm_driven"
 
+        tool_events = self._extract_tool_events(response)
+
         return {
             "response": response,
             "agent_id": agent_id,
             "session_id": session_id,
             "approach": handler,
             "intent": classification,
+            "tool_events": tool_events,
         }
+
+    def _extract_tool_events(self, response_text: str) -> List[Dict[str, Any]]:
+        """Extract structured tool events from response text for frontend rendering."""
+        events: List[Dict[str, Any]] = []
+
+        if not response_text:
+            return events
+
+        match = re.search(
+            r"\[CREATE_TABLE_SCHEMA_JSON_START\]([\s\S]*?)\[CREATE_TABLE_SCHEMA_JSON_END\]",
+            response_text,
+        )
+        if match:
+            try:
+                payload = json.loads(match.group(1).strip())
+                events.append({
+                    "tool": "show_create_table_schema",
+                    "type": "schema_preview",
+                    "payload": payload,
+                })
+            except Exception:
+                pass
+
+        return events
 
     async def _route_to_agent(self, query: str) -> str:
         """Route query to database or excel agent."""
@@ -176,6 +209,59 @@ Reply with ONLY agent id."""
         response = await agent.process_query(query, verbose=verbose)
         return response
 
+    async def _is_create_table_request(self, query: str, classification: Dict) -> bool:
+        """Detect CREATE TABLE intent with LLM first (language-agnostic), keyword fallback."""
+        q = (query or "").strip()
+        intent = str(classification.get("intent", "")).lower()
+
+        # 1) LLM-based intent check (works across languages)
+        try:
+            response = self._openai.chat.completions.create(
+                model=self._router_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an intent detector. "
+                            "Determine whether user request is about creating a NEW database table "
+                            "or confirming table schema before table creation. "
+                            "Return strict JSON: {\"is_create_table\": true|false}."
+                        ),
+                    },
+                    {"role": "user", "content": q},
+                ],
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content or "{}"
+            import json
+            parsed = json.loads(content)
+            if bool(parsed.get("is_create_table", False)):
+                return True
+        except Exception:
+            # fallback below
+            pass
+
+        # 2) Minimal keyword fallback for robustness if LLM call fails
+        q_lower = q.lower()
+        create_keywords = [
+            "create table",
+            "tạo bảng",
+            "tao bang",
+            "xác nhận schema",
+            "xac nhan schema",
+            "show_create_table_schema",
+            "create_table(",
+        ]
+        if any(k in q_lower for k in create_keywords):
+            return True
+
+        # 3) Fallback by router intent hint
+        if "schema" in intent and ("create" in q_lower or "tạo" in q_lower or "tao" in q_lower):
+            return True
+
+        return False
+
     async def _handle_workflow(
         self,
         query: str,
@@ -185,6 +271,49 @@ Reply with ONLY agent id."""
     ) -> str:
         """Handle complex query using LangGraph workflow (with BaseAgent)."""
         logger.info(f"[HybridOrchestrator] Using LangGraph workflow for {agent_id}")
+
+        # CREATE TABLE path in workflow:
+        # - normal create request: run LangGraph database workflow (schema preview stage)
+        # - schema-confirm internal request: build SQL and wait for final Execute approval
+        if await self._is_create_table_request(query, classification):
+            # If user confirmed schema, require one more explicit SQL Execute confirmation.
+            # Do NOT call create_table directly at this step.
+            if "[schema_confirm_internal_start]" in query.lower():
+                create_call_match = re.search(
+                    r"create_table\(table_name=\"(?P<table>[^\"]+)\",\s*columns=\"(?P<columns>[^\"]+)\"",
+                    query,
+                    re.IGNORECASE,
+                )
+
+                if not create_call_match:
+                    return (
+                        "Blocked: Could not extract CREATE TABLE parameters from confirmation request. "
+                        "Please re-confirm schema from the schema review panel."
+                    )
+
+                table_name = create_call_match.group("table")
+                columns = create_call_match.group("columns")
+                create_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({columns});"
+
+                pending_payload = {
+                    "sql": create_sql,
+                    "agent_id": agent_id,
+                    "intent": classification,
+                    "kind": "create_table_after_schema_confirm",
+                }
+                self._session_states[session_id] = pending_payload
+                await self.session_manager.set_pending_approval(session_id, pending_payload)
+
+                return f"""Schema has been confirmed. Please review the SQL before execution:
+
+```sql
+{create_sql}
+```
+
+Click **Execute** to run this SQL, or **Cancel** to abort."""
+
+            # Normal CREATE TABLE request -> let workflow produce schema preview
+            return await self._run_workflow(query, agent_id, session_id)
 
         requires_approval = classification.get("requires_approval", False)
 
@@ -216,19 +345,25 @@ Reply with ONLY agent id."""
             verbose=False
         )
 
-        # Store SQL in session for later execution
-        self._session_states[session_id] = {
+        # CREATE TABLE schema preview should NOT be wrapped as SQL execution flow.
+        # When database tool `show_create_table_schema` is used, response contains this marker.
+        if "[CREATE_TABLE_SCHEMA_PREVIEW]" in response:
+            return response
+
+        # Store SQL in session for later execution (for mutation flows like INSERT/UPDATE/DELETE)
+        pending_payload = {
             "sql": response,
             "agent_id": agent_id,
             "intent": classification,
         }
+        self._session_states[session_id] = pending_payload
+        await self.session_manager.set_pending_approval(session_id, pending_payload)
 
         return f"""Please review the SQL:
 
 ```sql
 {response}
 ```
-
 Click **Execute** to run this SQL, or **Cancel** to abort."""
 
     async def _run_workflow(
@@ -245,6 +380,11 @@ Click **Execute** to run this SQL, or **Cancel** to abort."""
 
         # Extract response from result
         output = result.get("output", {})
+
+        # schema_preview payload stores full tool text in output.message
+        if output.get("type") == "schema_preview":
+            return output.get("message", "")
+
         response = output.get("message", str(output))
 
         return response
@@ -266,11 +406,11 @@ Click **Execute** to run this SQL, or **Cancel** to abort."""
         self,
         sql: str,
         lang: str = "en",
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Execute SQL after user approval."""
         db_agent = self._agents.get("database")
         if not db_agent:
-            return "No database agent available"
+            return {"response": "No database agent available", "tool_events": []}
 
         for server_name, session in db_agent.sessions.items():
             try:
@@ -291,33 +431,53 @@ Click **Execute** to run this SQL, or **Cancel** to abort."""
                 except Exception:
                     result_text = str(result_content)
 
-                return self._translate_message(result_text, lang)
+                translated = self._translate_message(result_text, lang)
+                return {
+                    "response": translated,
+                    "tool_events": [
+                        {
+                            "tool": "execute_query",
+                            "type": "sql_execution",
+                            "payload": {
+                                "sql": sql,
+                                "result": result_text,
+                            },
+                        }
+                    ],
+                }
             except Exception:
                 continue
 
-        return "Failed to execute query"
+        return {"response": "Failed to execute query", "tool_events": []}
 
     async def approve_and_execute(
         self,
         session_id: str,
         approved: bool = True,
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Execute SQL after user approval."""
         state = self._session_states.get(session_id)
 
         if not state:
-            return f"Session {session_id} not found"
+            state = await self.session_manager.get_pending_approval(session_id)
+            if state:
+                self._session_states[session_id] = state
+
+        if not state:
+            return {"response": f"Session {session_id} not found", "tool_events": []}
 
         if not approved:
             self._session_states.pop(session_id, None)
-            return "SQL execution cancelled."
+            await self.session_manager.clear_pending_approval(session_id)
+            return {"response": "SQL execution cancelled.", "tool_events": []}
 
         sql = state.get("sql")
         if not sql:
-            return "No SQL to execute"
+            return {"response": "No SQL to execute", "tool_events": []}
 
         result = await self.execute_sql(sql)
         self._session_states.pop(session_id, None)
+        await self.session_manager.clear_pending_approval(session_id)
 
         return result
 
