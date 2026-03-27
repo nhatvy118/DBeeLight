@@ -117,9 +117,7 @@ class ChatUseCase:
         try:
             # IMPORTANT: pass real chat session_id into orchestrator so pending approval state
             # (e.g. SQL execute flow) is stored/retrieved under the same key.
-            session_info_before = await agent.session_manager.get_session_info() if agent.session_manager else None
-            active_session_id = session_info_before.get("session_id") if session_info_before else None
-            result = await agent.process_query(query, session_id=active_session_id, verbose=False, session_id=current_session_id)
+            result = await agent.process_query(query, verbose=False, session_id=current_session_id)
 
             # HybridOrchestrator returns dict with response, agent_id, session_id, approach, intent
             if isinstance(result, dict):
@@ -295,18 +293,17 @@ class ChatUseCase:
                 session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
                 current_session_id = session_info.get("session_id") if session_info else None
                 result = await agent.approve_and_execute(session_id=current_session_id, approved=True)
+
                 # Approval preview state is stored in-memory (RAM) inside HybridOrchestrator.
                 # If the server reloaded or state is missing, fallback to executing the SQL
                 # that the frontend already extracted from the preview message.
-                if isinstance(result_text, str) and (
-                    result_text.strip().startswith("Session ")
-                    and " not found" in result_text
-                ):
+                approve_result_text = str(result.get("response", "")) if isinstance(result, dict) else str(result)
+                if approve_result_text.strip().startswith("Session ") and " not found" in approve_result_text:
                     logger.warning(
                         "UseCase: approval state missing, falling back to direct execute_sql. session_id=%s",
                         current_session_id,
                     )
-                    result_text = await agent.execute_sql(query, lang=lang)
+                    result = await agent.execute_sql(query, lang=lang)
             else:
                 # Legacy: call execute_sql directly
                 result = await agent.execute_sql(query, lang=lang)
@@ -324,6 +321,11 @@ class ChatUseCase:
 
             if current_session_id and (action_id or "").strip():
                 await agent.session_manager.set_sql_action_state(current_session_id, action_id, "executed")
+
+            # Persist assistant execution result so it survives page reload/history fetch.
+            if agent.session_manager and (result_text or "").strip():
+                await agent.session_manager.add_message("assistant", result_text)
+
             logger.info(f"UseCase: SQL executed successfully, session_id={current_session_id}")
             return result_text, current_session_id, tool_events
         except Exception as e:
