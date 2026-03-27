@@ -760,7 +760,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           msg.sqlToExecute,
           Math.max(0, messages.slice(0, aiIndex + 1).filter((m) => !!m.sqlToExecute).length - 1),
         );
-      const res = await executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, lang, true, 'executed');
+      const res = await executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, lang, false, null);
       if (res.success) {
         setMessages((prev) => {
           const updated = [...prev];
