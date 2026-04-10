@@ -48,11 +48,11 @@ async def init_redis_client() -> Optional[aioredis.Redis]:
         
         # Test connection
         await _redis_client.ping()
-        logger.info(f"✅ Redis connected: {redis_url}")
+        logger.info(f"Redis connected: {redis_url}")
         return _redis_client
         
     except Exception as e:
-        logger.warning(f"⚠️  Redis connection failed: {e}. Using in-memory cache fallback.")
+        logger.warning(f"Redis connection failed: {e}. Using in-memory cache fallback.")
         _redis_client = None
         return None
 

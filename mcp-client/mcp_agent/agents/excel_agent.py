@@ -2,8 +2,8 @@
 
 from typing import Optional
 
-from mcp_agent.base_agent import BaseAgent
-from mcp_agent.session import SessionManager
+from mcp_agent.agents.base_agent import BaseAgent
+from mcp_agent.session.session_manager import SessionManager
 
 
 class ExcelAgent(BaseAgent):

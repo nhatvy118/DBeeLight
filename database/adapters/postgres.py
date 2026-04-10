@@ -2,6 +2,9 @@
 
 from typing import Any, Dict, List, Optional
 from datetime import datetime, date
+from decimal import Decimal
+from uuid import UUID
+import json
 import asyncpg
 
 from adapters.base import DatabaseAdapter
@@ -36,6 +39,18 @@ def _normalize_value(value: Any) -> Any:
             except ValueError:
                 continue
     return value
+
+
+def _json_safe(value: Any) -> Any:
+    """JSON serializer for PostgreSQL scalar types."""
+    if isinstance(value, Decimal):
+        # preserve precision while staying JSON-serializable
+        return float(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    return str(value)
 
 
 class PostgresAdapter(DatabaseAdapter):
@@ -373,8 +388,7 @@ class PostgresAdapter(DatabaseAdapter):
                     if not rows:
                         return "Query executed successfully. No rows returned."
                     results = [dict(row) for row in rows]
-                    import json
-                    return json.dumps(results)
+                    return json.dumps(results, default=_json_safe)
                 result = await conn.execute(query)
                 return f"Query executed successfully. Result: {result}"
         except Exception as e:

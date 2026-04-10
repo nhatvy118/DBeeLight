@@ -51,6 +51,9 @@ export type UiMessage = {
   exportToExcel?: ExportData | null;
   schemaPreview?: SchemaPreviewData | null;
   schemaLocked?: boolean;
+  chartEmbedUrl?: string | null;
+  /** Assistant message is waiting on LangGraph ``interrupt()`` (schema or SQL gate). */
+  workflowResumePending?: boolean;
 };
 
 type MessageListProps = {
@@ -297,6 +300,29 @@ export default function MessageList({
                   </button>
                 </>
               )}
+            </div>
+          )}
+
+          {!msg.isUser && msg.chartEmbedUrl && (
+            <div className="mt-3 mb-2 rounded-xl border border-gray-200 overflow-hidden">
+              <div className="px-3 py-2 bg-indigo-50 text-xs font-medium text-indigo-700 flex items-center justify-between">
+                <span>Interactive Chart (Superset)</span>
+                <a
+                  href={msg.chartEmbedUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-indigo-600 hover:text-indigo-800 underline"
+                >
+                  Open in Superset
+                </a>
+              </div>
+              <iframe
+                src={msg.chartEmbedUrl}
+                title="Superset Chart"
+                className="w-full border-0"
+                style={{ height: '500px' }}
+                sandbox="allow-scripts allow-same-origin allow-popups"
+              />
             </div>
           )}
         </div>

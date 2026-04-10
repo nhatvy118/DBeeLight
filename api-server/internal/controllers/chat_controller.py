@@ -3,7 +3,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from internal.controllers.schemas import ChatOk, ChatRequest, ExecuteSqlRequest, ExportRequest  # noqa: F401
+from internal.controllers.schemas import (
+    ChatOk,
+    ChatRequest,
+    ExecuteSqlRequest,
+    ExportRequest,
+    WorkflowResumeRequest,
+)  # noqa: F401
 from internal.dependencies import get_chat_usecase, get_user_key
 from internal.usecases.chat_usecase import ChatUseCase
 
@@ -16,8 +22,40 @@ async def chat(
     user_key: str = Depends(get_user_key),
     usecase: ChatUseCase = Depends(get_chat_usecase),
 ) -> ChatOk:
-    response_text, sid, tool_events = await usecase.chat(user_key, req.message, req.session_id, req.project_id)
-    return ChatOk(response=response_text, session_id=sid, tool_events=tool_events)
+    response_text, sid, tool_events, pending, warnings, success = await usecase.chat(
+        user_key, req.message, req.session_id, req.project_id
+    )
+    return ChatOk(
+        success=success,
+        response=response_text,
+        session_id=sid,
+        warnings=warnings,
+        tool_events=tool_events,
+        pending_workflow_resume=pending,
+    )
+
+
+@router.post("/api/chat/workflow-resume", response_model=ChatOk)
+async def workflow_resume(
+    req: WorkflowResumeRequest,
+    user_key: str = Depends(get_user_key),
+    usecase: ChatUseCase = Depends(get_chat_usecase),
+) -> ChatOk:
+    response_text, sid, tool_events, pending, warnings, success = await usecase.workflow_resume(
+        user_key,
+        req.session_id,
+        req.approved,
+        req.project_id,
+        req.user_visible_message,
+    )
+    return ChatOk(
+        success=success,
+        response=response_text,
+        session_id=sid,
+        warnings=warnings,
+        tool_events=tool_events,
+        pending_workflow_resume=pending,
+    )
 
 
 @router.post("/api/sql/execute", response_model=ChatOk)
@@ -33,7 +71,7 @@ async def execute_sql(
     - `session_id`: optional, to keep history linked to the same conversation
     - `project_id`: optional, to auto-connect to the correct project database
     """
-    response_text, sid, tool_events = await usecase.execute_sql(
+    response_text, sid, tool_events, pending, warnings, success = await usecase.execute_sql(
         user_key,
         req.sql,
         req.action_id,
@@ -43,6 +81,13 @@ async def execute_sql(
         req.lock_only or False,
         req.lock_state,
     )
-    return ChatOk(response=response_text, session_id=sid, tool_events=tool_events)
+    return ChatOk(
+        success=success,
+        response=response_text,
+        session_id=sid,
+        warnings=warnings,
+        tool_events=tool_events,
+        pending_workflow_resume=pending,
+    )
 
 

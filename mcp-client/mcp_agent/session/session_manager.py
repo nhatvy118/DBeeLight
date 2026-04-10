@@ -19,9 +19,9 @@ try:
     import sys
     import os
     # Try to add api-server to path if not already there
-    api_server_path = os.path.join(os.path.dirname(__file__), "..", "..", "api-server")
-    if os.path.exists(api_server_path) and api_server_path not in sys.path:
-        sys.path.insert(0, api_server_path)
+    # api_server_path = os.path.join(os.path.dirname(__file__), "..", "..", "api-server")
+    # if os.path.exists(api_server_path) and api_server_path not in sys.path:
+    #     sys.path.insert(0, api_server_path)
     
     from internal.utils.redis_client import (
         redis_stack_push,
@@ -327,6 +327,48 @@ class SessionManager:
             "message_count": len(data.get("messages", [])),
             "project_id": data.get("project_id"),
         }
+
+    async def replace_latest_assistant_message(self, old_content: str, new_content: str) -> bool:
+        """Replace the latest assistant message content in the current session.
+
+        This is used when a response is first persisted by the agent loop and
+        later enriched with internal markers (for example SQL action ids) that
+        must also survive page reload/history fetch.
+        """
+        if not self.current_session_id:
+            return False
+        if not (old_content or "").strip() or not (new_content or "").strip():
+            return False
+
+        await self.flush_current_session()
+        data = await self._get_session(self.current_session_id)
+        if not data:
+            return False
+
+        messages = data.get("messages", [])
+        if not isinstance(messages, list):
+            return False
+
+        replaced = False
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") != "assistant":
+                continue
+            if str(msg.get("content", "")) != old_content:
+                continue
+            msg["content"] = new_content
+            replaced = True
+            break
+
+        if not replaced:
+            return False
+
+        data["updated_at"] = datetime.now().isoformat()
+        session_name = data.pop("session_name", None)
+        await self._save_session(self.current_session_id, data, session_name=session_name)
+        return True
 
     async def set_pending_approval(self, session_id: str, payload: Dict[str, Any]) -> None:
         """Persist pending approval payload into session content."""

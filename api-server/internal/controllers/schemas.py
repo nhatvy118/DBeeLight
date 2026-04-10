@@ -11,6 +11,15 @@ class ChatRequest(BaseModel):
     project_id: Optional[str] = None
 
 
+class WorkflowResumeRequest(BaseModel):
+    """Resume a database LangGraph workflow paused on ``interrupt()`` (schema or SQL gate)."""
+
+    session_id: str
+    approved: bool = True
+    project_id: Optional[str] = None
+    user_visible_message: Optional[str] = None
+
+
 class NewSessionRequest(BaseModel):
     name: Optional[str] = None
     project_id: Optional[str] = None
@@ -20,7 +29,9 @@ class ChatOk(BaseModel):
     success: bool = True
     response: str
     session_id: Optional[str] = None
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
     tool_events: list[dict[str, Any]] = Field(default_factory=list)
+    pending_workflow_resume: bool = False
 
 
 class ErrorResp(BaseModel):

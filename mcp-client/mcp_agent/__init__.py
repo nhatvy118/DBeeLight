@@ -2,49 +2,44 @@
 MCP Client Package
 
 A client library for connecting to and interacting with MCP (Model Context Protocol) servers
-using OpenAI GPT models. Supports multi-agent setup via BaseAgent and MultiAgentOrchestrator.
+using OpenAI GPT models. Supports multi-agent setup with approval-aware execution.
 
-Now includes Hybrid approach with IntentRouter:
-- Simple queries → LLM-driven (fast, direct tool calls)
-- Complex queries → LangGraph workflow (sequential stages + approval)
+Layered structure:
+- agents/       — BaseAgent, DatabaseAgent, ExcelAgent, SupersetAgent
+- orchestration/ — Orchestrator, IntentService
+- session/     — SessionManager
+- graph/       — LangGraph workflow (AgentWorkflow, per-agent workflows)
 """
 
-from mcp_agent.database_agent import DatabaseAgent
-from mcp_agent.excel_agent import ExcelAgent
-from mcp_agent.base_agent import BaseAgent
-from mcp_agent.orchestrator import MultiAgentOrchestrator
+# Agents
+from mcp_agent.agents import BaseAgent, DatabaseAgent, ExcelAgent, SupersetAgent
+
+# Session
 from mcp_agent.session import SessionManager
 
-# Intent Router
-from mcp_agent.intent_router import IntentRouter, QueryComplexity, QueryIntent
+# Orchestration
+from mcp_agent.orchestration import Orchestrator, IntentService, IntentResult
 
-# Hybrid Orchestrator
-from mcp_agent.hybrid_orchestrator import HybridOrchestrator
-
-# LangGraph components (optional, requires langgraph package)
-try:
-    from mcp_agent.graph import AgentWorkflow, GraphState, StageType, SessionStatus
-    LANGGRAPH_AVAILABLE = True
-except ImportError:
-    LANGGRAPH_AVAILABLE = False
+# LangGraph workflow
+from mcp_agent.graph import AgentState, AgentWorkflow, StageType, SessionStatus
 
 __all__ = [
+    # Agents
     "BaseAgent",
     "DatabaseAgent",
     "ExcelAgent",
-    "MultiAgentOrchestrator",
+    "SupersetAgent",
+    # Session
     "SessionManager",
-    # Intent Router
-    "IntentRouter",
-    "QueryComplexity",
-    "QueryIntent",
-    # Hybrid Orchestrator
-    "HybridOrchestrator",
-    # LangGraph exports
+    # Orchestration
+    "Orchestrator",
+    "IntentService",
+    "IntentResult",
+    # LangGraph
     "AgentWorkflow",
-    "GraphState",
+    "AgentState",
     "StageType",
     "SessionStatus",
-    "LANGGRAPH_AVAILABLE",
 ]
+
 __version__ = "0.1.0"

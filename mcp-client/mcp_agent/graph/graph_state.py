@@ -20,6 +20,7 @@ class AgentState(TypedDict):
 
     # Intent parsing
     intent: Dict[str, Any]
+    execution_plan: Dict[str, Any]
     detected_language: str
 
     # Database-specific state
@@ -39,11 +40,6 @@ class AgentState(TypedDict):
     # Chart-specific state
     chart_type: Optional[str]
     chart_data: Optional[Dict[str, Any]]
-
-    # Email-specific state (example)
-    email_to: Optional[str]
-    email_subject: Optional[str]
-    email_body: Optional[str]
 
     # Flow control
     wait_user: bool
@@ -69,6 +65,7 @@ def create_initial_state(session_id: str, user_message: str, agent_type: str) ->
         "agent_type": agent_type,
         "user_message": user_message,
         "intent": {},
+        "execution_plan": {},
         "detected_language": "en",
 
         # Database

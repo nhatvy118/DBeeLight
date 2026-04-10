@@ -12,7 +12,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import OpenAI
 
-from mcp_agent.session import SessionManager
+from mcp_agent.session.session_manager import SessionManager
 
 
 class BaseAgent(ABC):
@@ -144,7 +144,7 @@ class BaseAgent(ABC):
             await self.session_manager.add_message("user", query)
 
         final_chunks: List[str] = []
-        max_iterations = 10
+        max_iterations = 2
         iteration = 0
 
         while iteration < max_iterations:

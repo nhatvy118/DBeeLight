@@ -491,7 +491,9 @@ async def preview_table(table_name: str, limit: int = 10) -> str:
 def _add_limit(query: str) -> str:
     """Auto-add LIMIT to SELECT queries if not present."""
     query = query.strip()
-    query_upper = query.upper()
+    # Normalize trailing semicolon so appending LIMIT stays valid SQL.
+    base_query = query[:-1].strip() if query.endswith(";") else query
+    query_upper = base_query.upper()
 
     # Only add limit to SELECT queries
     if not query_upper.startswith("SELECT"):
@@ -502,7 +504,7 @@ def _add_limit(query: str) -> str:
         return query
 
     # Add LIMIT
-    return f"{query} LIMIT {DEFAULT_LIMIT}"
+    return f"{base_query} LIMIT {DEFAULT_LIMIT}"
 
 
 @mcp.tool()

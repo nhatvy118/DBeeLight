@@ -1,12 +1,12 @@
-"""Excel agent workflow with LangGraph - delegates to BaseAgent for tool execution."""
+"""Excel agent workflow with LangGraph - each workflow defines its own stages."""
 
 import logging
 import json
 from typing import Dict, Any
 from openai import OpenAI
+from langgraph.graph import StateGraph, END
 
-from mcp_agent.graph.base_workflow import BaseAgentWorkflow
-from mcp_agent.graph.graph_state import AgentState
+from mcp_agent.graph.graph_state import AgentState, create_initial_state
 from mcp_agent.graph.state import (
     StageType,
     EXCEL_WORKFLOW,
@@ -15,25 +15,14 @@ from mcp_agent.graph.state import (
 logger = logging.getLogger(__name__)
 
 
-class ExcelAgentWorkflow(BaseAgentWorkflow):
-    """Workflow for Excel agent.
-
-    Stages:
-    1. INTENT_PARSE - understand user request
-    2. FILE_LOAD - load Excel file (delegate to BaseAgent)
-    3. DATA_ANALYZE - analyze data (delegate to BaseAgent)
-    4. DATA_TRANSFORM - transform data (delegate to BaseAgent)
-    5. CHART_GENERATE - generate chart (delegate to BaseAgent)
-    6. EXPORT - export result (delegate to BaseAgent)
-
-    Each stage delegates to BaseAgent.process_query() for tool execution.
-    """
+class ExcelAgentWorkflow:
+    """Workflow for Excel agent - each stage defined independently."""
 
     workflow_config = EXCEL_WORKFLOW
 
     def __init__(self, llm=None, agent=None):
-        super().__init__(llm, agent)
         self.llm = llm or OpenAI()
+        self.agent = agent
 
     def get_stage_handlers(self) -> Dict[str, callable]:
         return {
@@ -44,6 +33,55 @@ class ExcelAgentWorkflow(BaseAgentWorkflow):
             StageType.CHART_GENERATE.value: self.chart_generate,
             StageType.EXPORT.value: self.export,
         }
+
+    def _build_graph(self) -> Any:
+        """Build LangGraph from workflow config."""
+        workflow = StateGraph(AgentState)
+        handlers = self.get_stage_handlers()
+        cfg = self.workflow_config
+
+        for stage in cfg.stages:
+            stage_name = stage.value
+            if stage_name in handlers:
+                handler = handlers[stage_name]
+                async def node_wrapper(state, _agent=self.agent, _handler=handler):
+                    return await _handler(state, _agent)
+                workflow.add_node(stage_name, node_wrapper)
+            else:
+                async def pass_through(state):
+                    return state
+                workflow.add_node(stage_name, pass_through)
+
+        async def start_handler(state):
+            first = cfg.stages[0].value if cfg.stages else StageType.INTENT_PARSE.value
+            return {**state, "current_stage": first}
+
+        workflow.add_node("START", start_handler)
+
+        async def done_handler(state):
+            return {**state, "current_stage": StageType.DONE.value}
+
+        workflow.add_node(StageType.DONE.value, done_handler)
+
+        workflow.set_entry_point("START")
+        workflow.add_edge("START", cfg.stages[0].value)
+
+        for stage in cfg.stages:
+            stage_name = stage.value
+            next_stage = cfg.transitions.get(stage_name)
+            if next_stage:
+                workflow.add_edge(stage_name, next_stage)
+
+        workflow.add_edge(StageType.DONE.value, END)
+
+        return workflow.compile()
+
+    async def run(self, session_id: str, user_message: str) -> AgentState:
+        """Run the workflow."""
+        state = create_initial_state(session_id, user_message, self.workflow_config.agent_id)
+        graph = self._build_graph()
+        result = await graph.ainvoke(state)
+        return result
 
     async def intent_parse(self, state: AgentState, agent) -> AgentState:
         """Parse user intent for Excel operations."""
@@ -92,10 +130,7 @@ class ExcelAgentWorkflow(BaseAgentWorkflow):
         }
 
     async def file_load(self, state: AgentState, agent) -> AgentState:
-        """Load Excel file.
-
-        Delegates to BaseAgent to call import_excel tool.
-        """
+        """Load Excel file using agent."""
         file_path = state.get("file_path")
         intent = state.get("intent", {})
         logger.info(f"[Excel] File load: {file_path}")
@@ -121,10 +156,7 @@ class ExcelAgentWorkflow(BaseAgentWorkflow):
         }
 
     async def data_analyze(self, state: AgentState, agent) -> AgentState:
-        """Analyze data.
-
-        Delegates to BaseAgent for analysis tools.
-        """
+        """Analyze data using agent."""
         intent = state.get("intent", {})
         operation = intent.get("operation", "analyze")
         logger.info(f"[Excel] Data analyze: {operation}")
@@ -149,10 +181,7 @@ class ExcelAgentWorkflow(BaseAgentWorkflow):
         }
 
     async def data_transform(self, state: AgentState, agent) -> AgentState:
-        """Transform or clean data.
-
-        Delegates to BaseAgent for transformation tools.
-        """
+        """Transform or clean data using agent."""
         intent = state.get("intent", {})
         logger.info(f"[Excel] Data transform")
 
@@ -175,10 +204,7 @@ class ExcelAgentWorkflow(BaseAgentWorkflow):
         }
 
     async def chart_generate(self, state: AgentState, agent) -> AgentState:
-        """Generate chart.
-
-        Delegates to BaseAgent for chart tools.
-        """
+        """Generate chart using agent."""
         intent = state.get("intent", {})
         chart_type = intent.get("chart_type", "bar")
         logger.info(f"[Excel] Chart generate: {chart_type}")
@@ -204,10 +230,7 @@ class ExcelAgentWorkflow(BaseAgentWorkflow):
         }
 
     async def export(self, state: AgentState, agent) -> AgentState:
-        """Export result to file.
-
-        Delegates to BaseAgent for export tools.
-        """
+        """Export result to file using agent."""
         intent = state.get("intent", {})
         operation = intent.get("operation", "export")
         file_path = state.get("export_path")

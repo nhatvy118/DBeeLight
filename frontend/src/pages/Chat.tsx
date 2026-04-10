@@ -1,6 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessageList, { type UiMessage, type ExportData, type SchemaPreviewData } from '../components/chat/MessageList';
-import { getSession, sendMessage, getSessions, executeSql, uploadExcel, type SessionInfo, type ToolEvent, type GetSessionResponse } from '../services/api';
+import {
+  getSession,
+  sendMessage,
+  getSessions,
+  executeSql,
+  resumeWorkflow,
+  uploadExcel,
+  type SessionInfo,
+  type ToolEvent,
+  type GetSessionResponse,
+} from '../services/api';
 import plusIcon from '../assets/icons/Plus.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
 import arrowUpCircleIcon from '../assets/icons/Arrow-up-circle.svg';
@@ -120,7 +130,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   };
 
   const extractLastMutationSqlBlock = (text: string): string | null => {
-    const regex = /```sql([\s\S]*?)```/gi;
+    // Allow optional space/newline after language tag: ```sql or ``` sql
+    const regex = /```\s*sql\s*([\s\S]*?)```/gi;
     let match: RegExpExecArray | null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let last: string | null = null;
@@ -155,6 +166,45 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     if (!tableName || columns.length === 0) return null;
     return { tableName, primaryKey, columns };
+  };
+
+  type SqlPreviewData = {
+    sql: string;
+    mutationPreviewMarkdown?: string | null;
+  };
+
+  const extractSqlPreviewFromToolEvents = (events?: ToolEvent[]): SqlPreviewData | null => {
+    if (!events || !Array.isArray(events)) return null;
+    const sqlEvent = events.find((e) => e?.type === 'sql_preview' && e?.payload);
+    if (!sqlEvent?.payload) return null;
+    const payload = sqlEvent.payload as Record<string, any>;
+    const sql = typeof payload.sql === 'string' ? payload.sql.trim() : '';
+    if (!sql) return null;
+    const mutationPreviewMarkdown =
+      typeof payload.mutation_preview_markdown === 'string'
+        ? payload.mutation_preview_markdown.trim()
+        : typeof payload.mutationPreviewMarkdown === 'string'
+          ? payload.mutationPreviewMarkdown.trim()
+          : null;
+    return { sql, mutationPreviewMarkdown };
+  };
+
+  const buildAssistantTextFromSqlPreview = (
+    cleanedText: string,
+    sqlPreview: SqlPreviewData | null,
+  ): string => {
+    if (!sqlPreview) return cleanedText;
+    // Prefer tool_events over parsing assistant text. Append a stable SQL fenced block
+    // so ChatMessage can render it as markdown.
+    const hasSqlFence = /```\s*sql/i.test(cleanedText);
+    const parts: string[] = [];
+    if (cleanedText.trim().length > 0) parts.push(cleanedText.trim());
+    if (!hasSqlFence) parts.push(`\`\`\`sql\n${sqlPreview.sql}\n\`\`\``);
+    // Do NOT append mutationPreviewMarkdown here:
+    // - Backend may already include it in message text
+    // - ChatMessage will render markdown from text, so we'd duplicate the preview
+    // If we want a dedicated preview UI, render from tool_events as a separate component instead.
+    return parts.join('\n\n').trim();
   };
 
   const extractSchemaPreview = (text: string): SchemaPreviewData | null => {
@@ -246,7 +296,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const stripInternalPayloads = (text: string): string => {
     let cleaned = text
       .replace(/\n?\[CREATE_TABLE_SCHEMA_JSON_START\][\s\S]*?\[CREATE_TABLE_SCHEMA_JSON_END\]\n?/g, '\n')
-      .replace(/\n?\[SCHEMA_CONFIRM_INTERNAL_START\][\s\S]*?\[SCHEMA_CONFIRM_INTERNAL_END\]\n?/g, '\n');
+      .replace(/\n?\[SCHEMA_CONFIRM_INTERNAL_START\][\s\S]*?\[SCHEMA_CONFIRM_INTERNAL_END\]\n?/g, '\n')
+      .replace(/\n?\[CHART_EMBED_URL_START\][\s\S]*?\[CHART_EMBED_URL_END\]\n?/g, '\n');
 
     // Hide backend internal execution prompts from history display
     if (/^User has confirmed schema\./i.test(cleaned.trim()) && /User request:/i.test(cleaned)) {
@@ -293,6 +344,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         filename: filenameMatch[1].trim(),
         rowCount: rowCountMatch ? parseInt(rowCountMatch[1], 10) : 0,
       };
+    }
+    return null;
+  };
+
+  const extractChartEmbedUrl = (text: string): string | null => {
+    const match = text.match(/\[CHART_EMBED_URL_START\]([\s\S]*?)\[CHART_EMBED_URL_END\]/);
+    if (match) {
+      return match[1].trim();
     }
     return null;
   };
@@ -357,16 +416,21 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             .map((msg: any) => {
               const rawContent = msg.content || '';
               const cleanedText = stripInternalPayloads(rawContent);
+              const sqlPreview =
+                msg.role === 'assistant' ? extractSqlPreviewFromToolEvents((msg as any).tool_events) : null;
               const schemaPreview =
                 msg.role === 'assistant'
                   ? extractSchemaPreviewFromToolEvents((msg as any).tool_events) || extractSchemaPreview(rawContent)
                   : null;
-              const sqlToExecute = msg.role === 'assistant' ? extractLastMutationSqlBlock(rawContent) : null;
+              const sqlToExecute =
+                msg.role === 'assistant'
+                  ? (sqlPreview?.sql || extractLastMutationSqlBlock(rawContent))
+                  : null;
               const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
               const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
               const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
               return {
-                text: cleanedText,
+                text: msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
                 isUser: msg.role === 'user',
                 sqlToExecute,
                 sqlActionId,
@@ -374,9 +438,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
                 schemaPreview,
                 schemaLocked: msg.role === 'assistant' ? !!schemaPreview : undefined,
+                chartEmbedUrl: msg.role === 'assistant' ? extractChartEmbedUrl(rawContent) : null,
               };
             })
-            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel);
+            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || !!m.chartEmbedUrl);
           setMessages(convertedMessages);
           setSessionId(sid);
           onSessionIdChange?.(sid);
@@ -437,19 +502,27 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     console.log('Selected project:', selectedProject);
     try {
       const res = await sendMessage(text, sessionId, selectedProject?.id || null, controller.signal);
-      if (res.success) {
+      if (res.response && res.response.trim().length > 0) {
         setIsAssistantTyping(true);
         setMessages((prev) => [
           ...prev,
           {
-            text: stripInternalPayloads(res.response),
+            text: buildAssistantTextFromSqlPreview(
+              stripInternalPayloads(res.response),
+              extractSqlPreviewFromToolEvents((res as any).tool_events),
+            ),
             isUser: false,
-            sqlToExecute: extractLastMutationSqlBlock(res.response),
+            sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response),
             sqlActionId: extractSqlActionId(res.response),
-            sqlActionState: extractLastMutationSqlBlock(res.response) ? ('pending' as const) : undefined,
+            sqlActionState:
+              (extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response))
+                ? ('pending' as const)
+                : undefined,
             exportToExcel: extractExportData(res.response),
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
             schemaLocked: false,
+            chartEmbedUrl: extractChartEmbedUrl(res.response),
+            workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
           },
         ]);
         
@@ -477,7 +550,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             }, 500);
           }
         }
-      } else {
+      } else if (!res.success) {
         setIsAssistantTyping(false);
         setMessages((prev) => [...prev, { text: `Error: ${res.error || 'Failed to get response'}`, isUser: false }]);
       }
@@ -556,21 +629,29 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     setIsLoading(true);
     try {
       const res = await sendMessage(userMsg.text, sessionId, selectedProject?.id || null);
-      if (res.success) {
+      if (res.response && res.response.trim().length > 0) {
         setMessages((prev) => {
           const updated = [...prev];
           updated[aiIndex] = {
-            text: stripInternalPayloads(res.response),
+            text: buildAssistantTextFromSqlPreview(
+              stripInternalPayloads(res.response),
+              extractSqlPreviewFromToolEvents((res as any).tool_events),
+            ),
             isUser: false,
-            sqlToExecute: extractLastMutationSqlBlock(res.response),
+            sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response),
             sqlActionId: extractSqlActionId(res.response),
-            sqlActionState: extractLastMutationSqlBlock(res.response) ? ('pending' as const) : undefined,
+            sqlActionState:
+              (extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response))
+                ? ('pending' as const)
+                : undefined,
             exportToExcel: extractExportData(res.response),
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
+            chartEmbedUrl: extractChartEmbedUrl(res.response),
+            workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
           };
           return updated;
         });
-      } else {
+      } else if (!res.success) {
         window.alert(`Error: ${res.error || 'Failed to refresh response'}`);
       }
     } catch (err) {
@@ -661,32 +742,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     });
 
     const schema = msg.schemaPreview;
-    const columnsDef = schema.columns
-      .map((c) => {
-        const parts: string[] = [`${c.variable} ${c.type}`];
-        if (c.notNull) parts.push('NOT NULL');
-        if (c.unique) parts.push('UNIQUE');
-        if (c.primaryKey) parts.push('PRIMARY KEY');
-        if ((c.defaultValue || '').trim()) parts.push(`DEFAULT ${String(c.defaultValue).trim()}`);
-        return parts.join(' ');
-      })
-      .join(', ');
-    const pkPart = schema.primaryKey ? `, primary_key="${schema.primaryKey}"` : '';
 
-    const confirmInstruction = [
-      `User confirmed schema for table ${schema.tableName}.`,
-      `Please execute this exact flow using tools:`,
-      `1) show_create_table_schema(table_name="${schema.tableName}", columns="${columnsDef}"${pkPart})`,
-      `2) create_table(table_name="${schema.tableName}", columns="${columnsDef}"${pkPart}, user_confirmed=true)`,
-      `Do not ask for Execute SQL button. Return only the final result.`,
-    ].join('\n');
-
-    const confirmPrompt = [
-      `Confirm schema table ${schema.tableName}`,
-      `[SCHEMA_CONFIRM_INTERNAL_START]`,
-      confirmInstruction,
-      `[SCHEMA_CONFIRM_INTERNAL_END]`,
-    ].join('\n');
+    if (!sessionId) {
+      setMessages((prev) => [...prev, { text: 'Error: No session — cannot confirm schema.', isUser: false }]);
+      return;
+    }
 
     setMessages((prev) => [
       ...prev,
@@ -695,23 +755,36 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     setIsLoading(true);
     try {
-      const res = await sendMessage(confirmPrompt, sessionId, selectedProject?.id || null);
+      const res = await resumeWorkflow(
+        sessionId,
+        true,
+        selectedProject?.id || null,
+        `Confirm schema table ${schema.tableName}`,
+      );
       if (res.success) {
         setMessages((prev) => [
           ...prev,
           {
-            text: stripInternalPayloads(res.response),
+            text: buildAssistantTextFromSqlPreview(
+              stripInternalPayloads(res.response),
+              extractSqlPreviewFromToolEvents((res as any).tool_events),
+            ),
             isUser: false,
-            sqlToExecute: extractLastMutationSqlBlock(res.response),
+            sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response),
             sqlActionId: extractSqlActionId(res.response),
-            sqlActionState: extractLastMutationSqlBlock(res.response) ? ('pending' as const) : undefined,
+            sqlActionState:
+              (extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response))
+                ? ('pending' as const)
+                : undefined,
             exportToExcel: extractExportData(res.response),
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
+            chartEmbedUrl: extractChartEmbedUrl(res.response),
+            workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
           },
         ]);
 
-        if ((res as any).session_id) {
-          const newSessionId = (res as any).session_id as string;
+        if (res.session_id) {
+          const newSessionId = res.session_id;
           setSessionId(newSessionId);
           onSessionIdChange?.(newSessionId);
           saveLastSession(newSessionId, selectedProject?.id ?? null);
@@ -772,12 +845,17 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           return [
             ...updated,
             {
-              text: stripInternalPayloads(res.response),
+              text: buildAssistantTextFromSqlPreview(
+                stripInternalPayloads(res.response),
+                extractSqlPreviewFromToolEvents((res as any).tool_events),
+              ),
               isUser: false,
-              sqlToExecute: extractLastMutationSqlBlock(res.response),
+              sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response),
               sqlActionId: extractSqlActionId(res.response),
               exportToExcel: extractExportData(res.response),
               schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
+              chartEmbedUrl: extractChartEmbedUrl(res.response),
+              workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
             },
           ];
         });
@@ -966,9 +1044,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
                 schemaPreview,
                 schemaLocked: msg.role === 'assistant' ? !!schemaPreview : undefined,
+                chartEmbedUrl: msg.role === 'assistant' ? extractChartEmbedUrl(rawContent) : null,
               };
             })
-            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel);
+            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || !!m.chartEmbedUrl);
           setMessages(convertedMessages);
           setSessionId(sid);
           onSessionIdChange?.(sid);

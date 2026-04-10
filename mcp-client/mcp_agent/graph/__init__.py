@@ -9,20 +9,35 @@ from mcp_agent.graph.state import (
     AgentWorkflowConfig,
     DATABASE_WORKFLOW,
     EXCEL_WORKFLOW,
+    SUPERSET_WORKFLOW,
     AGENT_WORKFLOWS,
     AgentContext,
     StageResult,
 )
 from mcp_agent.graph.graph_state import AgentState, create_initial_state
-from mcp_agent.graph.base_workflow import BaseAgentWorkflow
-from mcp_agent.graph.database_workflow import DatabaseAgentWorkflow
+from mcp_agent.graph.database_utils import (
+    strip_sql_fences,
+    is_execute_query_error_response,
+    format_mutation_preview_markdown,
+    markdown_table_from_rows,
+    build_insert_values_markdown,
+    insert_values_preview_markdown,
+)
+from mcp_agent.graph.readonly_workflow import ReadOnlyWorkflow
+from mcp_agent.graph.create_table_workflow import CreateTableWorkflow
+from mcp_agent.graph.mutation_workflow import MutationWorkflow
 from mcp_agent.graph.excel_workflow import ExcelAgentWorkflow
+from mcp_agent.graph.superset_workflow import SupersetAgentWorkflow
 from mcp_agent.graph.workflow import AgentWorkflow
 
 # Workflow registry
 WORKFLOWS = {
-    "database": DatabaseAgentWorkflow,
+    "database": None,  # Replaced by database sub-workflows
+    "readonly": ReadOnlyWorkflow,
+    "create_table": CreateTableWorkflow,
+    "mutation": MutationWorkflow,
     "excel": ExcelAgentWorkflow,
+    "superset": SupersetAgentWorkflow,
 }
 
 
@@ -41,15 +56,24 @@ __all__ = [
     # Workflow configs
     "DATABASE_WORKFLOW",
     "EXCEL_WORKFLOW",
+    "SUPERSET_WORKFLOW",
     "AGENT_WORKFLOWS",
     # Graph state
     "AgentState",
     "create_initial_state",
-    # Base classes
-    "BaseAgentWorkflow",
+    # Database utilities
+    "strip_sql_fences",
+    "is_execute_query_error_response",
+    "format_mutation_preview_markdown",
+    "markdown_table_from_rows",
+    "build_insert_values_markdown",
+    "insert_values_preview_markdown",
     # Concrete workflows
-    "DatabaseAgentWorkflow",
+    "ReadOnlyWorkflow",
+    "CreateTableWorkflow",
+    "MutationWorkflow",
     "ExcelAgentWorkflow",
+    "SupersetAgentWorkflow",
     # Main workflow class
     "AgentWorkflow",
     # Registry

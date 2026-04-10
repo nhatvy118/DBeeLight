@@ -8,9 +8,15 @@ export type ToolEvent = {
   payload?: Record<string, unknown>;
 };
 
-export type ChatResponse =
-  | { success: true; response: string; session_id?: string | null; tool_events?: ToolEvent[] }
-  | { success: false; error: string };
+export type ChatResponse = {
+  success: boolean;
+  response?: string;
+  error?: string;
+  session_id?: string | null;
+  tool_events?: ToolEvent[];
+  pending_workflow_resume?: boolean;
+  warnings?: Record<string, unknown>[];
+};
 
 export type SessionInfo = {
   session_id: string;
@@ -55,6 +61,32 @@ export async function sendMessage(
   const data = (await response.json()) as ChatResponse & { error?: string };
   if (!response.ok) {
     throw new Error((data as any).error || 'Failed to send message');
+  }
+  return data;
+}
+
+export async function resumeWorkflow(
+  sessionId: string,
+  approved: boolean,
+  projectId: string | null = null,
+  userVisibleMessage: string | null = null,
+  signal?: AbortSignal
+): Promise<ChatResponse> {
+  const response = await fetch(url('/api/chat/workflow-resume'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      approved,
+      project_id: projectId,
+      user_visible_message: userVisibleMessage,
+    }),
+    signal,
+  });
+  const data = (await response.json()) as ChatResponse & { error?: string };
+  if (!response.ok) {
+    throw new Error((data as any).error || 'Failed to resume workflow');
   }
   return data;
 }

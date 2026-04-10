@@ -23,6 +23,8 @@ class StageType(str, Enum):
 
     # Database agent stages
     SCHEMA_DISCOVERY = "SCHEMA_DISCOVERY"
+    SCHEMA_PREVIEW = "SCHEMA_PREVIEW"
+    SCHEMA_HITL = "SCHEMA_HITL"
     SQL_GENERATION = "SQL_GENERATION"
     SQL_PREVIEW = "SQL_PREVIEW"
     SQL_EXECUTION = "SQL_EXECUTION"
@@ -36,10 +38,10 @@ class StageType(str, Enum):
     IMPORT_PREPARE = "IMPORT_PREPARE"
     IMPORT_EXECUTE = "IMPORT_EXECUTE"
 
-    # Email agent stages (example)
-    EMAIL_CONNECT = "EMAIL_CONNECT"
-    EMAIL_SEND = "EMAIL_SEND"
-    EMAIL_LIST = "EMAIL_LIST"
+    # Superset agent stages
+    DB_CONNECTION = "DB_CONNECTION"
+    CHART_CREATION = "CHART_CREATION"
+    CHART_EMBED = "CHART_EMBED"
 
 
 class AgentWorkflowConfig(BaseModel):
@@ -53,23 +55,52 @@ class AgentWorkflowConfig(BaseModel):
 
 
 # Predefined workflow configs for each agent type
+# Graph topology is built in each database workflow class._build_graph method:
+# … → SQL_GENERATION (SQL + affected-row preview when applicable) → read_done (SELECT done) | else → SQL_PREVIEW → SQL_EXECUTION
+# SCHEMA_PREVIEW only for CREATE before SQL_GENERATION (see _route_after_schema_discovery).
 DATABASE_WORKFLOW = AgentWorkflowConfig(
     agent_id="database",
     stages=[
         StageType.INTENT_PARSE,
         StageType.SCHEMA_DISCOVERY,
+        StageType.SCHEMA_PREVIEW,
+        StageType.SCHEMA_HITL,
         StageType.SQL_GENERATION,
         StageType.SQL_PREVIEW,
         StageType.SQL_EXECUTION,
     ],
     transitions={
         StageType.INTENT_PARSE.value: StageType.SCHEMA_DISCOVERY.value,
-        StageType.SCHEMA_DISCOVERY.value: StageType.SQL_GENERATION.value,
+        StageType.SCHEMA_DISCOVERY.value: StageType.SCHEMA_PREVIEW.value,
+        StageType.SCHEMA_PREVIEW.value: StageType.SCHEMA_HITL.value,
+        StageType.SCHEMA_HITL.value: StageType.SQL_GENERATION.value,
         StageType.SQL_GENERATION.value: StageType.SQL_PREVIEW.value,
         StageType.SQL_PREVIEW.value: StageType.SQL_EXECUTION.value,
         StageType.SQL_EXECUTION.value: StageType.DONE.value,
     },
-    wait_stages=[StageType.SQL_PREVIEW.value],
+    # Human gates use LangGraph interrupt() + checkpointer (not wait_stages / END).
+    wait_stages=[],
+)
+
+SUPERSET_WORKFLOW = AgentWorkflowConfig(
+    agent_id="superset",
+    stages=[
+        StageType.INTENT_PARSE,
+        StageType.DB_CONNECTION,
+        StageType.SCHEMA_DISCOVERY,
+        StageType.SQL_EXECUTION,
+        StageType.CHART_CREATION,
+        StageType.CHART_EMBED,
+    ],
+    transitions={
+        StageType.INTENT_PARSE.value: StageType.DB_CONNECTION.value,
+        StageType.DB_CONNECTION.value: StageType.SCHEMA_DISCOVERY.value,
+        StageType.SCHEMA_DISCOVERY.value: StageType.SQL_EXECUTION.value,
+        StageType.SQL_EXECUTION.value: StageType.CHART_CREATION.value,
+        StageType.CHART_CREATION.value: StageType.CHART_EMBED.value,
+        StageType.CHART_EMBED.value: StageType.DONE.value,
+    },
+    wait_stages=[],
 )
 
 EXCEL_WORKFLOW = AgentWorkflowConfig(
@@ -97,6 +128,7 @@ EXCEL_WORKFLOW = AgentWorkflowConfig(
 AGENT_WORKFLOWS: Dict[str, AgentWorkflowConfig] = {
     "database": DATABASE_WORKFLOW,
     "excel": EXCEL_WORKFLOW,
+    "superset": SUPERSET_WORKFLOW,
 }
 
 

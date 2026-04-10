@@ -1,0 +1,592 @@
+"""Mutation workflow - INSERT/UPDATE/DELETE with SQL preview and human approval."""
+
+import json
+import logging
+from typing import Dict
+
+from openai import OpenAI
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, StateGraph
+from langgraph.types import Command, interrupt
+
+from mcp_agent.graph.graph_state import AgentState, create_initial_state
+from mcp_agent.graph.state import StageType
+
+logger = logging.getLogger(__name__)
+
+
+async def intent_parse(state: AgentState, llm, agent) -> AgentState:
+    """Parse user intent and determine mutation operation."""
+    # Handle resume: user_message may not be in checkpoint state
+    intent_data = state.get("intent") or {}
+    user_message = state.get("user_message") or str(intent_data.get("resolved_query") or "")
+    logger.info(f"[Mutation] Intent parse: {user_message[:50]}...")
+    recent_context = await _get_recent_session_context(agent)
+
+    response = llm.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": """Analyze the database request and extract:
+- operation: SELECT, INSERT, UPDATE, DELETE, ALTER, DROP, etc.
+- tables: list of every table name referenced (required for mutations)
+- filters: WHERE conditions
+- detected_language: en or vi
+- resolved_query: rewrite latest user message into a self-contained request
+
+Return JSON."""
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Latest user message: {user_message}\n\n"
+                    f"Recent conversation context:\n{recent_context or '(none)'}"
+                ),
+            }
+        ],
+        temperature=0,
+        response_format={"type": "json_object"}
+    )
+
+    try:
+        intent = json.loads(response.choices[0].message.content)
+    except Exception:
+        intent = {}
+
+    operation = str(intent.get("operation", "INSERT")).strip().upper()
+    resolved_query = str(intent.get("resolved_query") or user_message).strip() or user_message
+
+    safe_intent = {
+        "operation": operation,
+        "tables": intent.get("tables", []),
+        "filters": intent.get("filters", {}),
+        "detected_language": intent.get("detected_language", "en"),
+        "resolved_query": resolved_query,
+    }
+
+    logger.info(
+        "[Mutation] Parsed operation=%s, tables=%s",
+        operation,
+        safe_intent.get("tables"),
+    )
+
+    return {
+        **state,
+        "intent": safe_intent,
+        "detected_language": safe_intent.get("detected_language", "en"),
+        "tables": safe_intent.get("tables", []),
+        "followup_context": recent_context,
+    }
+
+
+async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
+    """Discover schema for relevant tables."""
+    tables = state.get("tables", []) or []
+    logger.info(f"[Mutation] Schema discovery for: {tables}")
+
+    if not agent:
+        return {**state, "table_schema": {}}
+
+    log_lines: list[str] = []
+    try:
+        tables_result = await _call_tool(agent, "list_tables", {})
+        log_lines.append(f"list_tables: {tables_result}")
+    except Exception as e:
+        log_lines.append(f"list_tables error: {e}")
+
+    missing: list[str] = []
+    for t in tables:
+        name = str(t).strip()
+        if not name:
+            continue
+        try:
+            d = await _call_tool(agent, "describe_table", {"table_name": name})
+            log_lines.append(f"describe_table({name}): {d}")
+            if not _describe_table_succeeded(d):
+                missing.append(name)
+        except Exception as e:
+            log_lines.append(f"describe_table({name}) error: {e}")
+            missing.append(name)
+
+    log_block = "\n".join(log_lines)
+    logger.info(f"[Mutation] Schema discovery response: {log_block[:500]}...")
+
+    if missing:
+        miss_fmt = ", ".join(f"`{m}`" for m in missing)
+        msg = (
+            f"**Unknown table(s):** {miss_fmt}\n\n"
+            "Those tables are not in the connected database. "
+            "Fix the table name or create the table before continuing.\n\n"
+            "**Discovery log:**\n\n```\n"
+            f"{log_block[:8000]}\n```"
+        )
+        return {
+            **state,
+            "schema_discovery_failed": True,
+            "error": f"Table(s) not found: {', '.join(missing)}",
+            "output": {
+                "type": "error",
+                "message": msg,
+            },
+            "table_schema": {"tables": tables, "missing": missing},
+        }
+
+    return {
+        **state,
+        "table_schema": {"tables": tables},
+    }
+
+
+async def sql_preview(state: AgentState, llm, agent) -> AgentState:
+    """Generate SQL and show preview with affected rows."""
+    intent = state.get("intent", {})
+    effective_message = str(intent.get("resolved_query") or state.get("user_message", ""))
+    operation = intent.get("operation", "INSERT").upper()
+    logger.info(f"[Mutation] SQL preview for: {operation}")
+
+    if not agent:
+        return {
+            **state,
+            "output": {"type": "error", "message": "No agent available"},
+        }
+
+    from mcp_agent.graph.database_utils import detect_db_type, get_sql_system_prompt
+    # db_type = detect_db_type(agent)
+    db_type = "postgres"
+
+    # Generate SQL
+    response = llm.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": get_sql_system_prompt(db_type),
+            },
+            {
+                "role": "user",
+                "content": f"Operation: {operation}\nTables: {intent.get('tables')}\nFilters: {intent.get('filters')}\nRequest: {effective_message}"
+            }
+        ],
+        temperature=0,
+    )
+
+    from mcp_agent.graph.database_utils import (
+        strip_sql_fences,
+        is_execute_query_error_response,
+        format_mutation_preview_markdown,
+        delete_sql_to_select_preview,
+        update_sql_to_select_preview,
+        drop_sql_to_select_preview,
+        alter_sql_to_select_preview,
+        insert_into_select_preview_sql,
+    )
+    sql = strip_sql_fences(response.choices[0].message.content or "")
+
+    out: Dict = {
+        "type": "sql_preview",
+        "sql": sql,
+        "message": "Please review and click Execute",
+    }
+
+    # Attach preview for affected rows
+    out = await _enrich_mutation_preview(agent, operation, sql, out)
+    logger.info("[Mutation] SQL preview attached for op=%s", operation)
+
+    if out.get("mutation_preview_fatal"):
+        err_raw = str(out.pop("mutation_preview_error_raw", "") or "")
+        out.pop("mutation_preview_fatal", None)
+        from mcp_agent.graph.database_utils import friendly_mutation_preview_error
+        friendly = friendly_mutation_preview_error(err_raw)
+        return {
+            **state,
+            "sql": None,
+            "wait_user": False,
+            "error": "Mutation preview query failed",
+            "output": {
+                "type": "error",
+                "message": friendly,
+            },
+        }
+
+    # Put SQL + preview into message so the frontend can render the Execute affordance
+    # (frontend currently extracts sql blocks from response text).
+    preview_md = out.get("mutation_preview_markdown")
+    msg_parts: list[str] = []
+    if sql and str(sql).strip():
+        msg_parts.append(f"```sql\n{sql}\n```")
+    if isinstance(preview_md, str) and preview_md.strip():
+        msg_parts.append(preview_md.strip())
+    msg_parts.append("Please review and click Execute")
+    out["message"] = "\n\n".join(p for p in msg_parts if p).strip()
+
+    return {
+        **state,
+        "sql": sql,
+        "wait_user": False,
+        "output": out,
+    }
+
+
+async def _enrich_mutation_preview(agent, operation: str, sql: str, out: Dict) -> Dict:
+    """Prefer showing affected rows via read-only SELECT."""
+    out = dict(out)
+    op = str(operation).upper()
+    if not agent:
+        return out
+
+    from mcp_agent.graph.database_utils import (
+        delete_sql_to_select_preview,
+        update_sql_to_select_preview,
+        drop_sql_to_select_preview,
+        alter_sql_to_select_preview,
+        insert_into_select_preview_sql,
+        format_mutation_preview_markdown,
+        is_execute_query_error_response,
+    )
+
+    if op == "DELETE":
+        preview_q = delete_sql_to_select_preview(sql)
+        return await _mutation_preview_run_select(
+            agent, out, "Rows that would be deleted (preview)", preview_q
+        )
+
+    if op == "UPDATE":
+        preview_q = update_sql_to_select_preview(sql)
+        if preview_q:
+            return await _mutation_preview_run_select(
+                agent, out, "Rows that would be updated (current values, preview)", preview_q
+            )
+        return {
+            **out,
+            "mutation_preview_markdown": (
+                "**Rows that would be updated (preview)**\n\n"
+                "_Could not derive a safe SELECT from this UPDATE. Review the SQL above._"
+            ),
+        }
+
+    if op == "INSERT":
+        sel = insert_into_select_preview_sql(sql)
+        if sel:
+            return await _mutation_preview_run_select(
+                agent, out, "Rows that would be inserted (from SELECT, preview)", sel
+            )
+        from mcp_agent.graph.database_utils import insert_values_preview_markdown
+        out["mutation_preview_markdown"] = await insert_values_preview_markdown(agent, sql, _call_tool)
+        return out
+
+    if op == "DROP":
+        preview_q = drop_sql_to_select_preview(sql)
+        if preview_q:
+            return await _mutation_preview_run_select(
+                agent, out, "Current rows in object to be dropped (preview)", preview_q
+            )
+        return {
+            **out,
+            "mutation_preview_markdown": (
+                "**DROP (preview)**\n\n"
+                "_Could not derive a row preview (expect `DROP TABLE` / `DROP VIEW` on one object)._"
+            ),
+        }
+
+    if op == "ALTER":
+        preview_q = alter_sql_to_select_preview(sql)
+        if preview_q:
+            return await _mutation_preview_run_select(
+                agent, out, "Current rows in table before ALTER (preview)", preview_q
+            )
+        return {
+            **out,
+            "mutation_preview_markdown": (
+                "**ALTER (preview)**\n\n"
+                "_Could not derive table name for row preview. Review the SQL above._"
+            ),
+        }
+
+    return out
+
+
+async def _mutation_preview_run_select(
+    agent, out: Dict, title: str, select_sql: str
+) -> Dict:
+    """Execute read-only SELECT and attach formatted rows."""
+    out = dict(out)
+    if not agent or not select_sql:
+        return out
+    try:
+        preview_raw = await _call_tool(agent, "execute_query", {"query": select_sql})
+        from mcp_agent.graph.database_utils import (
+            is_execute_query_error_response,
+            format_mutation_preview_markdown,
+            parse_describe_table_column_names,
+            markdown_table_from_rows,
+        )
+        if is_execute_query_error_response(preview_raw):
+            out["mutation_preview_fatal"] = True
+            out["mutation_preview_error_raw"] = preview_raw
+            return out
+
+        # If the DB tool returns a plain "no rows" string, render an empty table with headers
+        # so the UI shows columns even when 0 rows match.
+        low = (preview_raw or "").strip().lower()
+        if "no rows returned" in low or "no data found" in low:
+            table_name = None
+            try:
+                import re
+                m = re.search(r"\bfrom\s+([a-zA-Z0-9_\"`\.]+)", select_sql, flags=re.IGNORECASE)
+                if m:
+                    table_name = m.group(1).strip().strip("`").strip('"')
+            except Exception:
+                table_name = None
+            headers: list[str] = []
+            if table_name:
+                try:
+                    desc = await _call_tool(agent, "describe_table", {"table_name": table_name})
+                    headers = parse_describe_table_column_names(desc) or []
+                except Exception:
+                    headers = []
+            if headers:
+                empty_table = markdown_table_from_rows(headers, [])
+                out["mutation_preview_markdown"] = f"**{title}**\n\n{empty_table}\n\n_No matching rows._"
+            else:
+                out["mutation_preview_markdown"] = format_mutation_preview_markdown(title, preview_raw)
+        else:
+            out["mutation_preview_markdown"] = format_mutation_preview_markdown(title, preview_raw)
+    except Exception as e:
+        logger.warning("[Mutation] mutation preview SELECT failed (%s): %s", title, e)
+        out["mutation_preview_fatal"] = True
+        out["mutation_preview_error_raw"] = str(e)
+    return out
+
+
+async def sql_approval(state: AgentState, _llm, _agent) -> AgentState:
+    """Human approval for executing generated SQL (LangGraph interrupt)."""
+    sql = state.get("sql")
+    prev_out = state.get("output") if isinstance(state.get("output"), dict) else {}
+    wait_output: Dict = {
+        "type": "sql_preview",
+        "sql": sql,
+        "message": "Please review the SQL and click Execute to run",
+    }
+    mp = prev_out.get("mutation_preview_markdown")
+    if isinstance(mp, str) and mp.strip():
+        wait_output["mutation_preview_markdown"] = mp.strip()
+    # Mirror sql_preview formatting: include SQL + preview inside message for UI rendering.
+    msg_parts: list[str] = []
+    if isinstance(sql, str) and sql.strip():
+        msg_parts.append(f"```sql\n{sql}\n```")
+    if isinstance(mp, str) and mp.strip():
+        msg_parts.append(mp.strip())
+    msg_parts.append("Please review the SQL and click Execute to run")
+    wait_output["message"] = "\n\n".join(p for p in msg_parts if p).strip()
+
+    logger.info("[Mutation] SQL approval interrupt")
+    ok = interrupt(
+        {
+            "stage": "SQL_PREVIEW",
+            "output": wait_output,
+        }
+    )
+    if not ok:
+        return {
+            **state,
+            "approved": False,
+            "wait_user": False,
+            "output": {
+                **wait_output,
+                "cancelled": True,
+                "message": "SQL execution cancelled.",
+            },
+        }
+    return {
+        **state,
+        "approved": True,
+        "wait_user": False,
+    }
+
+
+async def sql_execution(state: AgentState, llm, agent) -> AgentState:
+    """Execute SQL query after approval."""
+    sql = state.get("sql")
+    logger.info(f"[Mutation] SQL execution: {sql[:50] if sql else 'None'}...")
+
+    if not state.get("approved"):
+        prev = state.get("output") if isinstance(state.get("output"), dict) else {}
+        msg = prev.get("message") if isinstance(prev, dict) else None
+        return {
+            **state,
+            "query_result": None,
+            "output": {
+                "type": "execution_skipped",
+                "sql": sql,
+                "message": (msg if isinstance(msg, str) and msg.strip() else "SQL execution cancelled."),
+            },
+        }
+
+    if not agent:
+        return {
+            **state,
+            "output": {"error": "No agent available for execution"},
+            "error": "No agent available"
+        }
+
+    try:
+        response = await _call_tool(agent, "execute_query", {"query": sql})
+    except Exception as e:
+        response = f"Error executing SQL: {e}"
+
+    from mcp_agent.graph.database_utils import is_execute_query_error_response
+    is_err = is_execute_query_error_response(str(response))
+    message = str(response).strip() if is_err else "Thực hiện SQL thành công."
+    output_type = "error" if is_err else "execution_complete"
+
+    return {
+        **state,
+        "query_result": response,
+        "output": {
+            "type": output_type,
+            "sql": sql,
+            "result": response,
+            "message": message,
+        }
+    }
+
+
+async def _get_recent_session_context(agent, limit: int = 6) -> str:
+    """Get recent user/assistant messages for follow-up disambiguation."""
+    if not agent or not getattr(agent, "session_manager", None):
+        return ""
+    try:
+        msgs = await agent.session_manager.get_current_messages()
+    except Exception:
+        return ""
+    if not isinstance(msgs, list) or not msgs:
+        return ""
+    lines: list[str] = []
+    for m in msgs[-limit:]:
+        role = str((m or {}).get("role") or "").strip()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str((m or {}).get("content") or "").strip()
+        if not content:
+            continue
+        if len(content) > 500:
+            content = content[:500] + "..."
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def _describe_table_succeeded(describe_text: str) -> bool:
+    """False when MCP reports missing table or hard error."""
+    s = (describe_text or "").strip().lower()
+    if not s:
+        return False
+    if "not found" in s:
+        return False
+    if s.startswith("error "):
+        return False
+    return True
+
+
+async def _call_tool(agent, tool_name: str, args: dict) -> str:
+    """Call MCP tool directly through agent sessions."""
+    if not agent:
+        raise RuntimeError("No agent available")
+
+    for _server_name, session in agent.sessions.items():
+        try:
+            result = await session.call_tool(tool_name, args)
+            content = result.content
+            if hasattr(content, "text"):
+                return str(content.text)
+            if isinstance(content, list) and content:
+                first = content[0]
+                if hasattr(first, "text"):
+                    return str(first.text)
+            return str(content)
+        except Exception:
+            continue
+
+    raise RuntimeError(f"Tool '{tool_name}' not found in connected sessions")
+
+
+class MutationWorkflow:
+    """Mutation workflow for INSERT/UPDATE/DELETE with SQL preview and approval.
+
+    Nodes:
+    1. INTENT_PARSE - classify operation
+    2. SCHEMA_DISCOVERY - verify tables exist
+    3. SQL_PREVIEW - generate SQL with affected rows preview
+    4. SQL_APPROVAL - interrupt for human approval
+    5. SQL_EXECUTION - execute after approval
+
+    Flow: START → INTENT_PARSE → SCHEMA_DISCOVERY → SQL_PREVIEW → SQL_APPROVAL → SQL_EXECUTION → DONE
+    """
+
+    def __init__(self, llm=None, agent=None):
+        self.llm = llm or OpenAI()
+        self.agent = agent
+        self._checkpointer = MemorySaver()
+        self._compiled_graph = None
+
+    def _build_graph(self):
+        """Build LangGraph for mutation workflow."""
+        workflow = StateGraph(AgentState)
+
+        async def intent_parse_node(state):
+            return await intent_parse(state, self.llm, self.agent)
+
+        async def schema_discovery_node(state):
+            return await schema_discovery(state, self.llm, self.agent)
+
+        async def sql_preview_node(state):
+            return await sql_preview(state, self.llm, self.agent)
+
+        async def sql_approval_node(state):
+            return await sql_approval(state, self.llm, self.agent)
+
+        async def sql_execution_node(state):
+            return await sql_execution(state, self.llm, self.agent)
+
+        async def done_handler(state):
+            return {**state, "current_stage": StageType.DONE.value}
+
+        workflow.add_node("INTENT_PARSE", intent_parse_node)
+        workflow.add_node("SCHEMA_DISCOVERY", schema_discovery_node)
+        workflow.add_node("SQL_PREVIEW", sql_preview_node)
+        workflow.add_node("SQL_APPROVAL", sql_approval_node)
+        workflow.add_node("SQL_EXECUTION", sql_execution_node)
+        workflow.add_node(StageType.DONE.value, done_handler)
+
+        workflow.set_entry_point("INTENT_PARSE")
+        workflow.add_edge("INTENT_PARSE", "SCHEMA_DISCOVERY")
+        workflow.add_edge("SCHEMA_DISCOVERY", "SQL_PREVIEW")
+        workflow.add_edge("SQL_PREVIEW", "SQL_APPROVAL")
+        workflow.add_edge("SQL_APPROVAL", "SQL_EXECUTION")
+        workflow.add_edge("SQL_EXECUTION", StageType.DONE.value)
+        workflow.add_edge(StageType.DONE.value, END)
+
+        return workflow.compile(checkpointer=self._checkpointer)
+
+    def _get_compiled_graph(self):
+        if self._compiled_graph is None:
+            self._compiled_graph = self._build_graph()
+        return self._compiled_graph
+
+    async def run(
+        self,
+        session_id: str,
+        user_message: str,
+        *,
+        resume=None,
+        thread_id: str = None,
+    ) -> AgentState:
+        """Run or resume the mutation workflow."""
+        graph = self._get_compiled_graph()
+        cfg = {"configurable": {"thread_id": thread_id or session_id}}
+        if resume is not None:
+            raw = await graph.ainvoke(Command(resume=resume), cfg)
+        else:
+            state = create_initial_state(session_id, user_message, "database")
+            raw = await graph.ainvoke(state, cfg)
+        return dict(raw) if not isinstance(raw, dict) else raw

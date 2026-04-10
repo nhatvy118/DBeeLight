@@ -1,21 +1,41 @@
-"""LangGraph workflow builder - passes BaseAgent to workflows for tool execution."""
+"""LangGraph workflow router - dispatches to correct workflow based on operation type."""
 
+import json
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal, cast
 from openai import OpenAI
 
-from mcp_agent.graph.database_workflow import DatabaseAgentWorkflow
+from mcp_agent.graph.readonly_workflow import ReadOnlyWorkflow
+from mcp_agent.graph.create_table_workflow import CreateTableWorkflow
+from mcp_agent.graph.mutation_workflow import MutationWorkflow
 from mcp_agent.graph.excel_workflow import ExcelAgentWorkflow
-from mcp_agent.graph.graph_state import AgentState
+from mcp_agent.graph.superset_workflow import SupersetAgentWorkflow
+from mcp_agent.graph.graph_state import AgentState, create_initial_state
 from mcp_agent.graph.state import StageType
 
 logger = logging.getLogger(__name__)
 
+# Safe DB operations that route to ReadOnlyWorkflow (direct tool execution)
+_SAFE_DB_OPERATIONS = frozenset(
+    {"LIST_TABLES", "DESCRIBE_TABLE", "CONNECT", "DISCONNECT"}
+)
+
+
+DatabaseRoute = Optional[Literal["readonly", "create_table", "mutation", "general"]]
+
 
 class AgentWorkflow:
-    """Main workflow class that routes to agent-specific workflows.
+    """Per-agent LangGraph runner.
 
-    Each workflow delegates to BaseAgent for tool execution.
+    Database paths (usually chosen by Orchestrator via ``database_route``):
+    - ``readonly`` → ReadOnlyWorkflow (SELECT, list/describe tables, connect/disconnect, …)
+    - ``create_table`` → CreateTableWorkflow
+    - ``mutation`` → MutationWorkflow
+    - ``general`` → DatabaseAgent.process_query (tool loop; request is DB-related but not one of the three graphs)
+
+    If ``database_route`` is omitted (``None``), operation is classified locally for backward compatibility.
+
+    Non-database: excel / superset workflows.
     """
 
     def __init__(
@@ -27,35 +47,194 @@ class AgentWorkflow:
         self.llm = llm or OpenAI()
         self.model = model
 
-        # Initialize agent-specific workflows with BaseAgent instances
         self.workflows: Dict[str, Any] = {}
-
+        self._session_workflow_map: Dict[str, str] = {}
+        self._database_agent: Any = None
         if agents:
             self._init_workflows(agents)
 
     def _init_workflows(self, agents: Dict[str, Any]):
-        """Initialize workflows with BaseAgent instances."""
+        """Initialize all workflows with agent instances."""
+        self._database_agent = agents.get("database")
         self.workflows = {
-            "database": DatabaseAgentWorkflow(llm=self.llm, agent=agents.get("database")),
+            "readonly": ReadOnlyWorkflow(llm=self.llm, agent=agents.get("database")),
+            "create_table": CreateTableWorkflow(llm=self.llm, agent=agents.get("database")),
+            "mutation": MutationWorkflow(llm=self.llm, agent=agents.get("database")),
             "excel": ExcelAgentWorkflow(llm=self.llm, agent=agents.get("excel")),
+            "superset": SupersetAgentWorkflow(
+                llm=self.llm,
+                agent=agents.get("superset"),
+                database_agent=agents.get("database"),
+            ),
         }
+
+    def _classify_operation(self, user_message: str) -> str:
+        """Classify the operation type from user message using LLM."""
+        try:
+            response = self.llm.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Analyze the database request and return the operation type as JSON. "
+                            "Operations: SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, EXPORT, "
+                            "LIST_TABLES, DESCRIBE_TABLE, CONNECT, DISCONNECT, UNKNOWN. "
+                            "Return JSON with key 'operation'."
+                        ),
+                    },
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=0,
+                response_format={"type": "json_object"}
+            )
+            result = json.loads(response.choices[0].message.content or "{}")
+            return str(result.get("operation", "SELECT")).strip().upper()
+        except Exception:
+            return "SELECT"
 
     async def run(
         self,
         session_id: str,
         user_message: str,
         agent_type: str,
+        *,
+        resume=None,
+        thread_id: Optional[str] = None,
+        database_route: DatabaseRoute = None,
     ) -> AgentState:
-        """Run workflow for specific agent type.
+        """Run workflow for specific agent type, routing to correct sub-workflow for database."""
+        if agent_type != "database":
+            return await self._run_non_database(session_id, user_message, agent_type, resume, thread_id)
 
-        Args:
-            session_id: Unique session identifier
-            user_message: User's input message
-            agent_type: Which agent to use ("database", "excel", etc.)
+        # For database, use orchestrator route or classify locally
+        return await self._run_database(
+            session_id, user_message, resume, thread_id, database_route
+        )
 
-        Returns:
-            Final state after workflow completes
+    async def _run_database(
+        self,
+        session_id: str,
+        user_message: str,
+        resume=None,
+        thread_id: Optional[str] = None,
+        database_route: DatabaseRoute = None,
+    ) -> AgentState:
+        """Route database request: explicit ``database_route`` from Orchestrator, else local classify.
+
+        When resuming (user approved/rejected), skip routing and use the workflow that was interrupted.
         """
+        # On resume, go directly to the workflow that was interrupted
+        if resume is not None:
+            wf_name = self._session_workflow_map.get(session_id, "mutation")
+            workflow = cast(Any, self.workflows.get(wf_name, self.workflows["mutation"]))
+            logger.info(f"[Workflow] Resume detected, using workflow: {wf_name}")
+            return await workflow.run(
+                session_id, user_message, resume=resume, thread_id=thread_id
+            )
+
+        if database_route == "general":
+            self._session_workflow_map.pop(session_id, None)
+            logger.info("[Workflow] database_route=general → DatabaseAgent.process_query")
+            return await self._run_database_base_agent(session_id, user_message)
+
+        if database_route == "readonly":
+            self._session_workflow_map[session_id] = "readonly"
+            logger.info("[Workflow] database_route=readonly → ReadOnlyWorkflow")
+            return await self.workflows["readonly"].run(session_id, user_message)
+
+        if database_route == "create_table":
+            workflow = cast(Any, self.workflows["create_table"])
+            self._session_workflow_map[session_id] = "create_table"
+            logger.info("[Workflow] database_route=create_table → CreateTableWorkflow")
+            return await workflow.run(
+                session_id, user_message, resume=resume, thread_id=thread_id
+            )
+
+        if database_route == "mutation":
+            workflow = cast(Any, self.workflows["mutation"])
+            self._session_workflow_map[session_id] = "mutation"
+            logger.info("[Workflow] database_route=mutation → MutationWorkflow")
+            return await workflow.run(
+                session_id, user_message, resume=resume, thread_id=thread_id
+            )
+
+        # No orchestrator route — local classify (legacy / direct callers)
+        operation = self._classify_operation(user_message)
+        logger.info(f"[Workflow] Database operation classified as: {operation}")
+
+        if operation in _SAFE_DB_OPERATIONS or operation == "SELECT":
+            workflow = self.workflows["readonly"]
+            self._session_workflow_map[session_id] = "readonly"
+            return await workflow.run(session_id, user_message)
+
+        if operation == "CREATE":
+            workflow = cast(Any, self.workflows["create_table"])
+            self._session_workflow_map[session_id] = "create_table"
+            return await workflow.run(
+                session_id, user_message, resume=resume, thread_id=thread_id
+            )
+
+        if operation == "UNKNOWN":
+            self._session_workflow_map.pop(session_id, None)
+            logger.info("[Workflow] UNKNOWN → BaseAgent.process_query (tool loop)")
+            return await self._run_database_base_agent(session_id, user_message)
+
+        # INSERT, UPDATE, DELETE, ALTER, DROP, EXPORT
+        workflow = cast(Any, self.workflows["mutation"])
+        self._session_workflow_map[session_id] = "mutation"
+        return await workflow.run(
+            session_id, user_message, resume=resume, thread_id=thread_id
+        )
+
+    async def _run_database_base_agent(
+        self,
+        session_id: str,
+        user_message: str,
+    ) -> AgentState:
+        """Full DatabaseAgent tool loop (orchestrator ``database_route=general``, or UNKNOWN classify)."""
+        agent = self._database_agent
+        if not agent:
+            base = create_initial_state(session_id, user_message, "database")
+            return {
+                **base,
+                "current_stage": StageType.ERROR.value,
+                "error": "No database agent available",
+                "output": {
+                    "type": "error",
+                    "message": "No database agent available for conversational mode.",
+                },
+            }
+        try:
+            text = await agent.process_query(user_message, verbose=False, persist_history=True)
+        except Exception as e:
+            logger.exception("[Workflow] BaseAgent.process_query failed: %s", e)
+            base = create_initial_state(session_id, user_message, "database")
+            return {
+                **base,
+                "current_stage": StageType.ERROR.value,
+                "error": str(e),
+                "output": {"type": "error", "message": f"Agent error: {e}"},
+            }
+        base = create_initial_state(session_id, user_message, "database")
+        return {
+            **base,
+            "current_stage": StageType.DONE.value,
+            "output": {
+                "type": "agent_response",
+                "message": text,
+            },
+        }
+
+    async def _run_non_database(
+        self,
+        session_id: str,
+        user_message: str,
+        agent_type: str,
+        resume=None,
+        thread_id: Optional[str] = None,
+    ) -> AgentState:
+        """Run non-database workflows (excel, superset)."""
         workflow = self.workflows.get(agent_type)
         if not workflow:
             logger.error(f"[Workflow] Unknown agent type: {agent_type}")
@@ -69,30 +248,19 @@ class AgentWorkflow:
             }
 
         logger.info(f"[Workflow] Running {agent_type} workflow for session {session_id}")
-        result = await workflow.run(session_id, user_message)
+
+        if agent_type == "database":
+            db_wf = cast(Any, workflow)
+            result = await db_wf.run(
+                session_id, user_message, resume=resume, thread_id=thread_id
+            )
+        elif resume is not None or thread_id is not None:
+            logger.warning(
+                "[Workflow] resume/thread_id ignored for agent_type=%s", agent_type
+            )
+            result = await workflow.run(session_id, user_message)
+        else:
+            result = await workflow.run(session_id, user_message)
+
         logger.info(f"[Workflow] Completed with stage: {result.get('current_stage')}")
-
         return result
-
-    async def continue_from_stage(
-        self,
-        session_id: str,
-        current_stage: str,
-        agent_type: str,
-        context: Dict[str, Any],
-        message: str = None,
-    ) -> AgentState:
-        """Continue workflow from a specific stage.
-
-        Used for resuming after user approval or other interruptions.
-        """
-        workflow = self.workflows.get(agent_type)
-        if not workflow:
-            return {"error": f"Unknown agent type: {agent_type}"}
-
-        # Handle approval at SQL_PREVIEW stage
-        if current_stage == StageType.SQL_PREVIEW.value and context.get("approved"):
-            # User approved - continue to execution
-            context["wait_user"] = False
-
-        return await self.run(session_id, message or context.get("user_message", ""), agent_type)

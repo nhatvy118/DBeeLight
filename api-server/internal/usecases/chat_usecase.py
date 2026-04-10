@@ -20,7 +20,7 @@ class ChatUseCase:
 
     @staticmethod
     def _extract_last_mutation_sql_block(text: str) -> str | None:
-        matches = re.findall(r"```sql([\s\S]*?)```", text or "", flags=re.IGNORECASE)
+        matches = re.findall(r"```\s*sql\s*([\s\S]*?)```", text or "", flags=re.IGNORECASE)
         if not matches:
             return None
         last = (matches[-1] or "").strip()
@@ -35,7 +35,57 @@ class ChatUseCase:
     def _attach_sql_action_id_marker(text: str, action_id: str) -> str:
         return f"{text}\n\n[SQL_ACTION_ID_START]{action_id}[SQL_ACTION_ID_END]"
 
-    async def chat(self, user_key: str, message: str, session_id: str | None, project_id: str | None = None) -> tuple[str, str | None, list[dict]]:
+    @staticmethod
+    def _extract_sql_preview_from_tool_events(tool_events: list[dict]) -> str | None:
+        """Prefer structured sql_preview tool event over parsing assistant text."""
+        if not isinstance(tool_events, list):
+            return None
+        for e in tool_events:
+            if not isinstance(e, dict):
+                continue
+            if str(e.get("type") or "") != "sql_preview":
+                continue
+            payload = e.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            sql = payload.get("sql")
+            if isinstance(sql, str) and sql.strip():
+                return sql.strip()
+        return None
+
+    async def _persist_pending_approval_from_workflow(
+        self,
+        agent,
+        session_id: str | None,
+        *,
+        pending_workflow_resume: bool,
+        workflow_state: dict | None,
+        tool_events: list[dict],
+    ) -> None:
+        """Persist pending approval so /api/sql/execute can validate SQL gate."""
+        if not pending_workflow_resume:
+            return
+        if not (session_id or "").strip():
+            return
+        if not getattr(agent, "session_manager", None):
+            return
+        ws = workflow_state if isinstance(workflow_state, dict) else {}
+        stage = str(ws.get("current_stage") or "")
+        if stage not in {"SQL_PREVIEW", "SCHEMA_PREVIEW"}:
+            # We only care about these two gates for now.
+            return
+        sql = self._extract_sql_preview_from_tool_events(tool_events)
+        payload = {
+            "kind": "workflow_langgraph_interrupt",
+            "interrupt_stage": stage,
+        }
+        if sql:
+            payload["sql"] = sql
+        await agent.session_manager.set_pending_approval(str(session_id), payload)
+
+    async def chat(
+        self, user_key: str, message: str, session_id: str | None, project_id: str | None = None
+    ) -> tuple[str, str | None, list[dict], bool, list[dict], bool]:
         logger.info(f"UseCase: Processing chat message, user_key={user_key}, session_id={session_id}, project_id={project_id}")
         query = (message or "").strip()
         if not query:
@@ -86,8 +136,26 @@ class ChatUseCase:
                         logger.info(f"UseCase: Auto-connecting to project database: {db_url}")
                         connect_result = await agent.connect_to_project_db(db_url)
                         logger.info(f"UseCase: Database connection result: {connect_result}")
+
+                        # Also register the project database in Superset for visualization
+                        try:
+                            project_name = project.get("name", "")
+                            superset_result = await agent.connect_project_to_superset(
+                                project_id=str(project_id_uuid),
+                                db_url=db_url,
+                                project_name=project_name or f"project_{str(project_id_uuid)[:8]}",
+                            )
+                            logger.info(f"UseCase: Superset registration result: {superset_result}")
+                        except Exception as e:
+                            logger.warning(f"UseCase: Failed to register project in Superset: {e}")
             except Exception as e:
                 logger.warning(f"UseCase: Failed to auto-connect project database: {e}")
+
+        # Thesis rule: project sessions use SQLite; non-project sessions use PostgreSQL.
+        try:
+            agent.connection_info = {"engine": "sqlite" if project_id_uuid else "postgresql"}
+        except Exception:
+            pass
 
         # Nếu có session_id → cố gắng load session đó
         loaded = False
@@ -107,7 +175,7 @@ class ChatUseCase:
             logger.info(f"UseCase: Creating new session, project_id={project_id_uuid}")
             current_session_id = await agent.session_manager.create_session(session_name=None, project_id=project_id_uuid)
 
-        # Important: pass the *same* session_id through to HybridOrchestrator so that
+        # Important: pass the *same* session_id through to Orchestrator so that
         # the "preview/approval" flow can find the stored SQL state later.
         if not current_session_id:
             # Should never happen, but keep it safe: fallback to the value inside session_manager.
@@ -117,13 +185,27 @@ class ChatUseCase:
         try:
             # IMPORTANT: pass real chat session_id into orchestrator so pending approval state
             # (e.g. SQL execute flow) is stored/retrieved under the same key.
-            result = await agent.process_query(query, verbose=False, session_id=current_session_id)
+            result = await agent.process_query(query, session_id=current_session_id)
+            original_response_text = ""
 
-            # HybridOrchestrator returns dict with response, agent_id, session_id, approach, intent
+            # Orchestrator returns dict with response, agent_id, session_id, requires_approval, intent
+            pending_workflow_resume = False
+            warnings: list[dict] = []
+            success = True
             if isinstance(result, dict):
                 response_text = result.get("response", "")
+                original_response_text = response_text
                 agent_id = result.get("agent_id", "unknown")
-                approach = result.get("approach")
+                pending_workflow_resume = bool(result.get("pending_workflow_resume"))
+                workflow_state = result.get("workflow_state") or {}
+                if isinstance(workflow_state, dict):
+                    ws_warnings = workflow_state.get("warnings") or []
+                    if isinstance(ws_warnings, list):
+                        warnings = [w for w in ws_warnings if isinstance(w, dict)]
+                    success = bool(workflow_state.get("success", True))
+                    ws_output = workflow_state.get("output") or {}
+                    if isinstance(ws_output, dict) and ws_output.get("type") in {"error", "needs_input"}:
+                        success = False
                 session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
                 current_session_id = session_info.get("session_id") if session_info else result.get("session_id")
 
@@ -132,16 +214,36 @@ class ChatUseCase:
                     action_id = str(uuid.uuid4())
                     response_text = self._attach_sql_action_id_marker(response_text, action_id)
 
-                logger.info(f"UseCase: Query processed successfully, session_id={current_session_id}, agent={agent_id}, approach={approach}")
+                logger.info(
+                    "UseCase: Query processed, session_id=%s, agent=%s, success=%s",
+                    current_session_id,
+                    agent_id,
+                    success,
+                )
 
-                # Workflow path bypasses BaseAgent chat loop, so persist user + assistant here.
-                if approach == "workflow":
+                # Persist chat history for LangGraph routes that bypass BaseAgent persistence.
+                if agent.session_manager:
                     await agent.session_manager.add_message("user", query)
                     if (response_text or "").strip():
                         await agent.session_manager.add_message("assistant", response_text)
+
+                # Persist messages via session manager
+                if (
+                    response_text != original_response_text
+                    and agent.session_manager
+                    and (original_response_text or "").strip()
+                ):
+                    await agent.session_manager.replace_latest_assistant_message(
+                        original_response_text,
+                        response_text,
+                    )
             else:
                 # Legacy format (tuple)
                 response_text, agent_id = result
+                original_response_text = response_text
+                pending_workflow_resume = False
+                warnings = []
+                success = True
                 session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
                 current_session_id = session_info.get("session_id") if session_info else None
 
@@ -151,6 +253,15 @@ class ChatUseCase:
                 if sql_preview:
                     action_id = str(uuid.uuid4())
                     response_text = self._attach_sql_action_id_marker(response_text, action_id)
+                    if (
+                        not isinstance(result, dict)
+                        and agent.session_manager
+                        and (original_response_text or "").strip()
+                    ):
+                        await agent.session_manager.replace_latest_assistant_message(
+                            original_response_text,
+                            response_text,
+                        )
 
             tool_events: list[dict] = []
             if isinstance(result, dict):
@@ -158,10 +269,113 @@ class ChatUseCase:
                 if not isinstance(tool_events, list):
                     tool_events = []
 
-            return response_text, current_session_id, tool_events
+            # Persist pending approval payload for SQL gate (CREATE TABLE / mutation preview).
+            await self._persist_pending_approval_from_workflow(
+                agent,
+                current_session_id,
+                pending_workflow_resume=pending_workflow_resume,
+                workflow_state=(workflow_state if isinstance(result, dict) else None),
+                tool_events=tool_events,
+            )
+
+            return response_text, current_session_id, tool_events, pending_workflow_resume, warnings, success
         except Exception as e:
             logger.error(f"UseCase: Error processing query: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to process query: {str(e)}") from e
+
+    async def workflow_resume(
+        self,
+        user_key: str,
+        session_id: str,
+        approved: bool,
+        project_id: str | None = None,
+        user_visible_message: str | None = None,
+    ) -> tuple[str, str | None, list[dict], bool, list[dict], bool]:
+        """Resume database LangGraph human-in-the-loop (same session / DB connect as chat)."""
+        sid = (session_id or "").strip()
+        if not sid:
+            raise HTTPException(status_code=400, detail="session_id is required")
+
+        try:
+            agent = await self._agent_repo.get_agent(user_key=user_key)
+        except Exception as e:
+            logger.error(f"UseCase: Error initializing agent (workflow_resume): {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to initialize agent: {str(e)}") from e
+
+        if not agent.sessions or not agent.session_manager:
+            raise HTTPException(status_code=500, detail="Agent is not ready")
+
+        project_id_uuid: str | None = None
+        if project_id:
+            s = str(project_id).strip()
+            if s:
+                try:
+                    uuid.UUID(s)
+                    project_id_uuid = s
+                except (ValueError, TypeError):
+                    logger.warning(f"UseCase: Invalid project_id UUID in workflow_resume: {project_id!r}, ignoring")
+
+        if project_id_uuid and self._project_repo:
+            try:
+                project = await self._project_repo.get_project_by_id(project_id_uuid, user_key)
+                if project and project.get("db_url"):
+                    db_url = project["db_url"]
+                    if db_url and not db_url.startswith("placeholder://"):
+                        await agent.connect_to_project_db(db_url)
+            except Exception as e:
+                logger.warning(f"UseCase: Failed to auto-connect project database in workflow_resume: {e}")
+
+        # Thesis rule: project sessions use SQLite; non-project sessions use PostgreSQL.
+        try:
+            agent.connection_info = {"engine": "sqlite" if project_id_uuid else "postgresql"}
+        except Exception:
+            pass
+
+        loaded = await agent.session_manager.load_session(sid)
+        if not loaded:
+            raise HTTPException(status_code=400, detail="Session not found or could not be loaded")
+
+        if not hasattr(agent, "resume_workflow"):
+            raise HTTPException(status_code=501, detail="Workflow resume is not supported for this agent")
+
+        uvm = (user_visible_message or "").strip()
+        if uvm and agent.session_manager:
+            await agent.session_manager.add_message("user", uvm)
+        result = await agent.resume_workflow(sid, approved=approved)
+        response_text = str(result.get("response", ""))
+        tool_events = result.get("tool_events") or []
+        if not isinstance(tool_events, list):
+            tool_events = []
+        pending_workflow_resume = bool(result.get("pending_workflow_resume"))
+        workflow_state = result.get("workflow_state") or {}
+        warnings: list[dict] = []
+        success = True
+        if isinstance(workflow_state, dict):
+            ws_warnings = workflow_state.get("warnings") or []
+            if isinstance(ws_warnings, list):
+                warnings = [w for w in ws_warnings if isinstance(w, dict)]
+            success = bool(workflow_state.get("success", True))
+
+        sql_preview = self._extract_last_mutation_sql_block(response_text)
+        if sql_preview:
+            action_id = str(uuid.uuid4())
+            response_text = self._attach_sql_action_id_marker(response_text, action_id)
+
+        if (response_text or "").strip():
+            await agent.session_manager.add_message("assistant", response_text)
+
+        session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
+        current_session_id = session_info.get("session_id") if session_info else sid
+
+        # Persist new pending approval payload when resume leads to the next interrupt (e.g. schema gate → SQL gate).
+        await self._persist_pending_approval_from_workflow(
+            agent,
+            current_session_id,
+            pending_workflow_resume=pending_workflow_resume,
+            workflow_state=(workflow_state if isinstance(workflow_state, dict) else None),
+            tool_events=tool_events,
+        )
+        return response_text, current_session_id, tool_events, pending_workflow_resume, warnings, success
 
     async def execute_sql(
         self,
@@ -173,7 +387,7 @@ class ChatUseCase:
         lang: str = "en",
         lock_only: bool = False,
         lock_state: str | None = None,
-    ) -> tuple[str, str | None, list[dict]]:
+    ) -> tuple[str, str | None, list[dict], bool, list[dict], bool]:
         """
         Execute a raw SQL statement that was previously previewed to the user.
         This reuses the same agent + project DB auto-connect + session logic as chat().
@@ -227,6 +441,12 @@ class ChatUseCase:
             except Exception as e:
                 logger.warning(f"UseCase: Failed to auto-connect project database in execute_sql: {e}")
 
+        # Thesis rule: project sessions use SQLite; non-project sessions use PostgreSQL.
+        try:
+            agent.connection_info = {"engine": "sqlite" if project_id_uuid else "postgresql"}
+        except Exception:
+            pass
+
         # Load or create session (so history / project context is consistent)
         loaded = False
         if session_id:
@@ -251,13 +471,15 @@ class ChatUseCase:
             state_to_store = (lock_state or "executed").strip().lower()
             if state_to_store not in {"executed", "cancelled"}:
                 state_to_store = "executed"
+            if state_to_store == "cancelled" and hasattr(agent, "resume_workflow"):
+                pend = await agent.session_manager.get_pending_approval(current_session_id)
+                if isinstance(pend, dict) and pend.get("kind") == "workflow_langgraph_interrupt":
+                    await agent.resume_workflow(current_session_id, approved=False)
             await agent.session_manager.set_sql_action_state(current_session_id, action_id, state_to_store)
             logger.info(f"UseCase: SQL action locked (lock_only={state_to_store}), session_id={current_session_id}, action_id={action_id}")
-            return "SQL action locked", current_session_id, []
+            return "SQL action locked", current_session_id, [], False, [], True
 
-        # Guardrail: CREATE TABLE can only be executed if session has
-        # pending approval payload kind=create_table_after_schema_confirm
-        # and SQL exactly matches the approved pending SQL.
+        # Guardrail: CREATE TABLE only with matching pending approval (legacy or LangGraph SQL gate).
         is_create_table = bool(re.match(r"^\s*CREATE\s+TABLE\b", query, flags=re.IGNORECASE))
         if is_create_table:
             session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
@@ -274,16 +496,25 @@ class ChatUseCase:
             normalized_query = query.rstrip(";").strip()
             normalized_pending_sql = pending_sql.rstrip(";").strip()
 
-            if pending_kind != "create_table_after_schema_confirm":
+            if pending_kind == "create_table_after_schema_confirm":
+                if normalized_query != normalized_pending_sql:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="CREATE TABLE is blocked: SQL does not match the approved schema preview.",
+                    )
+            elif (
+                pending_kind == "workflow_langgraph_interrupt"
+                and str(pending.get("interrupt_stage") or "") == "SQL_PREVIEW"
+            ):
+                if not pending_sql or normalized_query != normalized_pending_sql:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="CREATE TABLE is blocked: SQL does not match the workflow preview.",
+                    )
+            else:
                 raise HTTPException(
                     status_code=400,
                     detail="CREATE TABLE is blocked: pending approval kind is invalid for table creation.",
-                )
-
-            if normalized_query != normalized_pending_sql:
-                raise HTTPException(
-                    status_code=400,
-                    detail="CREATE TABLE is blocked: SQL does not match the approved schema preview.",
                 )
 
         logger.info(f"UseCase: Executing SQL (first 200 chars): {query[:200]}...")
@@ -294,13 +525,16 @@ class ChatUseCase:
                 current_session_id = session_info.get("session_id") if session_info else None
                 result = await agent.approve_and_execute(session_id=current_session_id, approved=True)
 
-                # Approval preview state is stored in-memory (RAM) inside HybridOrchestrator.
+                # Approval preview state is stored in SessionManager (persisted).
                 # If the server reloaded or state is missing, fallback to executing the SQL
                 # that the frontend already extracted from the preview message.
                 approve_result_text = str(result.get("response", "")) if isinstance(result, dict) else str(result)
-                if approve_result_text.strip().startswith("Session ") and " not found" in approve_result_text:
+                approve_missing_state = approve_result_text.strip().startswith("Session ") and " not found" in approve_result_text
+                approve_no_sql = (approve_result_text.strip() == "No SQL to execute")
+                if approve_missing_state or approve_no_sql:
                     logger.warning(
-                        "UseCase: approval state missing, falling back to direct execute_sql. session_id=%s",
+                        "UseCase: approval path unusable (%s), falling back to direct execute_sql. session_id=%s",
+                        "no session" if approve_missing_state else "no pending sql",
                         current_session_id,
                     )
                     result = await agent.execute_sql(query, lang=lang)
@@ -310,14 +544,29 @@ class ChatUseCase:
                 session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
                 current_session_id = session_info.get("session_id") if session_info else None
 
+            pending_workflow_resume = False
+            warnings: list[dict] = []
+            success = True
             if isinstance(result, dict):
                 result_text = str(result.get("response", ""))
                 tool_events = result.get("tool_events") or []
                 if not isinstance(tool_events, list):
                     tool_events = []
+                pending_workflow_resume = bool(result.get("pending_workflow_resume"))
+                workflow_state = result.get("workflow_state") or {}
+                if isinstance(workflow_state, dict):
+                    ws_warnings = workflow_state.get("warnings") or []
+                    if isinstance(ws_warnings, list):
+                        warnings = [w for w in ws_warnings if isinstance(w, dict)]
+                    success = bool(workflow_state.get("success", True))
+                    ws_output = workflow_state.get("output") or {}
+                    if isinstance(ws_output, dict) and ws_output.get("type") == "error":
+                        success = False
             else:
                 result_text = str(result)
                 tool_events = []
+                warnings = []
+                success = True
 
             if current_session_id and (action_id or "").strip():
                 await agent.session_manager.set_sql_action_state(current_session_id, action_id, "executed")
@@ -326,8 +575,15 @@ class ChatUseCase:
             if agent.session_manager and (result_text or "").strip():
                 await agent.session_manager.add_message("assistant", result_text)
 
-            logger.info(f"UseCase: SQL executed successfully, session_id={current_session_id}")
-            return result_text, current_session_id, tool_events
+            if success:
+                logger.info(f"UseCase: SQL executed successfully, session_id={current_session_id}")
+            else:
+                logger.warning(
+                    "UseCase: SQL execution failed, session_id=%s, response=%s",
+                    current_session_id,
+                    (result_text or "")[:300],
+                )
+            return result_text, current_session_id, tool_events, pending_workflow_resume, warnings, success
         except Exception as e:
             logger.error(f"UseCase: Error executing SQL: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to execute SQL: {str(e)}") from e
