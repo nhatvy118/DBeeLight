@@ -15,6 +15,15 @@ uv sync
 echo "OPENAI_API_KEY=your_api_key_here" > .env
 ```
 
+Optional routing/summarization tuning in `.env`:
+```bash
+INTENT_CONTEXT_TURNS=6
+CHAT_SUMMARY_MODEL_MAX_TOKENS=96
+CHAT_SUMMARY_TRIGGER_TOKENS=384
+CHAT_SUMMARY_INPUT_MAX_TOKENS=384
+CHAT_SUMMARY_MAX_TOKENS=96
+```
+
 ## Requirements
 
 - `.env` file with `OPENAI_API_KEY`

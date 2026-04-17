@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 class OrchestratorState(TypedDict, total=False):
     session_id: str
     user_message: str
+    conversation_context: List[Dict[str, Any]]
+    conversation_summary: str
     intent_result: Dict[str, Any]
     primary_agent: str
     agent_id: str
@@ -58,6 +60,9 @@ class Orchestrator:
 
         # Track agent type per session (for approve_and_execute resume)
         self._session_agent_map: Dict[str, str] = {}
+
+        # Outer chat graph (MessagesState + checkpoint_ns=chat); built lazily.
+        self._chat_compiled_graph = None
 
         logger.info(f"[Orchestrator] Initialized with agents: {list(self._agents.keys())}")
 
@@ -103,7 +108,14 @@ class Orchestrator:
 
     async def _parse_intent_node(self, state: OrchestratorState) -> OrchestratorState:
         query = str(state.get("user_message") or "").strip()
-        intent_result = await self._intent_service.classify(query, list(self._agents.keys()))
+        conversation_context = state.get("conversation_context") or []
+        conversation_summary = str(state.get("conversation_summary") or "").strip()
+        intent_result = await self._intent_service.classify(
+            query,
+            list(self._agents.keys()),
+            conversation_context=conversation_context,
+            conversation_summary=conversation_summary,
+        )
         ir = intent_result.to_dict()
         primary_agent = intent_result.agent_type or intent_result.fallback_agent or "database"
         return {
@@ -320,7 +332,7 @@ class Orchestrator:
                 else:
                     msg = str(output)
                 stage = str((wf_state or {}).get("current_stage") or "")
-                if stage in ("SCHEMA_HITL", "SQL_PREVIEW"):
+                if stage in ("SCHEMA_PREVIEW", "SQL_PREVIEW"):
                     pending = True
                 label = agent_type.upper()
                 parts.append(f"[{label}]\n{str(msg).strip()}")
@@ -354,7 +366,7 @@ class Orchestrator:
             response = str(output)
 
         current_stage = str(workflow_state.get("current_stage") or "")
-        pending = current_stage in ("SCHEMA_HITL", "SQL_PREVIEW")
+        pending = current_stage in ("SCHEMA_PREVIEW", "SQL_PREVIEW")
         return {
             **state,
             "response": str(response),
@@ -394,6 +406,8 @@ class Orchestrator:
         self,
         query: str,
         session_id: Optional[str] = None,
+        conversation_context: Optional[List[Dict[str, Any]]] = None,
+        conversation_summary: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process query through top-level LangGraph orchestrator."""
         if not session_id:
@@ -402,7 +416,12 @@ class Orchestrator:
         logger.info(f"[Orchestrator] Processing query for session {session_id}")
         try:
             graph_state = await self.orchestrator_graph.ainvoke(
-                {"session_id": session_id, "user_message": query}
+                {
+                    "session_id": session_id,
+                    "user_message": query,
+                    "conversation_context": conversation_context or [],
+                    "conversation_summary": str(conversation_summary or "").strip(),
+                }
             )
         except Exception as e:
             logger.exception("[Orchestrator] Orchestration graph error: %s", e)
@@ -511,7 +530,7 @@ class Orchestrator:
     ) -> Dict[str, Any]:
         """Resume workflow after user approval via LangGraph Command(resume=).
 
-        The workflow was paused at SQL_PREVIEW or SCHEMA_HITL via interrupt().
+        The workflow was paused at SQL_PREVIEW or SCHEMA_PREVIEW via interrupt().
         We resume it with the approval decision.
         """
         logger.info(f"[Orchestrator] Resuming workflow for session {session_id}, approved={approved}")
@@ -523,6 +542,16 @@ class Orchestrator:
                 agent_type=self._get_agent_type_for_session(session_id),
                 resume=approved,
                 thread_id=session_id,
+            )
+            logger.info(
+                "[Orchestrator] Resume workflow_state keys=%s, stage=%s, output_type=%s",
+                (list(workflow_state.keys()) if isinstance(workflow_state, dict) else []),
+                (workflow_state.get("current_stage") if isinstance(workflow_state, dict) else None),
+                (
+                    (workflow_state.get("output") or {}).get("type")
+                    if isinstance(workflow_state, dict) and isinstance(workflow_state.get("output"), dict)
+                    else None
+                ),
             )
         except Exception as e:
             logger.exception(f"[Orchestrator] Workflow resume error: {e}")
@@ -540,7 +569,7 @@ class Orchestrator:
             response = str(output)
 
         current_stage = workflow_state.get("current_stage", "")
-        pending_workflow_resume = current_stage in ("SCHEMA_HITL", "SQL_PREVIEW")
+        pending_workflow_resume = current_stage in ("SCHEMA_PREVIEW", "SCHEMA_APPROVAL", "SQL_PREVIEW")
 
         return {
             "response": response,
@@ -613,6 +642,43 @@ class Orchestrator:
         except Exception:
             pass
         return text
+
+    async def get_chat_graph(self):
+        """Compiled chat graph: ingest → summarize → orchestrate (checkpoint-isolated)."""
+        if self._chat_compiled_graph is None:
+            from mcp_agent.graph.chat_graph import build_chat_graph
+            from mcp_agent.graph.langgraph_checkpointer import get_async_checkpointer
+
+            cp = await get_async_checkpointer()
+            self._chat_compiled_graph = build_chat_graph(self, cp)
+        return self._chat_compiled_graph
+
+    async def merge_resume_into_chat_checkpoint(
+        self,
+        session_id: str,
+        user_visible_message: Optional[str],
+        assistant_text: str,
+    ) -> None:
+        """Append resume turn to chat checkpoint so history stays aligned with SessionManager."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from mcp_agent.graph.chat_graph import CHAT_CHECKPOINT_NS
+
+        u = (user_visible_message or "").strip()
+        a = (assistant_text or "").strip()
+        if not u and not a:
+            return
+
+        graph = await self.get_chat_graph()
+        # NOTE: On current LangGraph runtime, aupdate_state may treat checkpoint_ns as
+        # subgraph path and raise "Subgraph chat not found". Use thread-only config.
+        cfg = {"configurable": {"thread_id": session_id}}
+        msgs = []
+        if u:
+            msgs.append(HumanMessage(content=u))
+        if a:
+            msgs.append(AIMessage(content=a))
+        await graph.aupdate_state(cfg, {"messages": msgs})
 
     async def cleanup(self) -> None:
         """Clean up all agents."""

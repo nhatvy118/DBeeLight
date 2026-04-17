@@ -5,14 +5,146 @@ import logging
 from typing import Dict
 
 from openai import OpenAI
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
+from mcp_agent.graph.langgraph_checkpointer import get_async_checkpointer
 from mcp_agent.graph.graph_state import AgentState, create_initial_state
 from mcp_agent.graph.state import StageType
 
 logger = logging.getLogger(__name__)
+GRAPH_INVOKE_VERSION = "v2"
+
+
+def _is_rich_state(d: dict) -> bool:
+    return bool(d.get("output")) or bool(d.get("current_stage")) or bool(d.get("session_id"))
+
+
+def _extract_dict_candidate(obj) -> dict | None:
+    if isinstance(obj, dict):
+        return obj
+    for attr in ("values", "value", "state"):
+        nested = getattr(obj, attr, None)
+        if isinstance(nested, dict):
+            return nested
+    try:
+        model_dump = getattr(obj, "model_dump", None)
+        if callable(model_dump):
+            dumped = model_dump()
+            if isinstance(dumped, dict):
+                return dumped
+    except Exception:
+        pass
+    return None
+
+
+def _pick_best_state(candidates: list[dict]) -> AgentState:
+    valid = [c for c in candidates if isinstance(c, dict) and c]
+    if not valid:
+        return {}
+    rich = [c for c in valid if _is_rich_state(c)]
+    pool = rich if rich else valid
+    pool.sort(key=lambda x: len(x.keys()), reverse=True)
+    return pool[0]
+
+
+def _extract_resume_state_from_graph_output(raw) -> AgentState:
+    """Best-effort extraction of full state from LangGraph GraphOutput."""
+    candidates: list[dict] = []
+    state_obj = getattr(raw, "state", None)
+    if state_obj is not None:
+        values = getattr(state_obj, "values", None)
+        if isinstance(values, dict):
+            candidates.append(values)
+        nested = _extract_dict_candidate(state_obj)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    for attr in ("value", "values", "result", "output"):
+        extracted = _extract_dict_candidate(getattr(raw, attr, None))
+        if isinstance(extracted, dict):
+            candidates.append(extracted)
+    extracted_raw = _extract_dict_candidate(raw)
+    if isinstance(extracted_raw, dict):
+        candidates.append(extracted_raw)
+    return _pick_best_state(candidates)
+
+
+def _normalize_graph_result(raw) -> AgentState:
+    """Normalize LangGraph return value into AgentState dict."""
+    candidates: list[dict] = []
+    first = _extract_dict_candidate(raw)
+    if isinstance(first, dict):
+        candidates.append(first)
+    for attr in ("value", "state", "values", "output", "result"):
+        v = getattr(raw, attr, None)
+        extracted = _extract_dict_candidate(v)
+        if isinstance(extracted, dict):
+            candidates.append(extracted)
+    try:
+        casted = dict(raw)
+        if isinstance(casted, dict):
+            candidates.append(casted)
+    except Exception:
+        pass
+    return _pick_best_state(candidates)
+
+
+async def _hydrate_from_checkpoint(graph, cfg, state: AgentState) -> AgentState:
+    """Load latest persisted state when invoke result lacks workflow values."""
+    if _is_rich_state(state):
+        return state
+    try:
+        snap = await graph.aget_state(cfg)
+        values = getattr(snap, "values", None)
+        if isinstance(values, dict) and values and _is_rich_state(values):
+            merged = dict(values)
+            if "__interrupt__" in state:
+                merged["__interrupt__"] = state["__interrupt__"]
+            return merged
+    except Exception:
+        pass
+    try:
+        idx = 0
+        async for hist in graph.aget_state_history(cfg):
+            idx += 1
+            values = getattr(hist, "values", None)
+            if isinstance(values, dict) and values and _is_rich_state(values):
+                merged = dict(values)
+                if "__interrupt__" in state:
+                    merged["__interrupt__"] = state["__interrupt__"]
+                return merged
+            if idx >= 10:
+                break
+    except Exception:
+        pass
+    return state
+
+
+async def _read_state_from_checkpoint(graph, cfg) -> AgentState:
+    """Read authoritative workflow state after resume from checkpointer."""
+    thread_id = (cfg.get("configurable") or {}).get("thread_id")
+    fallback_cfg = {"configurable": {"thread_id": thread_id}} if thread_id else cfg
+    try:
+        snapshot = await graph.aget_state(cfg)
+    except Exception as e:
+        if "Subgraph" in str(e) and "not found" in str(e):
+            logger.info("[Mutation] aget_state with checkpoint_ns failed, retry thread-only")
+            snapshot = await graph.aget_state(fallback_cfg)
+        else:
+            raise
+    hydrated: AgentState = {}
+    values = getattr(snapshot, "values", None) if snapshot else None
+    if isinstance(values, dict) and values:
+        hydrated = dict(values)
+
+    tasks = getattr(snapshot, "tasks", None) if snapshot else None
+    if isinstance(tasks, list):
+        for t in tasks:
+            interrupts = getattr(t, "interrupts", None)
+            if interrupts:
+                hydrated["__interrupt__"] = interrupts
+                break
+    return hydrated
 
 
 async def intent_parse(state: AgentState, llm, agent) -> AgentState:
@@ -437,7 +569,7 @@ async def sql_execution(state: AgentState, llm, agent) -> AgentState:
 
     from mcp_agent.graph.database_utils import is_execute_query_error_response
     is_err = is_execute_query_error_response(str(response))
-    message = str(response).strip() if is_err else "Thực hiện SQL thành công."
+    message = str(response).strip() if is_err else "Successfully executed the SQL."
     output_type = "error" if is_err else "execution_complete"
 
     return {
@@ -457,7 +589,7 @@ async def _get_recent_session_context(agent, limit: int = 6) -> str:
     if not agent or not getattr(agent, "session_manager", None):
         return ""
     try:
-        msgs = await agent.session_manager.get_current_messages()
+        msgs = await agent.session_manager.get_llm_context_messages()
     except Exception:
         return ""
     if not isinstance(msgs, list) or not msgs:
@@ -526,10 +658,9 @@ class MutationWorkflow:
     def __init__(self, llm=None, agent=None):
         self.llm = llm or OpenAI()
         self.agent = agent
-        self._checkpointer = MemorySaver()
         self._compiled_graph = None
 
-    def _build_graph(self):
+    def _build_graph(self, checkpointer):
         """Build LangGraph for mutation workflow."""
         workflow = StateGraph(AgentState)
 
@@ -566,11 +697,12 @@ class MutationWorkflow:
         workflow.add_edge("SQL_EXECUTION", StageType.DONE.value)
         workflow.add_edge(StageType.DONE.value, END)
 
-        return workflow.compile(checkpointer=self._checkpointer)
+        return workflow.compile(checkpointer=checkpointer)
 
-    def _get_compiled_graph(self):
+    async def _get_compiled_graph(self):
         if self._compiled_graph is None:
-            self._compiled_graph = self._build_graph()
+            checkpointer = await get_async_checkpointer()
+            self._compiled_graph = self._build_graph(checkpointer)
         return self._compiled_graph
 
     async def run(
@@ -582,11 +714,22 @@ class MutationWorkflow:
         thread_id: str = None,
     ) -> AgentState:
         """Run or resume the mutation workflow."""
-        graph = self._get_compiled_graph()
-        cfg = {"configurable": {"thread_id": thread_id or session_id}}
+        graph = await self._get_compiled_graph()
+        # Keep thread-only config, but isolate checkpoint stream per workflow
+        # to avoid collision with chat graph / other workflows sharing session_id.
+        wf_thread_id = f"{thread_id or session_id}:mutation"
+        cfg = {
+            "configurable": {
+                "thread_id": wf_thread_id,
+            }
+        }
         if resume is not None:
-            raw = await graph.ainvoke(Command(resume=resume), cfg)
+            raw = await graph.ainvoke(Command(resume=resume), cfg, version=GRAPH_INVOKE_VERSION)
+            # Always read authoritative full state from checkpointer after resume.
+            hydrated = await _read_state_from_checkpoint(graph, cfg)
         else:
             state = create_initial_state(session_id, user_message, "database")
-            raw = await graph.ainvoke(state, cfg)
-        return dict(raw) if not isinstance(raw, dict) else raw
+            raw = await graph.ainvoke(state, cfg, version=GRAPH_INVOKE_VERSION)
+            normalized = _normalize_graph_result(raw)
+            hydrated = await _hydrate_from_checkpoint(graph, cfg, normalized)
+        return hydrated
