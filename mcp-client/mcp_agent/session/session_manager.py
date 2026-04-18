@@ -11,9 +11,22 @@ transcript for the UI."""
 
 import json
 import os
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import uuid
+
+# Per-async-task state. SessionManager is cached per user in agent_repository, so
+# concurrent requests from the same user share one instance. Using ContextVars
+# instead of instance attributes isolates "current session" and "LLM context
+# override" to the request-handling Task, preventing one request from clobbering
+# another's active session.
+_current_session_id_var: ContextVar[Optional[str]] = ContextVar(
+    "session_manager_current_session_id", default=None
+)
+_llm_context_override_var: ContextVar[Optional[List[Dict[str, Any]]]] = ContextVar(
+    "session_manager_llm_context_override", default=None
+)
 
 # Optional: OpenAI for AI-generated session name summary
 try:
@@ -64,7 +77,6 @@ class SessionManager:
         summarize_model: Optional[str] = None,
     ):
         self._user_id = (user_id or "anonymous").strip() or "anonymous"
-        self.current_session_id: Optional[str] = None
         self._memory: Dict[str, Dict[str, Any]] = {}  # guest only: no DB
         self._batch_size = 20  # Flush to DB when stack reaches this size
         self._summarize_model = summarize_model
@@ -78,15 +90,29 @@ class SessionManager:
         self._summary_keep_last = max(
             2, int(os.getenv("CONVERSATION_SUMMARY_KEEP_MESSAGES", "8"))
         )
-        # When set, BaseAgent uses this list instead of DB/Redis for LLM context (chat checkpoint path).
-        self._llm_context_override: Optional[List[Dict[str, Any]]] = None
         if self._user_id == "anonymous":
             self._pool = None  # guest: session in-memory, reload = new session
         else:
             if db_pool is None:
                 raise ValueError("db_pool is required for Postgres-backed sessions")
             self._pool = db_pool
-    
+
+    @property
+    def current_session_id(self) -> Optional[str]:
+        return _current_session_id_var.get()
+
+    @current_session_id.setter
+    def current_session_id(self, value: Optional[str]) -> None:
+        _current_session_id_var.set(value)
+
+    @property
+    def _llm_context_override(self) -> Optional[List[Dict[str, Any]]]:
+        return _llm_context_override_var.get()
+
+    @_llm_context_override.setter
+    def _llm_context_override(self, value: Optional[List[Dict[str, Any]]]) -> None:
+        _llm_context_override_var.set(value)
+
     def _get_stack_key(self, session_id: str) -> str:
         """Get Redis stack key for a session: {user_id}:{session_id}:stack"""
         return f"{self._user_id}:{session_id}:stack"

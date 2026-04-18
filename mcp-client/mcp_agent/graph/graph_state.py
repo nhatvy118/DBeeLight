@@ -41,6 +41,15 @@ class AgentState(TypedDict):
     chart_type: Optional[str]
     chart_data: Optional[Dict[str, Any]]
 
+    # Superset-specific state (populated deterministically by SupersetAgentWorkflow)
+    superset_db_id: Optional[int]
+    superset_db_name: Optional[str]
+    superset_db_backend: Optional[str]
+    superset_tables: list
+    superset_plan: Dict[str, Any]
+    superset_dataset_id: Optional[int]
+    superset_chart_id: Optional[int]
+
     # Flow control
     wait_user: bool
     approved: bool
@@ -85,6 +94,15 @@ def create_initial_state(session_id: str, user_message: str, agent_type: str) ->
         # Chart
         "chart_type": None,
         "chart_data": None,
+
+        # Superset
+        "superset_db_id": None,
+        "superset_db_name": None,
+        "superset_db_backend": None,
+        "superset_tables": [],
+        "superset_plan": {},
+        "superset_dataset_id": None,
+        "superset_chart_id": None,
 
         # Email
         "email_to": None,

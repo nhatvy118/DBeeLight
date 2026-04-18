@@ -40,6 +40,7 @@ class StageType(str, Enum):
 
     # Superset agent stages
     DB_CONNECTION = "DB_CONNECTION"
+    SCHEMA_PLAN = "SCHEMA_PLAN"
     CHART_CREATION = "CHART_CREATION"
     CHART_EMBED = "CHART_EMBED"
 
@@ -88,6 +89,7 @@ SUPERSET_WORKFLOW = AgentWorkflowConfig(
         StageType.INTENT_PARSE,
         StageType.DB_CONNECTION,
         StageType.SCHEMA_DISCOVERY,
+        StageType.SCHEMA_PLAN,
         StageType.SQL_EXECUTION,
         StageType.CHART_CREATION,
         StageType.CHART_EMBED,
@@ -95,7 +97,8 @@ SUPERSET_WORKFLOW = AgentWorkflowConfig(
     transitions={
         StageType.INTENT_PARSE.value: StageType.DB_CONNECTION.value,
         StageType.DB_CONNECTION.value: StageType.SCHEMA_DISCOVERY.value,
-        StageType.SCHEMA_DISCOVERY.value: StageType.SQL_EXECUTION.value,
+        StageType.SCHEMA_DISCOVERY.value: StageType.SCHEMA_PLAN.value,
+        StageType.SCHEMA_PLAN.value: StageType.SQL_EXECUTION.value,
         StageType.SQL_EXECUTION.value: StageType.CHART_CREATION.value,
         StageType.CHART_CREATION.value: StageType.CHART_EMBED.value,
         StageType.CHART_EMBED.value: StageType.DONE.value,
