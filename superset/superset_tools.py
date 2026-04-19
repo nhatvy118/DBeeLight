@@ -348,8 +348,10 @@ def register_database(name: str, sqlalchemy_uri: str, password: Optional[str] = 
     Returns:
         JSON with database id and status
     """
-    # ✅ Check if database with this name already exists TRƯỚC
-    all_dbs = _make_request("get", "/api/v1/database/")
+    # Check if database with this name already exists TRƯỚC.
+    # page_size=100 — Superset default is 25, which misses DBs on later pages
+    # and makes the "already exists" retry below return a false negative.
+    all_dbs = _make_request("get", "/api/v1/database/", params={"page_size": 100})
 
     if all_dbs.get("__error__"):
         return json.dumps({
@@ -361,7 +363,7 @@ def register_database(name: str, sqlalchemy_uri: str, password: Optional[str] = 
     if not isinstance(existing, list):
         existing = []
 
-    # ✅ Tìm DB theo tên, reuse luôn nếu có
+    # Tìm DB theo tên, reuse luôn nếu có
     def _find_existing(db_list):
         for db in db_list:
             if db.get("database_name", "").lower() == name.lower():
@@ -397,10 +399,10 @@ def register_database(name: str, sqlalchemy_uri: str, password: Optional[str] = 
         details = result.get("details", "")
         combined = (details + str(result.get("message", ""))).lower()
 
-        # ✅ 422 hoặc "already exists" → fetch lại list và reuse
+        # 422 hoặc "already exists" → fetch lại list và reuse
         if status_code == 422 or "already exists" in combined:
             logger.info(f"[Superset] '{name}' already exists (race), re-fetching...")
-            retry = _make_request("get", "/api/v1/database/")
+            retry = _make_request("get", "/api/v1/database/", params={"page_size": 100})
             if not retry.get("__error__"):
                 found = _find_existing(retry.get("result", []))
                 if found:
@@ -435,11 +437,9 @@ def get_database_tables(database_id: int, schema: Optional[str] = None) -> str:
     Returns:
         JSON list of table names
     """
-    params = {}
-    if schema:
-        params["q"] = f"(schema_name:{schema})"
-    else:
-        params["q"] = "(schema_name:)"
+    # Rison q: omit entirely when no schema (SQLite has no schema concept).
+    # "(schema_name:)" with an empty value is invalid Rison and Superset rejects it with 400.
+    params = {"q": f"(schema_name:{schema})"} if schema else {}
     result = _make_request("get", f"/api/v1/database/{database_id}/tables/", params=params)
     tables = result.get("result", [])
     return json.dumps(tables, indent=2)
@@ -516,6 +516,89 @@ def execute_sql(database_id: int, sql: str, schema: Optional[str] = None) -> str
             "result": result,
         }, indent=2)
 
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def format_sql(sql: str) -> str:
+    """
+    Format a SQL query using Superset's SQL formatter for readability.
+
+    Use this to pretty-print SQL before showing it to the user, or to normalize
+    indentation/casing before calling execute_sql.
+
+    Args:
+        sql: Raw SQL string
+
+    Returns:
+        JSON with the formatted SQL, or an error dict.
+    """
+    _ensure_csrf()
+    result = _make_request("post", "/api/v1/sqllab/format_sql", data={"sql": sql})
+    if result.get("__error__"):
+        return json.dumps({
+            "error": "Failed to format SQL",
+            "message": result.get("message", result.get("details", "Unknown error")),
+        }, indent=2)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def estimate_query_cost(database_id: int, sql: str, schema: Optional[str] = None) -> str:
+    """
+    Estimate the cost of a SQL query against a Superset database without executing it.
+
+    Use before execute_sql on large tables to warn the user or decide whether to run.
+    Only supported for engines that implement EXPLAIN cost (Presto/Trino, BigQuery, etc.);
+    other backends may return an error.
+
+    Args:
+        database_id: Superset database id
+        sql: SQL query to estimate
+        schema: Optional schema name
+
+    Returns:
+        JSON with estimated cost metrics from Superset, or an error dict.
+    """
+    payload: dict = {"database_id": database_id, "sql": sql}
+    if schema:
+        payload["schema"] = schema
+    _ensure_csrf()
+    result = _make_request("post", "/api/v1/sqllab/estimate", data=payload)
+    if result.get("__error__"):
+        return json.dumps({
+            "error": "Failed to estimate query cost",
+            "message": result.get("message", result.get("details", "Unknown error")),
+        }, indent=2)
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def validate_sql(database_id: int, sql: str) -> str:
+    """
+    Validate SQL syntax against a Superset database without executing it.
+
+    Call before execute_sql to catch syntax errors early. Returns a list of parse
+    errors from the backend parser (empty list = valid).
+
+    Args:
+        database_id: Superset database id
+        sql: SQL query to validate
+
+    Returns:
+        JSON with validation errors (empty list = valid), or an error dict.
+    """
+    _ensure_csrf()
+    result = _make_request(
+        "post",
+        f"/api/v1/database/{database_id}/validate_sql/",
+        data={"sql": sql},
+    )
+    if result.get("__error__"):
+        return json.dumps({
+            "error": "Failed to validate SQL",
+            "message": result.get("message", result.get("details", "Unknown error")),
+        }, indent=2)
     return json.dumps(result, indent=2)
 
 

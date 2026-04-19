@@ -10,6 +10,9 @@ from fastapi import HTTPException
 from internal.repositories.agent_repository import AgentRepository
 from internal.repositories.project_repository import ProjectRepository
 
+from langchain_core.messages import HumanMessage
+from mcp_agent.graph.chat_graph import chat_checkpoint_config, langchain_messages_to_session_rows
+
 logger = logging.getLogger(__name__)
 
 
@@ -183,98 +186,78 @@ class ChatUseCase:
 
         logger.info(f"UseCase: Processing query: {query[:100]}...")
         try:
-            # IMPORTANT: pass real chat session_id into orchestrator so pending approval state
-            # (e.g. SQL execute flow) is stored/retrieved under the same key.
-            result = await agent.process_query(query, session_id=current_session_id)
-            original_response_text = ""
+            # Chat graph (MessagesState + checkpoint_ns=chat) wraps Orchestrator as one node.
+            chat_graph = await agent.get_chat_graph()
+            cfg = chat_checkpoint_config(current_session_id)
+            raw_out = await chat_graph.ainvoke(
+                {"messages": [HumanMessage(content=query)]},
+                config=cfg,
+            )
+            out = dict(raw_out) if isinstance(raw_out, dict) else {}
 
-            # Orchestrator returns dict with response, agent_id, session_id, requires_approval, intent
-            pending_workflow_resume = False
+            response_text = str(out.get("response", ""))
+            original_response_text = response_text
+            agent_id = str(out.get("agent_id", "unknown"))
+            pending_workflow_resume = bool(out.get("pending_workflow_resume"))
+            workflow_state = out.get("workflow_state") or {}
             warnings: list[dict] = []
-            success = True
-            if isinstance(result, dict):
-                response_text = result.get("response", "")
-                original_response_text = response_text
-                agent_id = result.get("agent_id", "unknown")
-                pending_workflow_resume = bool(result.get("pending_workflow_resume"))
-                workflow_state = result.get("workflow_state") or {}
-                if isinstance(workflow_state, dict):
-                    ws_warnings = workflow_state.get("warnings") or []
-                    if isinstance(ws_warnings, list):
-                        warnings = [w for w in ws_warnings if isinstance(w, dict)]
-                    success = bool(workflow_state.get("success", True))
-                    ws_output = workflow_state.get("output") or {}
-                    if isinstance(ws_output, dict) and ws_output.get("type") in {"error", "needs_input"}:
-                        success = False
-                session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
-                current_session_id = session_info.get("session_id") if session_info else result.get("session_id")
+            success = bool(out.get("success", True))
+            if isinstance(workflow_state, dict):
+                ws_warnings = workflow_state.get("warnings") or []
+                if isinstance(ws_warnings, list):
+                    warnings = [w for w in ws_warnings if isinstance(w, dict)]
+                success = bool(workflow_state.get("success", success))
+                ws_output = workflow_state.get("output") or {}
+                if isinstance(ws_output, dict) and ws_output.get("type") in {"error", "needs_input"}:
+                    success = False
 
-                sql_preview = self._extract_last_mutation_sql_block(response_text)
-                if sql_preview:
-                    action_id = str(uuid.uuid4())
-                    response_text = self._attach_sql_action_id_marker(response_text, action_id)
+            session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
+            current_session_id = session_info.get("session_id") if session_info else current_session_id
 
-                logger.info(
-                    "UseCase: Query processed, session_id=%s, agent=%s, success=%s",
-                    current_session_id,
-                    agent_id,
-                    success,
-                )
+            sql_preview = self._extract_last_mutation_sql_block(response_text)
+            if sql_preview:
+                action_id = str(uuid.uuid4())
+                response_text = self._attach_sql_action_id_marker(response_text, action_id)
 
-                # Persist chat history for LangGraph routes that bypass BaseAgent persistence.
-                if agent.session_manager:
-                    await agent.session_manager.add_message("user", query)
-                    if (response_text or "").strip():
-                        await agent.session_manager.add_message("assistant", response_text)
+            logger.info(
+                "UseCase: Query processed, session_id=%s, agent=%s, success=%s",
+                current_session_id,
+                agent_id,
+                success,
+            )
 
-                # Persist messages via session manager
+            # Sync checkpoint transcript to session row for API/UI (Postgres + optional Redis stack path).
+            if agent.session_manager and isinstance(out.get("messages"), list):
+                rows = langchain_messages_to_session_rows(out["messages"])
                 if (
-                    response_text != original_response_text
-                    and agent.session_manager
-                    and (original_response_text or "").strip()
+                    rows
+                    and response_text != original_response_text
+                    and rows[-1].get("role") == "assistant"
                 ):
-                    await agent.session_manager.replace_latest_assistant_message(
-                        original_response_text,
-                        response_text,
-                    )
-            else:
-                # Legacy format (tuple)
-                response_text, agent_id = result
-                original_response_text = response_text
-                pending_workflow_resume = False
-                warnings = []
-                success = True
-                session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
-                current_session_id = session_info.get("session_id") if session_info else None
+                    rows[-1] = {**rows[-1], "content": response_text}
+                await agent.session_manager.replace_messages_from_graph_export(rows)
 
-            # Legacy tuple path may also contain SQL preview; attach action_id marker if missing.
-            if not re.search(r"\[SQL_ACTION_ID_START\].*?\[SQL_ACTION_ID_END\]", response_text or "", flags=re.DOTALL):
-                sql_preview = self._extract_last_mutation_sql_block(response_text)
-                if sql_preview:
-                    action_id = str(uuid.uuid4())
-                    response_text = self._attach_sql_action_id_marker(response_text, action_id)
-                    if (
-                        not isinstance(result, dict)
-                        and agent.session_manager
-                        and (original_response_text or "").strip()
-                    ):
-                        await agent.session_manager.replace_latest_assistant_message(
-                            original_response_text,
-                            response_text,
-                        )
+            tool_events = out.get("tool_events") or []
+            if not isinstance(tool_events, list):
+                tool_events = []
 
-            tool_events: list[dict] = []
-            if isinstance(result, dict):
-                tool_events = result.get("tool_events") or []
-                if not isinstance(tool_events, list):
-                    tool_events = []
+            result = {
+                "response": response_text,
+                "agent_id": agent_id,
+                "session_id": current_session_id,
+                "requires_approval": pending_workflow_resume,
+                "intent": out.get("intent") or {},
+                "tool_events": tool_events,
+                "pending_workflow_resume": pending_workflow_resume,
+                "workflow_state": workflow_state,
+            }
 
             # Persist pending approval payload for SQL gate (CREATE TABLE / mutation preview).
             await self._persist_pending_approval_from_workflow(
                 agent,
                 current_session_id,
                 pending_workflow_resume=pending_workflow_resume,
-                workflow_state=(workflow_state if isinstance(result, dict) else None),
+                workflow_state=(workflow_state if isinstance(workflow_state, dict) else None),
                 tool_events=tool_events,
             )
 
@@ -363,6 +346,11 @@ class ChatUseCase:
 
         if (response_text or "").strip():
             await agent.session_manager.add_message("assistant", response_text)
+
+        try:
+            await agent.merge_resume_into_chat_checkpoint(sid, uvm, response_text)
+        except Exception as e:
+            logger.warning("UseCase: merge_resume_into_chat_checkpoint failed: %s", e)
 
         session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
         current_session_id = session_info.get("session_id") if session_info else sid

@@ -156,3 +156,38 @@ SQLLAB_TIMEOUT = int(os.getenv("SQLLAB_TIMEOUT", "300"))
 
 log_level_text = os.getenv("SUPERSET_LOG_LEVEL", "INFO")
 LOG_LEVEL = getattr(logging, log_level_text.upper(), logging.INFO)
+
+
+# ==================== JWT → g.user workaround ====================
+# Superset 4.x bug: when auth is via Authorization: Bearer <jwt>, g.user is never
+# populated from the JWT identity. `security_manager.can_access()` reads `g.user`
+# (Flask-Login style) and sees AnonymousUser, so base filters like DatabaseFilter
+# return 0 results even for admin — while POST still works because it only checks
+# JWT-decoded permissions. Root cause is that FAB's cookie-based login_manager
+# sets g.user, but Flask-JWT-Extended does not.
+#
+# This hook runs before every request: if a valid Bearer token is present, load
+# the User model by JWT subject and attach it to g.user so the rest of Superset's
+# security layer sees the right user.
+def FLASK_APP_MUTATOR(app):  # noqa: N802 — name required by Superset
+    from flask import g, request
+    from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
+
+    @app.before_request
+    def _attach_jwt_user_to_g() -> None:  # type: ignore[misc]
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return
+        try:
+            verify_jwt_in_request(optional=True)
+            user_id = get_jwt_identity()
+            if not user_id:
+                return
+            # Lazy imports — app context is active here, so these are safe
+            from superset import db, security_manager
+            user = db.session.get(security_manager.user_model, int(user_id))
+            if user is not None:
+                g.user = user
+        except Exception:
+            # Never block a request on our behalf; worst case FAB sees anonymous.
+            pass

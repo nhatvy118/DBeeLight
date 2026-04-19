@@ -311,7 +311,7 @@ async def _get_recent_session_context(agent, limit: int = 6) -> str:
     if not agent or not getattr(agent, "session_manager", None):
         return ""
     try:
-        msgs = await agent.session_manager.get_current_messages()
+        msgs = await agent.session_manager.get_llm_context_messages()
     except Exception:
         return ""
     if not isinstance(msgs, list) or not msgs:

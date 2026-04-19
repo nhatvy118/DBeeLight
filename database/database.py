@@ -260,8 +260,8 @@ async def show_create_table_schema(
         return (
             "[CREATE_TABLE_SCHEMA_PREVIEW]\n"
             f"Proposed table: `{table_name}`\n"
-            "Không parse được danh sách cột từ input `columns`. "
-            "Vui lòng nhập theo format: `col_name TYPE, col2 TYPE, ...`"
+            "Cannot parse the column list from input `columns`. "
+            "Please enter the columns in the following format: `col_name TYPE, col2 TYPE, ...`"
         )
 
     table_md = ["| Variable | Type |", "|---|---|"]
@@ -282,9 +282,9 @@ async def show_create_table_schema(
         "[CREATE_TABLE_SCHEMA_PREVIEW]\n"
         f"Proposed table: `{table_name}`\n"
         f"Primary key: `{pk_text}`\n\n"
-        "Hãy kiểm tra schema theo bảng sau:\n\n"
+        "Please review the schema as follows:\n\n"
         + "\n".join(table_md)
-        + "\n\nXác nhận tất cả type đúng rồi mới gọi `create_table` với `user_confirmed=True`.\n\n"
+        + "\n\nConfirm the schema is correct.\n\n"
         + "[CREATE_TABLE_SCHEMA_JSON_START]\n"
         + payload_json
         + "\n[CREATE_TABLE_SCHEMA_JSON_END]"

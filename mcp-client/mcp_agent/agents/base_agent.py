@@ -119,7 +119,7 @@ class BaseAgent(ABC):
             )
 
         all_tools = self.get_all_tools_for_openai()
-        history_messages = await self.session_manager.get_current_messages()
+        history_messages = await self.session_manager.get_llm_context_messages()
 
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt},
@@ -144,8 +144,9 @@ class BaseAgent(ABC):
             await self.session_manager.add_message("user", query)
 
         final_chunks: List[str] = []
-        max_iterations = 2
+        max_iterations = 5
         iteration = 0
+        hit_iteration_limit = True
 
         while iteration < max_iterations:
             iteration += 1
@@ -167,6 +168,7 @@ class BaseAgent(ABC):
                 if not tool_calls:
                     if content_text and persist_history:
                         await self.session_manager.add_message("assistant", content_text)
+                    hit_iteration_limit = False
                     break
 
                 # Don't save intermediate assistant messages (with tool_calls)
@@ -187,7 +189,7 @@ class BaseAgent(ABC):
                     ],
                 }
                 messages.append(assistant_message)
-                # ❌ Do NOT save intermediate assistant messages with tool_calls
+                # Do NOT save intermediate assistant messages with tool_calls
                 # Only save final answer when loop ends (no tool_calls)
 
                 for tc in tool_calls:
@@ -233,10 +235,11 @@ class BaseAgent(ABC):
                 error_message = f"Error: {e}"
                 if persist_history:
                     await self.session_manager.add_message("assistant", error_message)
+                hit_iteration_limit = False
                 break
 
-        if iteration >= max_iterations:
-            warning_message = "\n⚠️  Reached maximum iterations. Please simplify your query."
+        if hit_iteration_limit:
+            warning_message = "\n  Reached maximum iterations. Please simplify your query."
             final_chunks.append(warning_message)
             # Save warning as final answer
             final_answer = "\n".join(c for c in final_chunks if c).strip()

@@ -24,7 +24,7 @@ class StageType(str, Enum):
     # Database agent stages
     SCHEMA_DISCOVERY = "SCHEMA_DISCOVERY"
     SCHEMA_PREVIEW = "SCHEMA_PREVIEW"
-    SCHEMA_HITL = "SCHEMA_HITL"
+    SCHEMA_APPROVAL = "SCHEMA_APPROVAL"
     SQL_GENERATION = "SQL_GENERATION"
     SQL_PREVIEW = "SQL_PREVIEW"
     SQL_EXECUTION = "SQL_EXECUTION"
@@ -40,6 +40,7 @@ class StageType(str, Enum):
 
     # Superset agent stages
     DB_CONNECTION = "DB_CONNECTION"
+    SCHEMA_PLAN = "SCHEMA_PLAN"
     CHART_CREATION = "CHART_CREATION"
     CHART_EMBED = "CHART_EMBED"
 
@@ -64,7 +65,7 @@ DATABASE_WORKFLOW = AgentWorkflowConfig(
         StageType.INTENT_PARSE,
         StageType.SCHEMA_DISCOVERY,
         StageType.SCHEMA_PREVIEW,
-        StageType.SCHEMA_HITL,
+        StageType.SCHEMA_APPROVAL,
         StageType.SQL_GENERATION,
         StageType.SQL_PREVIEW,
         StageType.SQL_EXECUTION,
@@ -72,8 +73,8 @@ DATABASE_WORKFLOW = AgentWorkflowConfig(
     transitions={
         StageType.INTENT_PARSE.value: StageType.SCHEMA_DISCOVERY.value,
         StageType.SCHEMA_DISCOVERY.value: StageType.SCHEMA_PREVIEW.value,
-        StageType.SCHEMA_PREVIEW.value: StageType.SCHEMA_HITL.value,
-        StageType.SCHEMA_HITL.value: StageType.SQL_GENERATION.value,
+        StageType.SCHEMA_PREVIEW.value: StageType.SCHEMA_APPROVAL.value,
+        StageType.SCHEMA_APPROVAL.value: StageType.SQL_GENERATION.value,
         StageType.SQL_GENERATION.value: StageType.SQL_PREVIEW.value,
         StageType.SQL_PREVIEW.value: StageType.SQL_EXECUTION.value,
         StageType.SQL_EXECUTION.value: StageType.DONE.value,
@@ -88,6 +89,7 @@ SUPERSET_WORKFLOW = AgentWorkflowConfig(
         StageType.INTENT_PARSE,
         StageType.DB_CONNECTION,
         StageType.SCHEMA_DISCOVERY,
+        StageType.SCHEMA_PLAN,
         StageType.SQL_EXECUTION,
         StageType.CHART_CREATION,
         StageType.CHART_EMBED,
@@ -95,7 +97,8 @@ SUPERSET_WORKFLOW = AgentWorkflowConfig(
     transitions={
         StageType.INTENT_PARSE.value: StageType.DB_CONNECTION.value,
         StageType.DB_CONNECTION.value: StageType.SCHEMA_DISCOVERY.value,
-        StageType.SCHEMA_DISCOVERY.value: StageType.SQL_EXECUTION.value,
+        StageType.SCHEMA_DISCOVERY.value: StageType.SCHEMA_PLAN.value,
+        StageType.SCHEMA_PLAN.value: StageType.SQL_EXECUTION.value,
         StageType.SQL_EXECUTION.value: StageType.CHART_CREATION.value,
         StageType.CHART_CREATION.value: StageType.CHART_EMBED.value,
         StageType.CHART_EMBED.value: StageType.DONE.value,

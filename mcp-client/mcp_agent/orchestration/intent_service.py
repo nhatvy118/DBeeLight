@@ -7,7 +7,8 @@ Falls back to general-purpose agent if no workflow matches.
 
 import json
 import logging
-from typing import Any, Dict, List, Literal, Optional
+import os
+from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from openai import OpenAI
 from pydantic import BaseModel
@@ -42,6 +43,7 @@ ORCHESTRATOR_ROUTES: List[Dict[str, str]] = [
 ]
 
 _VALID_ORCHESTRATOR_ROUTES = frozenset(r["id"] for r in ORCHESTRATOR_ROUTES)
+INTENT_CONTEXT_TURNS = max(2, int(os.getenv("INTENT_CONTEXT_TURNS", "6")))
 
 _INTENT_CLASSIFICATION_PROMPT = """You are an orchestration router. Pick exactly ONE branch for the user request.
 
@@ -113,22 +115,59 @@ class IntentService:
             workflow_descriptions=get_workflow_descriptions()
         )
 
+    def _build_user_content(
+        self,
+        prompt: str,
+        conversation_context: Optional[Sequence[Dict[str, Any]]] = None,
+        conversation_summary: Optional[str] = None,
+    ) -> str:
+        """Build user payload for intent classification from history + latest turn."""
+        summary = (conversation_summary or "").strip()
+        if not conversation_context and not summary:
+            return prompt
+
+        rows: List[str] = []
+        # Keep context short for routing; summary carries older details.
+        for msg in conversation_context[-INTENT_CONTEXT_TURNS:]:
+            role = str(msg.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            content = str(msg.get("content") or "").strip()
+            if not content:
+                continue
+            rows.append(f"{role}: {content}")
+
+        payload_parts: List[str] = [
+            "Use conversation context to resolve follow-up references.\n\n"
+        ]
+        if summary:
+            payload_parts.append("[Running summary]\n" + summary + "\n\n")
+        if rows:
+            payload_parts.append("[Conversation context]\n" + "\n".join(rows) + "\n\n")
+        payload_parts.append("[Latest user message]\n" + prompt)
+        return "".join(payload_parts)
+
     async def classify(
         self,
         prompt: str,
         available_agents: List[str] = None,
+        conversation_context: Optional[Sequence[Dict[str, Any]]] = None,
+        conversation_summary: Optional[str] = None,
     ) -> IntentResult:
         """Classify user query into workflow or fallback agent.
 
         Args:
             prompt: User's input message
             available_agents: List of agent IDs available (e.g. ["database", "excel", "superset"])
+            conversation_context: Optional recent user/assistant turns for multi-turn routing
+            conversation_summary: Optional running summary for long conversations
 
         Returns:
             IntentResult with ``route`` (one of six branches), derived ``workflow_id`` /
             ``fallback_agent``, and ``orchestrator_routes`` catalog on ``to_dict()``.
         """
         logger.info(f"[IntentService] Classifying: {prompt[:50]}...")
+        user_content = self._build_user_content(prompt, conversation_context, conversation_summary)
 
         response = self.llm.chat.completions.create(
             model=self.model,
@@ -139,7 +178,7 @@ class IntentService:
                 },
                 {
                     "role": "user",
-                    "content": prompt
+                    "content": user_content
                 }
             ],
             temperature=0,
