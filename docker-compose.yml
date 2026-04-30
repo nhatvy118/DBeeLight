@@ -93,6 +93,11 @@ services:
       exec /app/docker/entrypoints/run-server.sh
       "
     environment:
+      # Force Superset to load our config — without this, in some image versions
+      # ``superset_config.py`` is silently ignored and feature flags fall back to
+      # the empty default, which leaves /embedded/<uuid> route un-registered.
+      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+      PYTHONPATH: /app/pythonpath
       DATABASE_DIALECT: postgresql+psycopg2
       DATABASE_USER: ${POSTGRES_USER:-postgres}
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-postgres}

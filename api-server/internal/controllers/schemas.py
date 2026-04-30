@@ -11,6 +11,27 @@ class ChatRequest(BaseModel):
     project_id: Optional[str] = None
 
 
+class SupersetGuestTokenRequest(BaseModel):
+    """Refresh a Superset Guest Token for a chart's wrapper dashboard."""
+
+    embedded_uuid: str
+    project_id: str
+    ttl_seconds: int = 300
+    # Optional fallback hint: if the wrapper dashboard for ``embedded_uuid`` no
+    # longer exists in Superset (e.g. metadata DB was reset between sessions),
+    # the backend can re-wrap ``chart_id`` to mint a fresh token. Frontend
+    # extracts this from the persisted chat marker on reload.
+    chart_id: Optional[int] = None
+
+
+class SupersetGuestTokenOk(BaseModel):
+    token: str
+    embed_url: str
+    superset_domain: Optional[str] = None
+    embedded_uuid: str
+    ttl_seconds: int
+
+
 class WorkflowResumeRequest(BaseModel):
     """Resume a database LangGraph workflow paused on ``interrupt()`` (schema or SQL gate)."""
 

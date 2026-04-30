@@ -73,7 +73,7 @@ export default function Home() {
     try {
       const res = await sendMessage(sendPayload, sessionId, null);
       if (res.success) {
-        setMessages((prev) => [...prev, { text: res.response, isUser: false }]);
+        setMessages((prev) => [...prev, { text: res.response ?? '', isUser: false }]);
         if (res.session_id) setSessionId(res.session_id);
       } else {
         setMessages((prev) => [

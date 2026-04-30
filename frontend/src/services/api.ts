@@ -65,6 +65,74 @@ export async function sendMessage(
   return data;
 }
 
+export type StreamEvent =
+  | { type: 'started' }
+  | { type: 'stage'; stage: string; status: 'running' | 'completed' | 'error'; message?: string }
+  | { type: 'final'; data: ChatResponse }
+  | { type: 'error'; status_code?: number; message: string };
+
+export type StreamHandlers = {
+  onEvent: (e: StreamEvent) => void;
+  signal?: AbortSignal;
+};
+
+/**
+ * Stream chat response via SSE. Calls ``onEvent`` for every parsed event.
+ * Resolves when the server closes the stream (after ``final`` or ``error``).
+ *
+ * Frontend uses fetch + ReadableStream because EventSource is GET-only and we
+ * need to POST the chat payload.
+ */
+export async function sendMessageStream(
+  message: string,
+  sessionId: string | null,
+  projectId: string | null,
+  handlers: StreamHandlers,
+): Promise<void> {
+  const response = await fetch(url('/api/chat/stream'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ message, session_id: sessionId, project_id: projectId }),
+    signal: handlers.signal,
+  });
+
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`stream HTTP ${response.status}: ${text}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+
+  // SSE frames are separated by blank lines. Each frame can have multiple
+  // ``key: value`` lines; we only care about ``data:`` (the JSON payload).
+  // The ``event:`` line is ignored — type is encoded inside the JSON.
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let sep: number;
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const frame = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      const dataLines = frame
+        .split('\n')
+        .filter((l) => l.startsWith('data:'))
+        .map((l) => l.slice(5).trimStart());
+      if (dataLines.length === 0) continue;
+      try {
+        const parsed = JSON.parse(dataLines.join('\n')) as StreamEvent;
+        handlers.onEvent(parsed);
+      } catch {
+        // Malformed frame — skip
+      }
+    }
+  }
+}
+
 export async function resumeWorkflow(
   sessionId: string,
   approved: boolean,

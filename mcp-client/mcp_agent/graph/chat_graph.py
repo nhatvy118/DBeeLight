@@ -42,6 +42,10 @@ class ChatGraphState(MessagesState, total=False):
     workflow_state: NotRequired[Dict[str, Any]]
     intent: NotRequired[Dict[str, Any]]
     success: NotRequired[bool]
+    # Project / user scoping — set per-invocation by chat_usecase, persisted in checkpoint
+    project_id: NotRequired[Optional[str]]
+    user_id: NotRequired[Optional[str]]
+    allowed_db_uri: NotRequired[Optional[str]]
 
 
 def chat_checkpoint_config(session_id: str) -> Dict[str, Any]:
@@ -158,6 +162,9 @@ def build_chat_graph(orchestrator: Any, checkpointer: Any):
                 session_id=session_id,
                 conversation_context=override,
                 conversation_summary=summary_text,
+                project_id=state.get("project_id"),
+                user_id=state.get("user_id"),
+                allowed_db_uri=state.get("allowed_db_uri"),
             )
         except Exception as e:
             logger.exception("[ChatGraph] orchestrate_node: %s", e)

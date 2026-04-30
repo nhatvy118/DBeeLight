@@ -30,6 +30,10 @@ class OrchestratorState(TypedDict, total=False):
     response: str
     error: Optional[str]
     pending_workflow_resume: bool
+    # Project / user scoping — propagated to sub-workflows for tool-level enforcement
+    project_id: Optional[str]
+    user_id: Optional[str]
+    allowed_db_uri: Optional[str]
 
 
 class Orchestrator:
@@ -177,6 +181,9 @@ class Orchestrator:
                 user_message=message,
                 agent_type=agent_type,
                 thread_id=session_id,
+                project_id=state.get("project_id"),
+                user_id=state.get("user_id"),
+                allowed_db_uri=state.get("allowed_db_uri"),
             )
         except Exception as e:
             logger.exception("[Orchestrator] %s agent wrapper error: %s", agent_type, e)
@@ -197,6 +204,10 @@ class Orchestrator:
         session_id: str,
         message: str,
         agent_type: str,
+        *,
+        project_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        allowed_db_uri: Optional[str] = None,
     ) -> Dict[str, Any]:
         self._session_agent_map[session_id] = agent_type
         try:
@@ -205,6 +216,9 @@ class Orchestrator:
                 user_message=message,
                 agent_type=agent_type,
                 thread_id=session_id,
+                project_id=project_id,
+                user_id=user_id,
+                allowed_db_uri=allowed_db_uri,
             )
         except Exception as e:
             logger.exception("[Orchestrator] %s hybrid subgraph error: %s", agent_type, e)
@@ -269,7 +283,14 @@ class Orchestrator:
             selected_agents = ["database"] if "database" in self._agents else list(self._agents.keys())[:1]
 
         tasks = [
-            self._run_subgraph_for_agent(session_id=session_id, message=message, agent_type=agent_type)
+            self._run_subgraph_for_agent(
+                session_id=session_id,
+                message=message,
+                agent_type=agent_type,
+                project_id=state.get("project_id"),
+                user_id=state.get("user_id"),
+                allowed_db_uri=state.get("allowed_db_uri"),
+            )
             for agent_type in selected_agents
         ]
         results = await asyncio.gather(*tasks)
@@ -408,8 +429,16 @@ class Orchestrator:
         session_id: Optional[str] = None,
         conversation_context: Optional[List[Dict[str, Any]]] = None,
         conversation_summary: Optional[str] = None,
+        *,
+        project_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        allowed_db_uri: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Process query through top-level LangGraph orchestrator."""
+        """Process query through top-level LangGraph orchestrator.
+
+        ``project_id`` / ``user_id`` / ``allowed_db_uri`` flow down to per-agent workflows
+        so Superset (and future agents) can enforce that resources are scoped to the project.
+        """
         if not session_id:
             session_id = str(uuid.uuid4())
 
@@ -421,6 +450,9 @@ class Orchestrator:
                     "user_message": query,
                     "conversation_context": conversation_context or [],
                     "conversation_summary": str(conversation_summary or "").strip(),
+                    "project_id": project_id,
+                    "user_id": user_id,
+                    "allowed_db_uri": allowed_db_uri,
                 }
             )
         except Exception as e:
@@ -515,10 +547,23 @@ class Orchestrator:
             })
 
         if output_type == "chart_embed":
+            # Project mode: forward the full embed payload so the frontend can
+            # mount via @superset-ui/embedded-sdk and refresh tokens on expiry.
+            # Legacy mode: payload is just the URL string.
+            if output.get("guest_token") and output.get("embedded_uuid"):
+                payload: Any = {
+                    "embed_url": output.get("embed_url"),
+                    "embedded_uuid": output.get("embedded_uuid"),
+                    "guest_token": output.get("guest_token"),
+                    "superset_domain": output.get("superset_domain"),
+                    "ttl_seconds": output.get("ttl_seconds"),
+                }
+            else:
+                payload = output.get("embed_url")
             events.append({
                 "tool": "create_chart",
                 "type": "chart_embed",
-                "payload": output.get("embed_url"),
+                "payload": payload,
             })
 
         return events
@@ -716,7 +761,11 @@ class Orchestrator:
         if not superset_agent:
             return "No Superset agent available"
 
-        db_name = project_name or f"project_{project_id}"
+        # Naming policy: DB in Superset is named with the project UUID verbatim.
+        # The ``project_name`` arg is kept for callers that pass a display name —
+        # it's ignored here so MCP-side scoping has a single deterministic key.
+        del project_name  # noqa: F841 — kept in signature for backward compat
+        db_name = str(project_id)
 
         sqlalchemy_uri = db_url
         if db_url.startswith("/") or db_url.startswith("."):
@@ -730,6 +779,7 @@ class Orchestrator:
                 result = await session.call_tool("register_database", {
                     "name": db_name,
                     "sqlalchemy_uri": sqlalchemy_uri,
+                    "project_id": str(project_id),
                 })
                 result_content = result.content
                 if not isinstance(result_content, str):
@@ -741,3 +791,86 @@ class Orchestrator:
                 continue
 
         return "register_database tool not found in any Superset session"
+
+    async def rewrap_chart_for_embed(
+        self,
+        chart_id: int,
+        project_id: str,
+    ) -> Dict[str, Any]:
+        """Re-create a wrapper dashboard for ``chart_id`` and return its embed UUID.
+
+        Used when an old chat history references an ``embedded_uuid`` whose
+        wrapper dashboard no longer exists in Superset (e.g. after a metadata
+        DB reset). ``wrap_chart_in_dashboard`` is idempotent by title, so the
+        same chart will reuse an existing wrapper if one is found.
+        """
+        superset_agent = self._agents.get("superset")
+        if not superset_agent:
+            return {"error": "No Superset agent available"}
+
+        for _server_name, session in superset_agent.sessions.items():
+            try:
+                result = await session.call_tool("wrap_chart_in_dashboard", {
+                    "chart_id": int(chart_id),
+                    "project_id": project_id,
+                })
+                content = result.content
+                if hasattr(content, "text"):
+                    text = str(content.text)
+                elif isinstance(content, list) and content and hasattr(content[0], "text"):
+                    text = str(content[0].text)
+                else:
+                    text = str(content)
+                try:
+                    import json as _json
+                    return _json.loads(text)
+                except Exception:
+                    return {"raw": text}
+            except Exception as e:
+                logger.debug(f"[Orchestrator] wrap_chart_in_dashboard not in {_server_name}: {e}")
+                continue
+
+        return {"error": "wrap_chart_in_dashboard tool not found in any Superset session"}
+
+    async def mint_superset_guest_token(
+        self,
+        embedded_uuid: str,
+        project_id: str,
+        user_id: Optional[str] = None,
+        ttl_seconds: int = 300,
+    ) -> Dict[str, Any]:
+        """Refresh-friendly entry point to MCP ``mint_guest_token``.
+
+        Caller (api-server) is responsible for verifying the requesting user owns
+        ``project_id`` before invoking this — the MCP tool itself is admin-token
+        backed and does not authenticate the caller.
+        """
+        superset_agent = self._agents.get("superset")
+        if not superset_agent:
+            return {"error": "No Superset agent available"}
+
+        for _server_name, session in superset_agent.sessions.items():
+            try:
+                result = await session.call_tool("mint_guest_token", {
+                    "embedded_uuid": embedded_uuid,
+                    "project_id": project_id,
+                    "user_id": user_id or "",
+                    "ttl_seconds": int(ttl_seconds),
+                })
+                content = result.content
+                if hasattr(content, "text"):
+                    text = str(content.text)
+                elif isinstance(content, list) and content and hasattr(content[0], "text"):
+                    text = str(content[0].text)
+                else:
+                    text = str(content)
+                try:
+                    import json as _json
+                    return _json.loads(text)
+                except Exception:
+                    return {"raw": text}
+            except Exception as e:
+                logger.debug(f"[Orchestrator] mint_guest_token not in {_server_name}: {e}")
+                continue
+
+        return {"error": "mint_guest_token tool not found in any Superset session"}

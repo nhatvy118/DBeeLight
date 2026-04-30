@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import json as _json
 import logging
 import re
+import time
 import uuid
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException
 
@@ -12,14 +15,34 @@ from internal.repositories.project_repository import ProjectRepository
 
 from langchain_core.messages import HumanMessage
 from mcp_agent.graph.chat_graph import chat_checkpoint_config, langchain_messages_to_session_rows
+from mcp_agent.progress import set_progress_callback, reset_progress_callback
 
 logger = logging.getLogger(__name__)
+
+
+def _sse_format(event: dict) -> str:
+    """Format an event dict as a Server-Sent Events frame.
+
+    Spec: each frame is one or more ``key: value`` lines terminated by a blank
+    line. We use the optional ``event:`` line so clients can dispatch on type.
+    """
+    event_type = str(event.get("type") or "message")
+    data = _json.dumps(event, ensure_ascii=False)
+    return f"event: {event_type}\ndata: {data}\n\n"
 
 
 class ChatUseCase:
     def __init__(self, agent_repo: AgentRepository, project_repo: Optional[ProjectRepository] = None):
         self._agent_repo = agent_repo
         self._project_repo = project_repo
+        # In-memory guest-token cache to dedupe rapid mint calls (page reload
+        # storms, embed-sdk timer overlaps). Superset rate-limits the
+        # /api/v1/security/guest_token/ endpoint to 50 rps; without this,
+        # zombie timers from old mounts can lock the whole app out for the
+        # current minute. Key = (user_key, embedded_uuid). TTL kept under the
+        # token's actual JWT expiry so we never serve a stale token.
+        self._guest_token_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+        self._guest_token_cache_safety_seconds = 30
 
     @staticmethod
     def _extract_last_mutation_sql_block(text: str) -> str | None:
@@ -129,6 +152,9 @@ class ChatUseCase:
         # Auto-connect database based on context:
         # - In project: connect to project's SQLite .db file
         # - Outside project: leave as-is (user manages PostgreSQL connection manually via chat)
+        # ``project_db_url`` is captured for forwarding to workflows so Superset can scope
+        # by project_id without re-querying database_agent (Phase 1 of scoping refactor).
+        project_db_url: str | None = None
         if project_id_uuid and self._project_repo:
             try:
                 project = await self._project_repo.get_project_by_id(project_id_uuid, user_key)
@@ -136,17 +162,19 @@ class ChatUseCase:
                     db_url = project["db_url"]
                     # Only auto-connect if it's a SQLite path (not placeholder)
                     if db_url and not db_url.startswith("placeholder://"):
+                        project_db_url = db_url
                         logger.info(f"UseCase: Auto-connecting to project database: {db_url}")
                         connect_result = await agent.connect_to_project_db(db_url)
                         logger.info(f"UseCase: Database connection result: {connect_result}")
 
-                        # Also register the project database in Superset for visualization
+                        # Also register the project database in Superset for visualization.
+                        # Project-scoped name uses the UUID directly (single source of truth
+                        # for downstream MCP tool-level enforcement).
                         try:
-                            project_name = project.get("name", "")
                             superset_result = await agent.connect_project_to_superset(
                                 project_id=str(project_id_uuid),
                                 db_url=db_url,
-                                project_name=project_name or f"project_{str(project_id_uuid)[:8]}",
+                                project_name="",
                             )
                             logger.info(f"UseCase: Superset registration result: {superset_result}")
                         except Exception as e:
@@ -190,7 +218,12 @@ class ChatUseCase:
             chat_graph = await agent.get_chat_graph()
             cfg = chat_checkpoint_config(current_session_id)
             raw_out = await chat_graph.ainvoke(
-                {"messages": [HumanMessage(content=query)]},
+                {
+                    "messages": [HumanMessage(content=query)],
+                    "project_id": project_id_uuid,
+                    "user_id": user_key,
+                    "allowed_db_uri": project_db_url,
+                },
                 config=cfg,
             )
             out = dict(raw_out) if isinstance(raw_out, dict) else {}
@@ -265,6 +298,177 @@ class ChatUseCase:
         except Exception as e:
             logger.error(f"UseCase: Error processing query: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to process query: {str(e)}") from e
+
+    async def mint_superset_guest_token(
+        self,
+        user_key: str,
+        embedded_uuid: str,
+        project_id: str,
+        ttl_seconds: int = 300,
+        chart_id: Optional[int] = None,
+    ) -> dict:
+        """Verify project ownership, then mint a Superset Guest Token via MCP.
+
+        Trust model:
+        - Caller (frontend) supplies (embedded_uuid, project_id).
+        - We verify ``user_key`` actually owns ``project_id`` via ProjectRepository.
+        - We do NOT independently verify that ``embedded_uuid`` belongs to that
+          project — embedded_uuids are treated as semi-secret and only delivered
+          through authenticated chat replies.
+
+        Auto-recreate: when a chart was created in a previous Superset session
+        and the metadata DB has since been reset, the original wrapper dashboard
+        is gone. If ``chart_id`` is provided and the chart still exists, we
+        re-wrap it to obtain a new ``embedded_uuid`` and re-mint. The returned
+        ``embedded_uuid`` may therefore differ from the requested one — the
+        frontend must update its iframe accordingly.
+        """
+        if not embedded_uuid or not embedded_uuid.strip():
+            raise HTTPException(status_code=400, detail="embedded_uuid is required")
+        if not project_id or not project_id.strip():
+            raise HTTPException(status_code=400, detail="project_id is required")
+
+        try:
+            uuid.UUID(project_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid project_id")
+
+        if not self._project_repo:
+            raise HTTPException(status_code=500, detail="Project repository unavailable")
+
+        project = await self._project_repo.get_project_by_id(project_id, user_key)
+        if not project:
+            raise HTTPException(status_code=403, detail="Project not accessible")
+
+        ttl = int(ttl_seconds or 300)
+        cache_key = (user_key, embedded_uuid)
+        now = time.time()
+        cached = self._guest_token_cache.get(cache_key)
+        if cached and cached[0] > now + self._guest_token_cache_safety_seconds:
+            return cached[1]
+
+        agent = await self._agent_repo.get_agent(user_key=user_key)
+        result = await agent.mint_superset_guest_token(
+            embedded_uuid=embedded_uuid,
+            project_id=project_id,
+            user_id=user_key,
+            ttl_seconds=ttl,
+        )
+
+        if (not isinstance(result, dict) or result.get("error")) and chart_id:
+            try:
+                rewrap = await agent.rewrap_chart_for_embed(
+                    chart_id=int(chart_id),
+                    project_id=project_id,
+                )
+            except Exception as e:
+                rewrap = {"error": f"rewrap failed: {e}"}
+            new_uuid = (rewrap or {}).get("embedded_uuid")
+            if new_uuid and new_uuid != embedded_uuid:
+                result = await agent.mint_superset_guest_token(
+                    embedded_uuid=new_uuid,
+                    project_id=project_id,
+                    user_id=user_key,
+                    ttl_seconds=int(ttl_seconds or 300),
+                )
+                if isinstance(result, dict) and not result.get("error"):
+                    result["embedded_uuid"] = new_uuid
+
+        if not isinstance(result, dict) or result.get("error"):
+            # Combine error + message so the caller sees the actual upstream
+            # cause (e.g. "404 Not Found: Embedded dashboard <uuid> missing"),
+            # not just the generic header that wraps it.
+            err = (result or {}).get("error") or "Failed to mint guest token"
+            extra = (result or {}).get("message") or (result or {}).get("details")
+            msg = f"{err}: {extra}" if extra and extra != err else str(err)
+            logger.warning(
+                "[mint_guest_token] failed: %s | embedded_uuid=%s project_id=%s chart_id=%s",
+                msg, embedded_uuid, project_id, chart_id,
+            )
+            raise HTTPException(status_code=502, detail=msg)
+
+        token = result.get("token")
+        if not token:
+            raise HTTPException(status_code=502, detail="Guest token missing in response")
+
+        response = {
+            "token": token,
+            "embed_url": result.get("embed_url") or "",
+            "superset_domain": result.get("supersetDomain") or result.get("superset_domain"),
+            "embedded_uuid": result.get("embedded_uuid") or embedded_uuid,
+            "ttl_seconds": int(result.get("ttl_seconds") or ttl_seconds or 300),
+        }
+        # Cache under both the original and (if rewrapped) the new uuid so
+        # subsequent requests with either key dedupe to the same token.
+        expires_at = now + response["ttl_seconds"]
+        self._guest_token_cache[(user_key, embedded_uuid)] = (expires_at, response)
+        if response["embedded_uuid"] != embedded_uuid:
+            self._guest_token_cache[(user_key, response["embedded_uuid"])] = (expires_at, response)
+        return response
+
+    async def chat_stream(
+        self,
+        user_key: str,
+        message: str,
+        session_id: str | None,
+        project_id: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Streaming variant of ``chat`` — yields SSE-formatted strings.
+
+        Emits ``stage`` events as workflow stages run and a final ``final``
+        event with the complete payload (same shape as ``chat``'s response).
+        """
+        # asyncio.Queue handles the producer/consumer hop between the chat task
+        # (which calls progress emit) and this generator (which yields to HTTP).
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def progress_cb(event: dict) -> None:
+            await queue.put(event)
+
+        async def run_chat_task() -> None:
+            token = set_progress_callback(progress_cb)
+            try:
+                response_text, sid, tool_events, pending, warnings, success = await self.chat(
+                    user_key, message, session_id, project_id
+                )
+                await queue.put({
+                    "type": "final",
+                    "data": {
+                        "response": response_text,
+                        "session_id": sid,
+                        "tool_events": tool_events,
+                        "pending_workflow_resume": pending,
+                        "warnings": warnings,
+                        "success": success,
+                    },
+                })
+            except HTTPException as he:
+                await queue.put({"type": "error", "status_code": he.status_code, "message": str(he.detail)})
+            except Exception as e:
+                logger.exception("chat_stream: chat task failed: %s", e)
+                await queue.put({"type": "error", "status_code": 500, "message": str(e)})
+            finally:
+                reset_progress_callback(token)
+                await queue.put(None)  # sentinel: end of stream
+
+        task = asyncio.create_task(run_chat_task())
+
+        try:
+            # Initial event so the UI can switch to "streaming" state immediately.
+            yield _sse_format({"type": "started"})
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield _sse_format(event)
+        finally:
+            # If the client disconnected, cancel the chat task to free resources.
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     async def workflow_resume(
         self,

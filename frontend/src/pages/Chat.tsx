@@ -3,6 +3,7 @@ import MessageList, { type UiMessage, type ExportData, type SchemaPreviewData } 
 import {
   getSession,
   sendMessage,
+  sendMessageStream,
   getSessions,
   executeSql,
   resumeWorkflow,
@@ -10,6 +11,7 @@ import {
   type SessionInfo,
   type ToolEvent,
   type GetSessionResponse,
+  type StreamEvent,
 } from '../services/api';
 import plusIcon from '../assets/icons/Plus.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
@@ -83,6 +85,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   } | null>(null);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [typingStopSignal, setTypingStopSignal] = useState(0);
+  // Live progress label streamed from the backend (e.g. "Đang sinh SQL...").
+  // Null when no streaming chat is in flight.
+  const [streamingStage, setStreamingStage] = useState<string | null>(null);
   const sendAbortControllerRef = useRef<AbortController | null>(null);
 
   // Load selected project from URL (propProjectId) - URL is source of truth
@@ -297,7 +302,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     let cleaned = text
       .replace(/\n?\[CREATE_TABLE_SCHEMA_JSON_START\][\s\S]*?\[CREATE_TABLE_SCHEMA_JSON_END\]\n?/g, '\n')
       .replace(/\n?\[SCHEMA_CONFIRM_INTERNAL_START\][\s\S]*?\[SCHEMA_CONFIRM_INTERNAL_END\]\n?/g, '\n')
-      .replace(/\n?\[CHART_EMBED_URL_START\][\s\S]*?\[CHART_EMBED_URL_END\]\n?/g, '\n');
+      .replace(/\n?\[CHART_EMBED_URL_START\][\s\S]*?\[CHART_EMBED_URL_END\]\n?/g, '\n')
+      .replace(/\n?\[CHART_EMBED_META_START\][\s\S]*?\[CHART_EMBED_META_END\]\n?/g, '\n');
 
     // Hide backend internal execution prompts from history display
     if (/^User has confirmed schema\./i.test(cleaned.trim()) && /User request:/i.test(cleaned)) {
@@ -354,6 +360,89 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       return match[1].trim();
     }
     return null;
+  };
+
+  /** Extract chart_id from the persisted meta marker, if present. Older chat
+   *  rows don't have this marker — auto-recreate falls back to legacy behavior
+   *  in that case. */
+  const extractChartIdFromContent = (text: string): number | undefined => {
+    const match = text.match(/\[CHART_EMBED_META_START\]([\s\S]*?)\[CHART_EMBED_META_END\]/);
+    if (!match) return undefined;
+    try {
+      const parsed = JSON.parse(match[1].trim()) as { chart_id?: number };
+      return typeof parsed.chart_id === 'number' ? parsed.chart_id : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /** Parse the embedded UUID + Superset domain out of a stored embed URL.
+   *  Older history rows persist only the URL (no tool_events), but we still
+   *  want to render via the guest-token component on reload — so we rebuild
+   *  the ChartEmbed shape from the URL alone and let the component mint a
+   *  fresh token on mount. */
+  const buildChartEmbedFromStoredUrl = (
+    url: string | null,
+    chartId?: number,
+  ): import('../components/chat/MessageList').ChartEmbed | null => {
+    if (!url) return null;
+    const match = url.match(/^(https?:\/\/[^/]+)\/embedded\/([a-fA-F0-9-]+)/);
+    if (!match) return null;
+    return {
+      embedUrl: url,
+      embeddedUuid: match[2],
+      guestToken: undefined,
+      supersetDomain: match[1],
+      ttlSeconds: undefined,
+      projectId: selectedProject?.id || propProjectId || undefined,
+      chartId,
+    } as import('../components/chat/MessageList').ChartEmbed;
+  };
+
+  type ChartEmbedPayload = {
+    embedUrl: string;
+    embeddedUuid?: string;
+    guestToken?: string;
+    supersetDomain?: string;
+    ttlSeconds?: number;
+    chartId?: number;
+  };
+
+  const extractChartEmbedFromToolEvents = (events?: ToolEvent[]): ChartEmbedPayload | null => {
+    if (!events || !Array.isArray(events)) return null;
+    const ev = events.find((e) => e?.type === 'chart_embed' && e?.payload);
+    if (!ev?.payload) return null;
+    // Two payload shapes from the backend:
+    // 1) Legacy: payload is just the embed URL string
+    // 2) Project mode: payload is { embed_url, embedded_uuid, guest_token, ... }
+    if (typeof ev.payload === 'string') {
+      return { embedUrl: ev.payload };
+    }
+    const p = ev.payload as Record<string, any>;
+    if (!p.embedded_uuid && !p.embed_url) return null;
+    return {
+      embedUrl: typeof p.embed_url === 'string' ? p.embed_url : '',
+      embeddedUuid: typeof p.embedded_uuid === 'string' ? p.embedded_uuid : undefined,
+      guestToken: typeof p.guest_token === 'string' ? p.guest_token : undefined,
+      supersetDomain: typeof p.superset_domain === 'string' ? p.superset_domain : undefined,
+      ttlSeconds: typeof p.ttl_seconds === 'number' ? p.ttl_seconds : undefined,
+      chartId: typeof p.chart_id === 'number' ? p.chart_id : undefined,
+    };
+  };
+
+  /** Build the rich ``chartEmbed`` for a UiMessage from a chat response. */
+  const buildChartEmbedFromResponse = (res: any): import('../components/chat/MessageList').ChartEmbed | null => {
+    const fromEvents = extractChartEmbedFromToolEvents(res?.tool_events as ToolEvent[] | undefined);
+    if (!fromEvents) return null;
+    return {
+      embedUrl: fromEvents.embedUrl,
+      embeddedUuid: fromEvents.embeddedUuid,
+      guestToken: fromEvents.guestToken,
+      supersetDomain: fromEvents.supersetDomain,
+      ttlSeconds: fromEvents.ttlSeconds,
+      projectId: selectedProject?.id || propProjectId || undefined,
+      chartId: fromEvents.chartId,
+    };
   };
 
   const isStopVisible = isLoading || isAssistantTyping;
@@ -429,6 +518,28 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
               const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
               const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
+              const persistedChartEmbed =
+                msg.role === 'assistant'
+                  ? (() => {
+                      const persistedChartId = extractChartIdFromContent(rawContent);
+                      const fromEvents = extractChartEmbedFromToolEvents((msg as any).tool_events);
+                      if (fromEvents && fromEvents.embeddedUuid) {
+                        return {
+                          embedUrl: fromEvents.embedUrl,
+                          embeddedUuid: fromEvents.embeddedUuid,
+                          guestToken: undefined,
+                          supersetDomain: fromEvents.supersetDomain,
+                          ttlSeconds: fromEvents.ttlSeconds,
+                          projectId: selectedProject?.id || propProjectId || undefined,
+                          chartId: fromEvents.chartId ?? persistedChartId,
+                        } as import('../components/chat/MessageList').ChartEmbed;
+                      }
+                      return buildChartEmbedFromStoredUrl(
+                        extractChartEmbedUrl(rawContent),
+                        persistedChartId,
+                      );
+                    })()
+                  : null;
               return {
                 text: msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
                 isUser: msg.role === 'user',
@@ -439,9 +550,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 schemaPreview,
                 schemaLocked: msg.role === 'assistant' ? !!schemaPreview : undefined,
                 chartEmbedUrl: msg.role === 'assistant' ? extractChartEmbedUrl(rawContent) : null,
+                chartEmbed: persistedChartEmbed,
               };
             })
-            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || !!m.chartEmbedUrl);
+            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || !!m.chartEmbedUrl || !!m.chartEmbed);
           setMessages(convertedMessages);
           setSessionId(sid);
           onSessionIdChange?.(sid);
@@ -496,12 +608,36 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const doSend = async (text: string) => {
     setIsLoading(true);
     setIsAssistantTyping(false);
+    setStreamingStage('Đang xử lý...');
     const controller = new AbortController();
     sendAbortControllerRef.current = controller;
     console.log('Sending message with sessionId:', sessionId);
     console.log('Selected project:', selectedProject);
     try {
-      const res = await sendMessage(text, sessionId, selectedProject?.id || null, controller.signal);
+      // Stream progress events; ``finalRes`` is populated on the terminal ``final`` event.
+      let finalRes: any = null;
+      let streamErr: { status?: number; message: string } | null = null;
+      await sendMessageStream(text, sessionId, selectedProject?.id || null, {
+        signal: controller.signal,
+        onEvent: (e: StreamEvent) => {
+          if (e.type === 'stage') {
+            if (e.message) setStreamingStage(e.message);
+          } else if (e.type === 'final') {
+            finalRes = e.data;
+          } else if (e.type === 'error') {
+            streamErr = { status: e.status_code, message: e.message };
+          }
+        },
+      });
+      setStreamingStage(null);
+      if (streamErr !== null) {
+        const errInfo = streamErr as { status?: number; message: string };
+        throw new Error(errInfo.message || 'Streaming chat failed');
+      }
+      if (!finalRes) {
+        throw new Error('Stream ended without a final event');
+      }
+      const res = finalRes as any;
       if (res.response && res.response.trim().length > 0) {
         setIsAssistantTyping(true);
         setMessages((prev) => [
@@ -522,6 +658,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
             schemaLocked: false,
             chartEmbedUrl: extractChartEmbedUrl(res.response),
+            chartEmbed: buildChartEmbedFromResponse(res),
             workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
           },
         ]);
@@ -559,11 +696,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         return;
       }
       setIsAssistantTyping(false);
+      setStreamingStage(null);
       const message = err instanceof Error ? err.message : 'Failed to connect to server';
       setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);
     } finally {
       sendAbortControllerRef.current = null;
       setIsLoading(false);
+      setStreamingStage(null);
     }
   };
 
@@ -577,6 +716,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
     setIsLoading(false);
     setIsAssistantTyping(false);
+    setStreamingStage(null);
   };
 
   const lockAllSchemaPreviews = () => {
@@ -629,24 +769,26 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     setIsLoading(true);
     try {
       const res = await sendMessage(userMsg.text, sessionId, selectedProject?.id || null);
-      if (res.response && res.response.trim().length > 0) {
+      const resText = res.response;
+      if (resText && resText.trim().length > 0) {
         setMessages((prev) => {
           const updated = [...prev];
           updated[aiIndex] = {
             text: buildAssistantTextFromSqlPreview(
-              stripInternalPayloads(res.response),
+              stripInternalPayloads(resText),
               extractSqlPreviewFromToolEvents((res as any).tool_events),
             ),
             isUser: false,
-            sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response),
-            sqlActionId: extractSqlActionId(res.response),
+            sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(resText),
+            sqlActionId: extractSqlActionId(resText),
             sqlActionState:
-              (extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response))
+              (extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(resText))
                 ? ('pending' as const)
                 : undefined,
-            exportToExcel: extractExportData(res.response),
-            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
-            chartEmbedUrl: extractChartEmbedUrl(res.response),
+            exportToExcel: extractExportData(resText),
+            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
+            chartEmbedUrl: extractChartEmbedUrl(resText),
+            chartEmbed: buildChartEmbedFromResponse(res),
             workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
           };
           return updated;
@@ -762,23 +904,25 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         `Confirm schema table ${schema.tableName}`,
       );
       if (res.success) {
+        const resText = res.response ?? '';
         setMessages((prev) => [
           ...prev,
           {
             text: buildAssistantTextFromSqlPreview(
-              stripInternalPayloads(res.response),
+              stripInternalPayloads(resText),
               extractSqlPreviewFromToolEvents((res as any).tool_events),
             ),
             isUser: false,
-            sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response),
-            sqlActionId: extractSqlActionId(res.response),
+            sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(resText),
+            sqlActionId: extractSqlActionId(resText),
             sqlActionState:
-              (extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response))
+              (extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(resText))
                 ? ('pending' as const)
                 : undefined,
-            exportToExcel: extractExportData(res.response),
-            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
-            chartEmbedUrl: extractChartEmbedUrl(res.response),
+            exportToExcel: extractExportData(resText),
+            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
+            chartEmbedUrl: extractChartEmbedUrl(resText),
+            chartEmbed: buildChartEmbedFromResponse(res),
             workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
           },
         ]);
@@ -842,20 +986,22 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             // Keep SQL preview visible but disable actions after execution
             updated[aiIndex] = { ...current, sqlActionState: 'executed' };
           }
+          const resText = res.response ?? '';
           return [
             ...updated,
             {
               text: buildAssistantTextFromSqlPreview(
-                stripInternalPayloads(res.response),
+                stripInternalPayloads(resText),
                 extractSqlPreviewFromToolEvents((res as any).tool_events),
               ),
               isUser: false,
-              sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response),
-              sqlActionId: extractSqlActionId(res.response),
-              exportToExcel: extractExportData(res.response),
-              schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
-              chartEmbedUrl: extractChartEmbedUrl(res.response),
-              workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
+              sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(resText),
+              sqlActionId: extractSqlActionId(resText),
+              exportToExcel: extractExportData(resText),
+              schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
+              chartEmbedUrl: extractChartEmbedUrl(resText),
+              chartEmbed: buildChartEmbedFromResponse(res),
+                workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
             },
           ];
         });
@@ -1035,6 +1181,28 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
               const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
               const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
+              const persistedChartEmbed =
+                msg.role === 'assistant'
+                  ? (() => {
+                      const persistedChartId = extractChartIdFromContent(rawContent);
+                      const fromEvents = extractChartEmbedFromToolEvents((msg as any).tool_events);
+                      if (fromEvents && fromEvents.embeddedUuid) {
+                        return {
+                          embedUrl: fromEvents.embedUrl,
+                          embeddedUuid: fromEvents.embeddedUuid,
+                          guestToken: undefined,
+                          supersetDomain: fromEvents.supersetDomain,
+                          ttlSeconds: fromEvents.ttlSeconds,
+                          projectId: selectedProject?.id || propProjectId || undefined,
+                          chartId: fromEvents.chartId ?? persistedChartId,
+                        } as import('../components/chat/MessageList').ChartEmbed;
+                      }
+                      return buildChartEmbedFromStoredUrl(
+                        extractChartEmbedUrl(rawContent),
+                        persistedChartId,
+                      );
+                    })()
+                  : null;
               return {
                 text: cleanedText,
                 isUser: msg.role === 'user',
@@ -1045,9 +1213,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 schemaPreview,
                 schemaLocked: msg.role === 'assistant' ? !!schemaPreview : undefined,
                 chartEmbedUrl: msg.role === 'assistant' ? extractChartEmbedUrl(rawContent) : null,
+                chartEmbed: persistedChartEmbed,
               };
             })
-            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || !!m.chartEmbedUrl);
+            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || !!m.chartEmbedUrl || !!m.chartEmbed);
           setMessages(convertedMessages);
           setSessionId(sid);
           onSessionIdChange?.(sid);
@@ -1116,6 +1285,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               onAssistantTypingChange={setIsAssistantTyping}
               typingStopSignal={typingStopSignal}
             />
+            {streamingStage && (
+              <div className="flex items-center gap-2 px-4 py-2 mt-2 text-sm text-gray-600">
+                <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-pulse" />
+                <span>{streamingStage}</span>
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </div>
         </div>

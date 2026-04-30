@@ -18,6 +18,12 @@ class AgentState(TypedDict):
     # User input
     user_message: str
 
+    # Project / user scoping (optional — None for non-project sessions)
+    # When set, downstream tools must enforce that resources accessed belong to this project.
+    project_id: Optional[str]
+    user_id: Optional[str]
+    allowed_db_uri: Optional[str]
+
     # Intent parsing
     intent: Dict[str, Any]
     execution_plan: Dict[str, Any]
@@ -60,19 +66,33 @@ class AgentState(TypedDict):
     output: Dict[str, Any]
 
 
-def create_initial_state(session_id: str, user_message: str, agent_type: str) -> AgentState:
+def create_initial_state(
+    session_id: str,
+    user_message: str,
+    agent_type: str,
+    *,
+    project_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    allowed_db_uri: Optional[str] = None,
+) -> AgentState:
     """Create initial state for a new session with specific agent type.
 
     Args:
         session_id: Unique session identifier
         user_message: User's input message
         agent_type: Which agent is handling this ("database", "excel", etc.)
+        project_id: Optional project UUID — when set, scopes Superset DB lookup to this UUID
+        user_id: Optional user identifier (for audit / future RLS)
+        allowed_db_uri: Optional pre-resolved DB URI for the project, avoids re-querying database_agent
     """
     return {
         "session_id": session_id,
         "current_stage": "START",
         "agent_type": agent_type,
         "user_message": user_message,
+        "project_id": project_id,
+        "user_id": user_id,
+        "allowed_db_uri": allowed_db_uri,
         "intent": {},
         "execution_plan": {},
         "detected_language": "en",

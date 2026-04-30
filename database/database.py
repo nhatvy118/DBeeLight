@@ -83,7 +83,15 @@ def _split_column_defs(columns: str) -> list[str]:
 
 
 def _to_variable_type_rows(columns: str) -> list[tuple[str, str]]:
-    """Parse column definition string into (variable, type) rows."""
+    """Parse column definition string into (variable, type) rows.
+
+    The type may span multiple whitespace-separated tokens when an LLM emits
+    something like ``DECIMAL(10, 2)`` (space after the inner comma). We walk
+    forward from the second token, consuming tokens until paren depth returns
+    to zero — that's where the type ends and constraints (NOT NULL, …) begin.
+    Constraints are dropped from the displayed type so the review widget sees
+    only the storage type the user needs to validate.
+    """
     rows: list[tuple[str, str]] = []
     constraints = {"primary", "foreign", "unique", "check", "constraint"}
 
@@ -97,7 +105,17 @@ def _to_variable_type_rows(columns: str) -> list[tuple[str, str]]:
             continue
 
         variable = tokens[0].strip('"`')
-        dtype = tokens[1]
+
+        type_tokens: list[str] = []
+        depth = 0
+        for tok in tokens[1:]:
+            type_tokens.append(tok)
+            depth += tok.count("(") - tok.count(")")
+            if depth == 0:
+                break
+        if not type_tokens:
+            continue
+        dtype = " ".join(type_tokens)
         rows.append((variable, dtype))
 
     return rows

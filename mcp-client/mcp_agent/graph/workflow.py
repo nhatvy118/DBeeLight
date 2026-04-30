@@ -102,10 +102,22 @@ class AgentWorkflow:
         resume=None,
         thread_id: Optional[str] = None,
         database_route: DatabaseRoute = None,
+        project_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        allowed_db_uri: Optional[str] = None,
     ) -> AgentState:
         """Run workflow for specific agent type, routing to correct sub-workflow for database."""
         if agent_type != "database":
-            return await self._run_non_database(session_id, user_message, agent_type, resume, thread_id)
+            return await self._run_non_database(
+                session_id,
+                user_message,
+                agent_type,
+                resume,
+                thread_id,
+                project_id=project_id,
+                user_id=user_id,
+                allowed_db_uri=allowed_db_uri,
+            )
 
         # For database, use orchestrator route or classify locally
         return await self._run_database(
@@ -233,6 +245,10 @@ class AgentWorkflow:
         agent_type: str,
         resume=None,
         thread_id: Optional[str] = None,
+        *,
+        project_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        allowed_db_uri: Optional[str] = None,
     ) -> AgentState:
         """Run non-database workflows (excel, superset)."""
         workflow = self.workflows.get(agent_type)
@@ -253,6 +269,19 @@ class AgentWorkflow:
             db_wf = cast(Any, workflow)
             result = await db_wf.run(
                 session_id, user_message, resume=resume, thread_id=thread_id
+            )
+        elif agent_type == "superset":
+            # Superset workflow accepts project scoping kwargs (Phase 1)
+            if resume is not None or thread_id is not None:
+                logger.warning(
+                    "[Workflow] resume/thread_id ignored for agent_type=superset"
+                )
+            result = await workflow.run(
+                session_id,
+                user_message,
+                project_id=project_id,
+                user_id=user_id,
+                allowed_db_uri=allowed_db_uri,
             )
         elif resume is not None or thread_id is not None:
             logger.warning(

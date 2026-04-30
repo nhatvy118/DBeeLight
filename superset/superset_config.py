@@ -109,6 +109,18 @@ FAB_ADD_SECURITY_API = True
 
 # ==================== CORS - Critical for iframe embedding ====================
 
+def _parse_cors_origins(raw: str) -> list:
+    """Parse comma-separated origins from env, dropping wildcards.
+
+    A bare "*" leaks data: combined with credentialed CORS, the browser will not
+    actually send credentials, but a wildcard origin still allowed unauthenticated
+    iframe embedding from any site, which broke our project-scoping in pre-Phase 3.
+    Reject "*" defensively here regardless of env input.
+    """
+    items = [o.strip() for o in (raw or "").split(",")]
+    return [o for o in items if o and o != "*"]
+
+
 ENABLE_CORS = True
 CORS_OPTIONS = {
     "supports_credentials": True,
@@ -122,13 +134,12 @@ CORS_OPTIONS = {
     ],
     "expose_headers": ["X-CSRFToken", "X-CSRF-Token"],
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    "origins": [
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000",
-        "*",  # Allow all for testing; restrict in production
-    ],
+    "origins": _parse_cors_origins(
+        os.getenv(
+            "SUPERSET_CORS_ORIGINS",
+            "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000",
+        )
+    ),
 }
 
 # ==================== CSRF / WTF Configuration ====================
@@ -136,20 +147,59 @@ CORS_OPTIONS = {
 # Disable CSRF for API access (MCP server uses JWT Bearer token auth)
 WTF_CSRF_ENABLED = False
 WTF_CSRF_TIME_LIMIT = None
+# Talisman / X-Frame-Options must allow the embed iframe. Talisman defaults to
+# X-Frame-Options: SAMEORIGIN which blocks cross-origin iframe embedding from
+# the frontend (different port). Either disable Talisman or configure it with
+# frame-ancestors. We disable since CSP is enforced via CORS_OPTIONS instead.
 TALISMAN_ENABLED = False
+# Defensive: don't emit X-Frame-Options at all so iframe embedding from the
+# allowed origins isn't blocked. Empty-string was tried first but browsers
+# treat it as an invalid directive and log a console warning on every page
+# load — better to omit the header entirely.
+HTTP_HEADERS: dict = {}
 WTF_CSRF_EXEMPT_LIST = ["*"]
 
 # ==================== Feature Flags ====================
+# Merge with Superset's defaults so we don't accidentally disable flags the
+# core needs. Direct assignment to ``FEATURE_FLAGS`` replaces the dict whole
+# in some loader paths.
+
+try:
+    from superset.config import DEFAULT_FEATURE_FLAGS as _DEFAULT_FF
+except Exception:
+    _DEFAULT_FF = {}
 
 FEATURE_FLAGS = {
+    **_DEFAULT_FF,
     "ALERT_REPORTS": True,
     "ENABLE_EXPLORE_DRAG_AND_DROP": True,
     "DISABLE_DATABASE_CONNECTION": False,
+    # EMBEDDED_SUPERSET enables /embedded/<uuid> + Guest Token API used by the
+    # frontend's @superset-ui/embedded-sdk. Iframe is rendered without cookies
+    # of the Superset domain — the guest token alone authorizes the request,
+    # so a developer logged in as admin in another tab does NOT leak admin
+    # editing privileges into the chart iframe.
+    "EMBEDDED_SUPERSET": True,
 }
 # Allow unsafe database connections (required for SQLite local files)
 PREVENT_UNSAFE_DB_CONNECTIONS = False
-PUBLIC_ROLE_LIKE = "Gamma"
+# Public role has zero perms — no one can view a chart by guessing the URL.
+# Access is gated by a short-lived Guest Token issued only to authenticated
+# users who own the project. The token assumes GUEST_ROLE_NAME below.
+PUBLIC_ROLE_LIKE = None
+# Role that Guest Tokens assume. Gamma is read-only — view + download but no
+# edit. Combined with the token's ``resources`` field (which restricts which
+# dashboard the token may render), this gives users view-only access without
+# inheriting any browser session privileges.
+GUEST_ROLE_NAME = os.getenv("SUPERSET_GUEST_ROLE_NAME", "Gamma")
+GUEST_TOKEN_JWT_EXP_SECONDS = int(os.getenv("SUPERSET_GUEST_TOKEN_TTL", "300"))
 ALERT_REPORTS_NOTIFICATION_DRY_RUN = True
+
+# Flask-Limiter off — Superset's default 50/s on guest_token locks the app
+# out under any storm (multiple chart embeds reloading, dev hot-reload,
+# embed-sdk timer overlap). The frontend talks only to authenticated users
+# of this instance, so endpoint-level throttling adds noise without value.
+RATELIMIT_ENABLED = False
 
 SQLLAB_CTAS_NO_LIMIT = True
 SQLLAB_TIMEOUT = int(os.getenv("SQLLAB_TIMEOUT", "300"))

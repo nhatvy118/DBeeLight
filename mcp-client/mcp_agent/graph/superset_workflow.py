@@ -16,6 +16,7 @@ from langgraph.graph import StateGraph, END
 
 from mcp_agent.graph.graph_state import AgentState, create_initial_state
 from mcp_agent.graph.state import StageType
+from mcp_agent.progress import emit as emit_progress
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,20 @@ class SupersetAgentWorkflow:
                 logger.warning(f"[Superset] Tool '{tool_name}' failed: {e}")
                 continue
         raise RuntimeError(f"Tool '{tool_name}' not found in connected sessions")
+
+    @staticmethod
+    def _scoped_args(state: AgentState, args: dict) -> dict:
+        """Inject ``project_id`` from state into Superset MCP tool args.
+
+        Done as a wrapper rather than per-call so we don't forget at any stage —
+        Phase 2 enforcement on the MCP server depends on this being present.
+        """
+        pid = state.get("project_id")
+        if not pid:
+            return args
+        merged = dict(args)
+        merged.setdefault("project_id", pid)
+        return merged
 
     @staticmethod
     def _parse_json_tool_result(raw: str) -> Any:
@@ -110,8 +125,23 @@ class SupersetAgentWorkflow:
         workflow.add_edge(StageType.DONE.value, END)
         return workflow.compile()
 
-    async def run(self, session_id: str, user_message: str) -> AgentState:
-        state = create_initial_state(session_id, user_message, "superset")
+    async def run(
+        self,
+        session_id: str,
+        user_message: str,
+        *,
+        project_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        allowed_db_uri: Optional[str] = None,
+    ) -> AgentState:
+        state = create_initial_state(
+            session_id,
+            user_message,
+            "superset",
+            project_id=project_id,
+            user_id=user_id,
+            allowed_db_uri=allowed_db_uri,
+        )
         graph = self._build_graph()
         return await graph.ainvoke(state)
 
@@ -120,6 +150,7 @@ class SupersetAgentWorkflow:
     async def intent_parse(self, state: AgentState, _agent) -> AgentState:
         user_message = state["user_message"]
         logger.info(f"[Superset] Intent parse: {user_message[:80]}...")
+        await emit_progress("INTENT_PARSE", "running", "Đang phân tích yêu cầu...")
 
         response = self.llm.chat.completions.create(
             model="gpt-4o-mini",
@@ -154,51 +185,85 @@ class SupersetAgentWorkflow:
         }
 
     async def db_connection(self, state: AgentState, agent) -> AgentState:
-        """Register or locate the project's DB in Superset; save db_id + db_name into state."""
+        await emit_progress("DB_CONNECTION", "running", "Đang kết nối database...")
+        """Register or locate the project's DB in Superset; save db_id + db_name into state.
+
+        Naming policy: db_name is the project_id (UUID) verbatim when project_id is
+        in state. This is the single source of truth for downstream scoping
+        (Phase 2 enforces this). Falls back to legacy regex-from-path only when
+        project_id is absent (non-project chats).
+        """
         logger.info("[Superset] Checking Superset database connection...")
 
         if not agent:
             return {**state, "error": "No Superset agent available"}
 
-        # Step 1: get URI from database_agent. Superset runs in Docker — host paths
-        # (from database_agent) are unreadable inside the container. docker-compose
-        # mounts ./api-server/databases → /app/databases, so translate SQLite paths
-        # by taking the filename and prepending the container mount prefix.
+        project_id = state.get("project_id")
+        allowed_uri = state.get("allowed_db_uri") or ""
+
         db_uri = ""
         db_name = ""
         db_backend = ""  # "sqlite" | "postgresql" | ...
         sqlite_container_prefix = os.getenv(
             "SUPERSET_SQLITE_CONTAINER_PREFIX", "/app/databases"
         )
-        if self.database_agent:
+
+        # Project mode: derive db_name deterministically from project_id.
+        # We still need URI + backend, prefer pre-resolved allowed_db_uri then ask database_agent.
+        if project_id:
+            db_name = str(project_id)
+
+        # Determine URI + backend. Superset runs in Docker — host paths (from database_agent)
+        # are unreadable inside the container. docker-compose mounts ./api-server/databases
+        # → /app/databases, so translate SQLite paths by taking the filename and prepending
+        # the container mount prefix.
+        if allowed_uri:
+            db_uri = allowed_uri
+            if allowed_uri.startswith("sqlite:"):
+                db_backend = "sqlite"
+                # Re-translate to container path if URI references a host path
+                m_path = re.search(r"sqlite:(?://)?(.+)", allowed_uri)
+                if m_path:
+                    host_path = m_path.group(1).strip().lstrip("/")
+                    filename = os.path.basename(host_path)
+                    db_uri = f"sqlite:///{sqlite_container_prefix.rstrip('/')}/{filename}"
+            elif allowed_uri.startswith("postgres"):
+                db_backend = "postgresql"
+
+        if (not db_uri or not db_backend or not db_name) and self.database_agent:
             try:
                 db_info = await self._call_tool(self.database_agent, "get_connection_info", {})
                 logger.info(f"[Superset] DB connection info: {db_info[:200]}")
                 m_type = re.search(r"Type:\s*(\w+)", db_info, re.IGNORECASE)
                 db_type = m_type.group(1).lower() if m_type else ""
                 if "sqlite" in db_type:
-                    db_backend = "sqlite"
+                    db_backend = db_backend or "sqlite"
                     m_path = re.search(r"File:\s*([^\n]+)", db_info)
-                    if m_path:
+                    if m_path and not db_uri:
                         host_path = m_path.group(1).strip()
                         filename = os.path.basename(host_path)
                         db_uri = f"sqlite:///{sqlite_container_prefix.rstrip('/')}/{filename}"
                 elif "postgres" in db_type:
-                    db_backend = "postgresql"
-                    db_uri = os.getenv("PROJECT_DB_URI", "")
-                m_proj = re.search(r"/([^/]+)\.db", db_info)
-                if m_proj:
-                    db_name = f"project_{m_proj.group(1).replace('.db', '')}"
+                    db_backend = db_backend or "postgresql"
+                    if not db_uri:
+                        db_uri = os.getenv("PROJECT_DB_URI", "")
+                # Legacy fallback for non-project sessions: parse db_name from path
+                if not db_name:
+                    m_proj = re.search(r"/([^/]+)\.db", db_info)
+                    if m_proj:
+                        db_name = f"project_{m_proj.group(1).replace('.db', '')}"
             except Exception as e:
                 logger.warning(f"[Superset] Failed to get DB connection info: {e}")
 
         if not db_name:
-            return {**state, "error": "Could not derive Superset database name from project DB info"}
+            return {**state, "error": "Could not derive Superset database name (missing project_id and DB info)"}
 
         # Step 2: already registered?
         db_id: Optional[int] = None
         try:
-            dbs_raw = await self._call_tool(agent, "list_superset_databases", {})
+            dbs_raw = await self._call_tool(
+                agent, "list_superset_databases", self._scoped_args(state, {})
+            )
             dbs = self._parse_json_tool_result(dbs_raw) or []
             seen_names = [db.get("database_name") for db in dbs if isinstance(db, dict)]
             logger.info(
@@ -221,7 +286,7 @@ class SupersetAgentWorkflow:
                 reg_raw = await self._call_tool(
                     agent,
                     "register_database",
-                    {"name": db_name, "sqlalchemy_uri": db_uri},
+                    self._scoped_args(state, {"name": db_name, "sqlalchemy_uri": db_uri}),
                 )
                 reg = self._parse_json_tool_result(reg_raw) or {}
                 logger.info(f"[Superset] register_database result: {str(reg)[:300]}")
@@ -247,6 +312,7 @@ class SupersetAgentWorkflow:
         }
 
     async def schema_discovery(self, state: AgentState, agent) -> AgentState:
+        await emit_progress("SCHEMA_DISCOVERY", "running", "Đang đọc schema...")
         """Deterministic: list tables + metadata for the registered DB."""
         if self._has_error(state):
             logger.info(f"[Superset] Schema discovery skipped (prior error: {state.get('error')})")
@@ -267,7 +333,9 @@ class SupersetAgentWorkflow:
             args: Dict[str, Any] = {"database_id": db_id}
             if default_schema:
                 args["schema"] = default_schema
-            tables_raw = await self._call_tool(agent, "get_database_tables", args)
+            tables_raw = await self._call_tool(
+                agent, "get_database_tables", self._scoped_args(state, args)
+            )
             tables_list = self._parse_json_tool_result(tables_raw) or []
         except Exception as e:
             return {**state, "error": f"get_database_tables failed: {e}"}
@@ -289,7 +357,9 @@ class SupersetAgentWorkflow:
                 meta_args: Dict[str, Any] = {"database_id": db_id, "table_name": name}
                 if default_schema:
                     meta_args["schema"] = default_schema
-                meta_raw = await self._call_tool(agent, "get_table_metadata", meta_args)
+                meta_raw = await self._call_tool(
+                    agent, "get_table_metadata", self._scoped_args(state, meta_args)
+                )
                 meta = self._parse_json_tool_result(meta_raw) or {}
                 for col in (meta.get("columns") or []):
                     if isinstance(col, dict):
@@ -309,6 +379,7 @@ class SupersetAgentWorkflow:
         }
 
     async def schema_plan(self, state: AgentState, _agent) -> AgentState:
+        await emit_progress("SCHEMA_PLAN", "running", "Đang sinh SQL...")
         """Single LLM call: intent + schema → concrete SQL and viz params plan."""
         if self._has_error(state):
             logger.info(f"[Superset] Schema plan skipped (prior error: {state.get('error')})")
@@ -437,6 +508,7 @@ class SupersetAgentWorkflow:
         }
 
     async def sql_execution(self, state: AgentState, agent) -> AgentState:
+        await emit_progress("SQL_EXECUTION", "running", "Đang chạy SQL và tạo dataset...")
         """Deterministic: execute the planned SQL and create a virtual dataset."""
         if self._has_error(state):
             logger.info(f"[Superset] SQL execution skipped (prior error: {state.get('error')})")
@@ -453,7 +525,7 @@ class SupersetAgentWorkflow:
             exec_raw = await self._call_tool(
                 agent,
                 "execute_sql",
-                {"database_id": db_id, "sql": plan["sql"]},
+                self._scoped_args(state, {"database_id": db_id, "sql": plan["sql"]}),
             )
             exec_res = self._parse_json_tool_result(exec_raw) or {}
             if isinstance(exec_res, dict) and exec_res.get("error"):
@@ -469,11 +541,11 @@ class SupersetAgentWorkflow:
             ds_raw = await self._call_tool(
                 agent,
                 "create_virtual_dataset",
-                {
+                self._scoped_args(state, {
                     "database_id": db_id,
                     "table_name": plan.get("dataset_name") or "mcp_dataset",
                     "sql": plan["sql"],
-                },
+                }),
             )
             ds = self._parse_json_tool_result(ds_raw) or {}
             dataset_id = ds.get("id") if isinstance(ds, dict) else None
@@ -494,6 +566,7 @@ class SupersetAgentWorkflow:
         }
 
     async def chart_creation(self, state: AgentState, agent) -> AgentState:
+        await emit_progress("CHART_CREATION", "running", "Đang tạo chart...")
         """Deterministic: create chart with plan's viz_type and viz_params."""
         if self._has_error(state):
             logger.info(f"[Superset] Chart creation skipped (prior error: {state.get('error')})")
@@ -509,12 +582,12 @@ class SupersetAgentWorkflow:
             chart_raw = await self._call_tool(
                 agent,
                 "create_chart",
-                {
+                self._scoped_args(state, {
                     "slice_name": plan.get("slice_name") or "MCP Chart",
                     "datasource_id": dataset_id,
                     "viz_type": plan.get("viz_type") or "bar",
                     "params": json.dumps(plan.get("viz_params") or {}),
-                },
+                }),
             )
             chart = self._parse_json_tool_result(chart_raw) or {}
             chart_id = chart.get("id") if isinstance(chart, dict) else None
@@ -535,7 +608,20 @@ class SupersetAgentWorkflow:
         }
 
     async def chart_embed(self, state: AgentState, agent) -> AgentState:
-        """Deterministic: resolve embed URL from chart_id."""
+        """Resolve embed payload for the frontend iframe.
+
+        Project mode (state.project_id is set):
+          1. Wrap chart in a 1-chart dashboard (idempotent)
+          2. Mint a short-lived Guest Token scoped to that dashboard
+          3. Return {embed_url, embedded_uuid, guest_token, ...}
+          The frontend mounts via @superset-ui/embedded-sdk — iframe loads
+          ``/embedded/<uuid>`` without using browser cookies, so a developer
+          logged in as admin in another tab cannot leak edit privileges.
+          The Gamma role assumed by the token is read-only (view + download).
+
+        Legacy mode (no project_id): fall back to ``/superset/explore/?slice_id=X``.
+        """
+        await emit_progress("CHART_EMBED", "running", "Đang tạo iframe embed...")
         if self._has_error(state):
             logger.info(f"[Superset] Chart embed skipped (prior error: {state.get('error')})")
             return state
@@ -545,8 +631,75 @@ class SupersetAgentWorkflow:
         if not chart_id:
             return {**state, "error": "Missing chart_id for embed"}
 
+        project_id = state.get("project_id")
+        plan = state.get("superset_plan") or {}
+
+        if project_id:
+            try:
+                wrap_raw = await self._call_tool(
+                    agent,
+                    "wrap_chart_in_dashboard",
+                    self._scoped_args(state, {"chart_id": chart_id}),
+                )
+                wrap = self._parse_json_tool_result(wrap_raw) or {}
+                if wrap.get("error"):
+                    return {**state, "error": f"wrap_chart_in_dashboard failed: {wrap.get('message')}"}
+                embedded_uuid = wrap.get("embedded_uuid")
+                if not embedded_uuid:
+                    return {**state, "error": f"No embedded_uuid returned: {wrap_raw[:200]}"}
+            except Exception as e:
+                return {**state, "error": f"wrap_chart_in_dashboard failed: {e}"}
+
+            try:
+                token_raw = await self._call_tool(
+                    agent,
+                    "mint_guest_token",
+                    self._scoped_args(state, {
+                        "embedded_uuid": embedded_uuid,
+                        "user_id": state.get("user_id") or "",
+                    }),
+                )
+                tok = self._parse_json_tool_result(token_raw) or {}
+                if tok.get("error"):
+                    return {**state, "error": f"mint_guest_token failed: {tok.get('message')}"}
+                guest_token = tok.get("token")
+                superset_domain = tok.get("supersetDomain")
+                ttl_seconds = tok.get("ttl_seconds", 300)
+                if not guest_token:
+                    return {**state, "error": f"No guest token returned: {token_raw[:200]}"}
+            except Exception as e:
+                return {**state, "error": f"mint_guest_token failed: {e}"}
+
+            embed_url = tok.get("embed_url") or f"{superset_domain}/embedded/{embedded_uuid}"
+            url_marker = f"[CHART_EMBED_URL_START]{embed_url}[CHART_EMBED_URL_END]"
+            # Persist chart_id alongside the URL so a later session reload can
+            # auto-recreate the wrapper dashboard if Superset's metadata was
+            # reset and the original UUID is gone.
+            meta_marker = f"[CHART_EMBED_META_START]{json.dumps({'chart_id': chart_id})}[CHART_EMBED_META_END]"
+            marker = f"{url_marker}\n{meta_marker}"
+            message = f"{plan.get('slice_name') or 'Chart'}\n\n{marker}"
+
+            payload = {
+                "embed_url": embed_url,
+                "chart_id": chart_id,
+                "embedded_uuid": embedded_uuid,
+                "guest_token": guest_token,
+                "superset_domain": superset_domain,
+                "ttl_seconds": ttl_seconds,
+            }
+            return {
+                **state,
+                "chart_data": payload,
+                "output": {"type": "chart_embed", "message": message, **payload},
+            }
+
+        # Legacy: explore URL
         try:
-            emb_raw = await self._call_tool(agent, "get_chart_embed_url", {"chart_id": chart_id})
+            emb_raw = await self._call_tool(
+                agent,
+                "get_chart_embed_url",
+                self._scoped_args(state, {"chart_id": chart_id}),
+            )
             emb = self._parse_json_tool_result(emb_raw) or {}
             embed_url = emb.get("embed_url") or emb.get("fullscreen_url")
         except Exception as e:
@@ -555,12 +708,10 @@ class SupersetAgentWorkflow:
         if not embed_url:
             return {**state, "error": f"No embed_url returned: {emb_raw[:200]}"}
 
-        marker = f"[CHART_EMBED_URL_START]{embed_url}[CHART_EMBED_URL_END]"
-        plan = state.get("superset_plan") or {}
-        message = (
-            f"{plan.get('slice_name') or 'Chart'}\n\n"
-            f"{marker}"
-        )
+        url_marker = f"[CHART_EMBED_URL_START]{embed_url}[CHART_EMBED_URL_END]"
+        meta_marker = f"[CHART_EMBED_META_START]{json.dumps({'chart_id': chart_id})}[CHART_EMBED_META_END]"
+        marker = f"{url_marker}\n{meta_marker}"
+        message = f"{plan.get('slice_name') or 'Chart'}\n\n{marker}"
 
         return {
             **state,
