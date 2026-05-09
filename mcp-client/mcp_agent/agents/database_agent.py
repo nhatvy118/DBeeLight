@@ -31,12 +31,7 @@ class DatabaseAgent(BaseAgent):
 
 ## Language Rule
 
-Detect the language from the user's message and respond in the SAME language.
-- If user writes in Vietnamese, reply in Vietnamese
-- If user writes in English, reply in English
-- If user writes in Vietnamese with some English, reply in Vietnamese
-- Check the language at the START of each response
-- ALSO translate tool output messages to match user's language (e.g., "Query executed successfully" -> "Truy vấn thực thi thành công")
+Default to English. Switch to Vietnamese ONLY if the user's LATEST message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "truy vấn", "danh sách", "kết nối", "cập nhật"). Do not switch based on prior turns or mixed-language input — short English keyword queries like "list tables" / "list all tables" reply in English. Translate tool output messages to match the chosen response language (e.g., when responding in Vietnamese: "Query executed successfully" → "Truy vấn thực thi thành công").
 
 ## CRITICAL RULE: Two-Step Process
 

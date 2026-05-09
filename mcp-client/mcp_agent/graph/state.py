@@ -29,11 +29,6 @@ class StageType(str, Enum):
     SQL_PREVIEW = "SQL_PREVIEW"
     SQL_EXECUTION = "SQL_EXECUTION"
 
-    # Superset agent stages
-    DB_CONNECTION = "DB_CONNECTION"
-    SCHEMA_PLAN = "SCHEMA_PLAN"
-    CHART_CREATION = "CHART_CREATION"
-    CHART_EMBED = "CHART_EMBED"
 
 
 class AgentWorkflowConfig(BaseModel):
@@ -74,35 +69,11 @@ DATABASE_WORKFLOW = AgentWorkflowConfig(
     wait_stages=[],
 )
 
-SUPERSET_WORKFLOW = AgentWorkflowConfig(
-    agent_id="superset",
-    stages=[
-        StageType.INTENT_PARSE,
-        StageType.DB_CONNECTION,
-        StageType.SCHEMA_DISCOVERY,
-        StageType.SCHEMA_PLAN,
-        StageType.SQL_EXECUTION,
-        StageType.CHART_CREATION,
-        StageType.CHART_EMBED,
-    ],
-    transitions={
-        StageType.INTENT_PARSE.value: StageType.DB_CONNECTION.value,
-        StageType.DB_CONNECTION.value: StageType.SCHEMA_DISCOVERY.value,
-        StageType.SCHEMA_DISCOVERY.value: StageType.SCHEMA_PLAN.value,
-        StageType.SCHEMA_PLAN.value: StageType.SQL_EXECUTION.value,
-        StageType.SQL_EXECUTION.value: StageType.CHART_CREATION.value,
-        StageType.CHART_CREATION.value: StageType.CHART_EMBED.value,
-        StageType.CHART_EMBED.value: StageType.DONE.value,
-    },
-    wait_stages=[],
-)
-
 # Registry of agent workflows
-# Note: ``excel`` has no workflow — the agent's tool loop is invoked directly
-# (see AgentWorkflow._run_non_database).
+# Note: ``excel`` and ``chart`` have no workflow — their agent tool loops are
+# invoked directly (see AgentWorkflow._run_non_database).
 AGENT_WORKFLOWS: Dict[str, AgentWorkflowConfig] = {
     "database": DATABASE_WORKFLOW,
-    "superset": SUPERSET_WORKFLOW,
 }
 
 

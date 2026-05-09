@@ -8,7 +8,6 @@ from mcp_agent.graph.state import (
     StageType,
     AgentWorkflowConfig,
     DATABASE_WORKFLOW,
-    SUPERSET_WORKFLOW,
     AGENT_WORKFLOWS,
     AgentContext,
     StageResult,
@@ -25,17 +24,15 @@ from mcp_agent.graph.database_utils import (
 from mcp_agent.graph.readonly_workflow import ReadOnlyWorkflow
 from mcp_agent.graph.create_table_workflow import CreateTableWorkflow
 from mcp_agent.graph.mutation_workflow import MutationWorkflow
-from mcp_agent.graph.superset_workflow import SupersetAgentWorkflow
 from mcp_agent.graph.workflow import AgentWorkflow
 
-# Workflow registry — ``excel`` is intentionally absent: the agent's tool
-# loop handles every Excel request; there's no LangGraph workflow.
+# Workflow registry — ``excel`` and ``chart`` are intentionally absent:
+# their agent tool loops handle every request; there's no LangGraph workflow.
 WORKFLOWS = {
     "database": None,  # Replaced by database sub-workflows
     "readonly": ReadOnlyWorkflow,
     "create_table": CreateTableWorkflow,
     "mutation": MutationWorkflow,
-    "superset": SupersetAgentWorkflow,
 }
 
 
@@ -53,7 +50,6 @@ __all__ = [
     "StageResult",
     # Workflow configs
     "DATABASE_WORKFLOW",
-    "SUPERSET_WORKFLOW",
     "AGENT_WORKFLOWS",
     # Graph state
     "AgentState",
@@ -69,7 +65,6 @@ __all__ = [
     "ReadOnlyWorkflow",
     "CreateTableWorkflow",
     "MutationWorkflow",
-    "SupersetAgentWorkflow",
     # Main workflow class
     "AgentWorkflow",
     # Registry

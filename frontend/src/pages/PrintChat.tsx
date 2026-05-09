@@ -12,6 +12,8 @@ type RawMessage = {
 const INTERNAL_MARKER_PATTERNS: RegExp[] = [
   /\[CREATE_TABLE_SCHEMA_JSON_START\][\s\S]*?\[CREATE_TABLE_SCHEMA_JSON_END\]/g,
   /\[SCHEMA_CONFIRM_INTERNAL_START\][\s\S]*?\[SCHEMA_CONFIRM_INTERNAL_END\]/g,
+  // Legacy Superset chart-embed markers — kept here so historical chats
+  // with these markers still print clean. Superset itself is gone.
   /\[CHART_EMBED_URL_START\][\s\S]*?\[CHART_EMBED_URL_END\]/g,
   /\[CHART_EMBED_META_START\][\s\S]*?\[CHART_EMBED_META_END\]/g,
   /\[UPLOADED_EXCEL_PATH_START\][\s\S]*?\[UPLOADED_EXCEL_PATH_END\]/g,

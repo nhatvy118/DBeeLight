@@ -164,7 +164,7 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
 - operation: SELECT, INSERT, UPDATE, DELETE, ALTER, DROP, etc.
 - tables: list of every table name referenced (required for mutations)
 - filters: WHERE conditions
-- detected_language: en or vi
+- detected_language: "en" by default. Use "vi" ONLY if the LATEST user message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "truy vấn", "kết nối", "danh sách"). Ignore conversation history. Short English-keyword queries like "list tables" → "en".
 - resolved_query: rewrite latest user message into a self-contained request
 
 Return JSON."""
@@ -245,13 +245,13 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
     logger.info(f"[Mutation] Schema discovery response: {log_block[:500]}...")
 
     if missing:
-        miss_fmt = ", ".join(f"`{m}`" for m in missing)
+        miss_fmt = ", ".join(f"{m}" for m in missing)
         msg = (
             f"**Unknown table(s):** {miss_fmt}\n\n"
             "Those tables are not in the connected database. "
             "Fix the table name or create the table before continuing.\n\n"
-            "**Discovery log:**\n\n```\n"
-            f"{log_block[:8000]}\n```"
+            "**Discovery log:**\n\n\n"
+            f"{log_block[:8000]}\n\n"
         )
         return {
             **state,

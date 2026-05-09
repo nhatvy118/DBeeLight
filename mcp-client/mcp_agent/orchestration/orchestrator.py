@@ -10,7 +10,7 @@ from langgraph.graph import END, StateGraph
 
 from mcp_agent.agents.base_agent import BaseAgent
 from mcp_agent.session.session_manager import SessionManager
-from mcp_agent.orchestration.intent_service import IntentService
+from mcp_agent.orchestration.intent_service import IntentService, detect_user_lang
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ class Orchestrator:
         return self._orchestrator_graph
 
     def _agent_key_to_type(self, key: str) -> str:
-        mapped = {"db": "database", "database": "database", "excel": "excel", "superset": "superset"}
+        mapped = {"db": "database", "database": "database", "excel": "excel", "chart": "chart"}
         return mapped.get((key or "").lower().strip(), "database")
 
     def _database_route_from_intent(self, intent_result: Dict[str, Any]) -> str:
@@ -147,13 +147,13 @@ class Orchestrator:
         route = str(intent_result.get("route") or "").strip()
         if route == "excel":
             return "excel"
-        if route == "superset":
-            return "superset"
+        if route == "chart":
+            return "chart"
         if route in ("db_readonly", "db_create_table", "db_mutation", "database"):
             return "db"
         primary = str(state.get("primary_agent") or "database").lower().strip()
-        if primary == "superset":
-            return "superset"
+        if primary == "chart":
+            return "chart"
         if primary == "excel":
             return "excel"
         workflow_id = intent_result.get("workflow_id")
@@ -162,8 +162,8 @@ class Orchestrator:
                 return "db"
             if str(workflow_id).startswith("excel"):
                 return "excel"
-            if str(workflow_id).startswith("superset"):
-                return "superset"
+            if str(workflow_id).startswith("chart"):
+                return "chart"
         return "db"
 
     async def _clarify_node(self, state: OrchestratorState) -> OrchestratorState:
@@ -171,7 +171,13 @@ class Orchestrator:
         intent_result = state.get("intent_result") or {}
         q = str(intent_result.get("clarification_question") or "").strip()
         if not q:
-            q = "Bạn có thể nói rõ yêu cầu của bạn hơn được không?"
+            lang = str(intent_result.get("detected_language") or "").lower() \
+                or detect_user_lang(str(state.get("user_message") or ""))
+            q = (
+                "Bạn có thể nói rõ yêu cầu của bạn hơn được không?"
+                if lang == "vi"
+                else "Could you clarify your request?"
+            )
         return {
             **state,
             "agent_id": "orchestrator",
@@ -193,9 +199,6 @@ class Orchestrator:
                 user_message=message,
                 agent_type=agent_type,
                 thread_id=session_id,
-                project_id=state.get("project_id"),
-                user_id=state.get("user_id"),
-                allowed_db_uri=state.get("allowed_db_uri"),
             )
         except Exception as e:
             logger.exception("[Orchestrator] %s agent wrapper error: %s", agent_type, e)
@@ -216,10 +219,6 @@ class Orchestrator:
         session_id: str,
         message: str,
         agent_type: str,
-        *,
-        project_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        allowed_db_uri: Optional[str] = None,
     ) -> Dict[str, Any]:
         self._session_agent_map[session_id] = agent_type
         try:
@@ -228,9 +227,6 @@ class Orchestrator:
                 user_message=message,
                 agent_type=agent_type,
                 thread_id=session_id,
-                project_id=project_id,
-                user_id=user_id,
-                allowed_db_uri=allowed_db_uri,
             )
         except Exception as e:
             logger.exception("[Orchestrator] %s hybrid subgraph error: %s", agent_type, e)
@@ -271,8 +267,8 @@ class Orchestrator:
             "workflow_state": workflow_state,
         }
 
-    async def _superset_agent_node(self, state: OrchestratorState) -> OrchestratorState:
-        return await self._run_agent_node(state, "superset")
+    async def _chart_agent_node(self, state: OrchestratorState) -> OrchestratorState:
+        return await self._run_agent_node(state, "chart")
 
     async def _excel_agent_node(self, state: OrchestratorState) -> OrchestratorState:
         return await self._run_agent_node(state, "excel")
@@ -286,10 +282,10 @@ class Orchestrator:
         requires_export = bool(intent_result.get("requires_export"))
         file_format = str(intent_result.get("file_format") or "").strip().lower()
 
-        # Fan-out selection: DB is base; add Superset for charting; add Excel for exports/files.
+        # Fan-out selection: DB is base; add Chart for visualization; add Excel for exports/files.
         selected_agents: List[str] = ["database"]
         if chart_type:
-            selected_agents.append("superset")
+            selected_agents.append("chart")
         if requires_export or file_format in {"xlsx", "xls", "csv"}:
             selected_agents.append("excel")
 
@@ -303,9 +299,6 @@ class Orchestrator:
                 # DB needs full attached-files context; other agents use normalized NL query.
                 message=(raw_message if agent_type == "database" else normalized_message),
                 agent_type=agent_type,
-                project_id=state.get("project_id"),
-                user_id=state.get("user_id"),
-                allowed_db_uri=state.get("allowed_db_uri"),
             )
             for agent_type in selected_agents
         ]
@@ -415,7 +408,7 @@ class Orchestrator:
         graph.add_node("PARSE_INTENT", self._parse_intent_node)
         graph.add_node("CLARIFY", self._clarify_node)
         graph.add_node("DB_AGENT", self._db_agent_node)
-        graph.add_node("SUPERSET_AGENT", self._superset_agent_node)
+        graph.add_node("CHART_AGENT", self._chart_agent_node)
         graph.add_node("EXCEL_AGENT", self._excel_agent_node)
         graph.add_node("HYBRID_AGENT", self._hybrid_agent_node)
         graph.add_node("AGGREGATE_RESPONSE", self._aggregate_response_node)
@@ -426,14 +419,14 @@ class Orchestrator:
             {
                 "clarify": "CLARIFY",
                 "db": "DB_AGENT",
-                "superset": "SUPERSET_AGENT",
+                "chart": "CHART_AGENT",
                 "excel": "EXCEL_AGENT",
                 "hybrid": "HYBRID_AGENT",
             },
         )
         graph.add_edge("CLARIFY", "AGGREGATE_RESPONSE")
         graph.add_edge("DB_AGENT", "AGGREGATE_RESPONSE")
-        graph.add_edge("SUPERSET_AGENT", "AGGREGATE_RESPONSE")
+        graph.add_edge("CHART_AGENT", "AGGREGATE_RESPONSE")
         graph.add_edge("EXCEL_AGENT", "AGGREGATE_RESPONSE")
         graph.add_edge("HYBRID_AGENT", "AGGREGATE_RESPONSE")
         graph.add_edge("AGGREGATE_RESPONSE", END)
@@ -451,7 +444,7 @@ class Orchestrator:
         need the routing decision *before* deciding whether to invoke the
         agent at all. Returns the same dict shape as ``IntentResult.to_dict()``
         — notably the ``route`` field (one of: db_readonly, db_create_table,
-        db_mutation, database, excel, superset).
+        db_mutation, database, excel, chart).
         """
         intent_result = await self._intent_service.classify(
             query,
@@ -476,7 +469,7 @@ class Orchestrator:
         """Process query through top-level LangGraph orchestrator.
 
         ``project_id`` / ``user_id`` / ``allowed_db_uri`` flow down to per-agent workflows
-        so Superset (and future agents) can enforce that resources are scoped to the project.
+        so chart-server (and future agents) can enforce that resources are scoped to the project.
 
         ``pre_classified_intent`` (optional): an ``IntentResult.to_dict()`` payload from
         a caller that already ran intent classification (e.g. chat_usecase's share
@@ -589,26 +582,6 @@ class Orchestrator:
                     "sql": output.get("sql"),
                     "result": output.get("result"),
                 },
-            })
-
-        if output_type == "chart_embed":
-            # Project mode: forward the full embed payload so the frontend can
-            # mount via @superset-ui/embedded-sdk and refresh tokens on expiry.
-            # Legacy mode: payload is just the URL string.
-            if output.get("guest_token") and output.get("embedded_uuid"):
-                payload: Any = {
-                    "embed_url": output.get("embed_url"),
-                    "embedded_uuid": output.get("embedded_uuid"),
-                    "guest_token": output.get("guest_token"),
-                    "superset_domain": output.get("superset_domain"),
-                    "ttl_seconds": output.get("ttl_seconds"),
-                }
-            else:
-                payload = output.get("embed_url")
-            events.append({
-                "tool": "create_chart",
-                "type": "chart_embed",
-                "payload": payload,
             })
 
         return events
@@ -795,127 +768,29 @@ class Orchestrator:
 
         return "connect_sqlite tool not found in any session"
 
-    async def connect_project_to_superset(
-        self,
-        project_id: str,
-        db_url: str,
-        project_name: str = "",
-    ) -> str:
-        """Register a project's database in Superset via SupersetAgent."""
-        superset_agent = self._agents.get("superset")
-        if not superset_agent:
-            return "No Superset agent available"
+    async def connect_chart_to_project_db(self, db_url: str) -> str:
+        """Set the active database connection on the chart-server for this user's
+        ChartAgent. Called per chat turn from the api-server, after it has
+        validated that the requesting user owns the project the db_url belongs to.
 
-        # Naming policy: DB in Superset is named with the project UUID verbatim.
-        # The ``project_name`` arg is kept for callers that pass a display name —
-        # it's ignored here so MCP-side scoping has a single deterministic key.
-        del project_name  # noqa: F841 — kept in signature for backward compat
-        db_name = str(project_id)
+        ``db_url`` is forwarded as-is to the chart-server's ``chart_connect_db``
+        tool, which validates the scheme and (for SQLite) that the path lies
+        under ``CHART_SQLITE_ALLOWED_DIRS`` as defense in depth.
+        """
+        chart_agent = self._agents.get("chart")
+        if not chart_agent:
+            return "No chart agent available"
 
-        sqlalchemy_uri = db_url
-        if db_url.startswith("/") or db_url.startswith("."):
-            import os
-            abs_path = os.path.abspath(db_url)
-            sqlalchemy_uri = f"sqlite:///{abs_path}"
-            logger.info(f"[Orchestrator] Converted SQLite path to: {sqlalchemy_uri}")
-
-        for server_name, session in superset_agent.sessions.items():
+        for server_name, session in chart_agent.sessions.items():
             try:
-                result = await session.call_tool("register_database", {
-                    "name": db_name,
-                    "sqlalchemy_uri": sqlalchemy_uri,
-                    "project_id": str(project_id),
-                })
+                result = await session.call_tool("chart_connect_db", {"db_url": db_url})
                 result_content = result.content
                 if not isinstance(result_content, str):
                     result_content = str(result_content)
-                logger.info(f"[Orchestrator] register_database result: {result_content}")
+                logger.info(f"[Orchestrator] chart_connect_db result: {result_content}")
                 return result_content
             except Exception as e:
-                logger.debug(f"[Orchestrator] register_database not found in {server_name}: {e}")
+                logger.debug(f"[Orchestrator] chart_connect_db not found in {server_name}: {e}")
                 continue
 
-        return "register_database tool not found in any Superset session"
-
-    async def rewrap_chart_for_embed(
-        self,
-        chart_id: int,
-        project_id: str,
-    ) -> Dict[str, Any]:
-        """Re-create a wrapper dashboard for ``chart_id`` and return its embed UUID.
-
-        Used when an old chat history references an ``embedded_uuid`` whose
-        wrapper dashboard no longer exists in Superset (e.g. after a metadata
-        DB reset). ``wrap_chart_in_dashboard`` is idempotent by title, so the
-        same chart will reuse an existing wrapper if one is found.
-        """
-        superset_agent = self._agents.get("superset")
-        if not superset_agent:
-            return {"error": "No Superset agent available"}
-
-        for _server_name, session in superset_agent.sessions.items():
-            try:
-                result = await session.call_tool("wrap_chart_in_dashboard", {
-                    "chart_id": int(chart_id),
-                    "project_id": project_id,
-                })
-                content = result.content
-                if hasattr(content, "text"):
-                    text = str(content.text)
-                elif isinstance(content, list) and content and hasattr(content[0], "text"):
-                    text = str(content[0].text)
-                else:
-                    text = str(content)
-                try:
-                    import json as _json
-                    return _json.loads(text)
-                except Exception:
-                    return {"raw": text}
-            except Exception as e:
-                logger.debug(f"[Orchestrator] wrap_chart_in_dashboard not in {_server_name}: {e}")
-                continue
-
-        return {"error": "wrap_chart_in_dashboard tool not found in any Superset session"}
-
-    async def mint_superset_guest_token(
-        self,
-        embedded_uuid: str,
-        project_id: str,
-        user_id: Optional[str] = None,
-        ttl_seconds: int = 300,
-    ) -> Dict[str, Any]:
-        """Refresh-friendly entry point to MCP ``mint_guest_token``.
-
-        Caller (api-server) is responsible for verifying the requesting user owns
-        ``project_id`` before invoking this — the MCP tool itself is admin-token
-        backed and does not authenticate the caller.
-        """
-        superset_agent = self._agents.get("superset")
-        if not superset_agent:
-            return {"error": "No Superset agent available"}
-
-        for _server_name, session in superset_agent.sessions.items():
-            try:
-                result = await session.call_tool("mint_guest_token", {
-                    "embedded_uuid": embedded_uuid,
-                    "project_id": project_id,
-                    "user_id": user_id or "",
-                    "ttl_seconds": int(ttl_seconds),
-                })
-                content = result.content
-                if hasattr(content, "text"):
-                    text = str(content.text)
-                elif isinstance(content, list) and content and hasattr(content[0], "text"):
-                    text = str(content[0].text)
-                else:
-                    text = str(content)
-                try:
-                    import json as _json
-                    return _json.loads(text)
-                except Exception:
-                    return {"raw": text}
-            except Exception as e:
-                logger.debug(f"[Orchestrator] mint_guest_token not in {_server_name}: {e}")
-                continue
-
-        return {"error": "mint_guest_token tool not found in any Superset session"}
+        return "chart_connect_db tool not found in any chart-server session"

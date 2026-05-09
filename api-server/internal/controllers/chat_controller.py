@@ -8,8 +8,6 @@ from internal.controllers.schemas import (
     ChatRequest,
     ExecuteSqlRequest,
     ExportRequest,
-    SupersetGuestTokenOk,
-    SupersetGuestTokenRequest,
     WorkflowResumeRequest,
 )  # noqa: F401
 from internal.dependencies import get_chat_usecase, get_user_key
@@ -92,27 +90,6 @@ async def workflow_resume(
         tool_events=tool_events,
         pending_workflow_resume=pending,
     )
-
-
-@router.post("/api/superset/guest-token", response_model=SupersetGuestTokenOk)
-async def superset_guest_token(
-    req: SupersetGuestTokenRequest,
-    user_key: str = Depends(get_user_key),
-    usecase: ChatUseCase = Depends(get_chat_usecase),
-) -> SupersetGuestTokenOk:
-    """Mint or refresh a Superset Guest Token for an embedded dashboard.
-
-    Frontend's @superset-ui/embedded-sdk calls this from ``fetchGuestToken``
-    on initial mount and again before token expiry.
-    """
-    result = await usecase.mint_superset_guest_token(
-        user_key=user_key,
-        embedded_uuid=req.embedded_uuid,
-        project_id=req.project_id,
-        ttl_seconds=req.ttl_seconds,
-        chart_id=req.chart_id,
-    )
-    return SupersetGuestTokenOk(**result)
 
 
 @router.post("/api/sql/execute", response_model=ChatOk)

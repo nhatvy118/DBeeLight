@@ -8,7 +8,6 @@ from openai import OpenAI
 from mcp_agent.graph.readonly_workflow import ReadOnlyWorkflow
 from mcp_agent.graph.create_table_workflow import CreateTableWorkflow
 from mcp_agent.graph.mutation_workflow import MutationWorkflow
-from mcp_agent.graph.superset_workflow import SupersetAgentWorkflow
 from mcp_agent.graph.graph_state import AgentState, create_initial_state
 from mcp_agent.graph.state import StageType
 
@@ -34,7 +33,7 @@ class AgentWorkflow:
 
     If ``database_route`` is omitted (``None``), operation is classified locally for backward compatibility.
 
-    Non-database: excel / superset workflows.
+    Non-database: excel / chart agents (both pure tool loops, no LangGraph).
     """
 
     def __init__(
@@ -49,9 +48,10 @@ class AgentWorkflow:
         self.workflows: Dict[str, Any] = {}
         self._session_workflow_map: Dict[str, str] = {}
         self._database_agent: Any = None
-        # Excel agent has no LangGraph workflow — its tool loop handles the
-        # request directly. We hold a reference for ``_run_non_database``.
+        # Excel and Chart agents have no LangGraph workflow — their tool loops
+        # handle the request directly. We hold references for ``_run_non_database``.
         self._excel_agent: Any = None
+        self._chart_agent: Any = None
         if agents:
             self._init_workflows(agents)
 
@@ -59,15 +59,11 @@ class AgentWorkflow:
         """Initialize all workflows with agent instances."""
         self._database_agent = agents.get("database")
         self._excel_agent = agents.get("excel")
+        self._chart_agent = agents.get("chart")
         self.workflows = {
             "readonly": ReadOnlyWorkflow(llm=self.llm, agent=agents.get("database")),
             "create_table": CreateTableWorkflow(llm=self.llm, agent=agents.get("database")),
             "mutation": MutationWorkflow(llm=self.llm, agent=agents.get("database")),
-            "superset": SupersetAgentWorkflow(
-                llm=self.llm,
-                agent=agents.get("superset"),
-                database_agent=agents.get("database"),
-            ),
         }
 
     def _classify_operation(self, user_message: str) -> str:
@@ -104,9 +100,6 @@ class AgentWorkflow:
         resume=None,
         thread_id: Optional[str] = None,
         database_route: DatabaseRoute = None,
-        project_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        allowed_db_uri: Optional[str] = None,
     ) -> AgentState:
         """Run workflow for specific agent type, routing to correct sub-workflow for database."""
         if agent_type != "database":
@@ -116,9 +109,6 @@ class AgentWorkflow:
                 agent_type,
                 resume,
                 thread_id,
-                project_id=project_id,
-                user_id=user_id,
-                allowed_db_uri=allowed_db_uri,
             )
 
         # For database, use orchestrator route or classify locally
@@ -252,87 +242,44 @@ class AgentWorkflow:
         user_id: Optional[str] = None,
         allowed_db_uri: Optional[str] = None,
     ) -> AgentState:
-        """Run non-database agents (excel, superset).
+        """Run non-database agents (excel, chart) via their tool loops.
 
-        ``excel`` has no LangGraph workflow — we delegate straight to the
-        agent's tool loop. ``superset`` still has a workflow for chart
-        creation flow.
+        Neither has a LangGraph workflow — chart-server's active DB connection
+        is set by the orchestrator (``connect_chart_to_project_db``) before this
+        is reached, so the agent only needs to introspect schema and emit the
+        appropriate ``generate_*_chart`` call.
         """
-        # Excel: no workflow, just call the agent's tool loop directly.
-        if agent_type == "excel":
-            agent = self._excel_agent
-            if not agent:
-                logger.error("[Workflow] Excel agent unavailable")
-                return {
-                    "session_id": session_id,
-                    "current_stage": StageType.ERROR.value,
-                    "agent_type": agent_type,
-                    "user_message": user_message,
-                    "error": "Excel agent unavailable",
-                    "output": {"error": "Excel agent unavailable"},
-                }
-            if resume is not None or thread_id is not None:
-                logger.warning("[Workflow] resume/thread_id ignored for agent_type=excel")
-            logger.info(f"[Workflow] Delegating excel to agent tool loop for session {session_id}")
-            try:
-                response = await agent.process_query(user_message, verbose=False)
-            except Exception as e:
-                logger.exception("[Workflow] Excel agent error: %s", e)
-                return {
-                    "session_id": session_id,
-                    "current_stage": StageType.ERROR.value,
-                    "agent_type": agent_type,
-                    "user_message": user_message,
-                    "error": f"Excel agent error: {e}",
-                    "output": {"error": f"Excel agent error: {e}"},
-                }
-            return {
-                "session_id": session_id,
-                "current_stage": StageType.DONE.value,
-                "agent_type": agent_type,
-                "user_message": user_message,
-                "output": {"type": "agent_response", "message": response},
-            }
-
-        workflow = self.workflows.get(agent_type)
-        if not workflow:
+        agent_map = {"excel": self._excel_agent, "chart": self._chart_agent}
+        agent = agent_map.get(agent_type)
+        if agent is None:
             logger.error(f"[Workflow] Unknown agent type: {agent_type}")
             return {
                 "session_id": session_id,
-                "current_stage": "ERROR",
+                "current_stage": StageType.ERROR.value,
                 "agent_type": agent_type,
                 "user_message": user_message,
                 "error": f"Unknown agent type: {agent_type}",
-                "output": {"error": f"Unknown agent type: {agent_type}"}
+                "output": {"error": f"Unknown agent type: {agent_type}"},
             }
-
-        logger.info(f"[Workflow] Running {agent_type} workflow for session {session_id}")
-
-        if agent_type == "database":
-            db_wf = cast(Any, workflow)
-            result = await db_wf.run(
-                session_id, user_message, resume=resume, thread_id=thread_id
-            )
-        elif agent_type == "superset":
-            # Superset workflow accepts project scoping kwargs (Phase 1)
-            if resume is not None or thread_id is not None:
-                logger.warning(
-                    "[Workflow] resume/thread_id ignored for agent_type=superset"
-                )
-            result = await workflow.run(
-                session_id,
-                user_message,
-                project_id=project_id,
-                user_id=user_id,
-                allowed_db_uri=allowed_db_uri,
-            )
-        elif resume is not None or thread_id is not None:
-            logger.warning(
-                "[Workflow] resume/thread_id ignored for agent_type=%s", agent_type
-            )
-            result = await workflow.run(session_id, user_message)
-        else:
-            result = await workflow.run(session_id, user_message)
-
-        logger.info(f"[Workflow] Completed with stage: {result.get('current_stage')}")
-        return result
+        if resume is not None or thread_id is not None:
+            logger.warning("[Workflow] resume/thread_id ignored for agent_type=%s", agent_type)
+        logger.info(f"[Workflow] Delegating {agent_type} to agent tool loop for session {session_id}")
+        try:
+            response = await agent.process_query(user_message, verbose=False)
+        except Exception as e:
+            logger.exception("[Workflow] %s agent error: %s", agent_type, e)
+            return {
+                "session_id": session_id,
+                "current_stage": StageType.ERROR.value,
+                "agent_type": agent_type,
+                "user_message": user_message,
+                "error": f"{agent_type} agent error: {e}",
+                "output": {"error": f"{agent_type} agent error: {e}"},
+            }
+        return {
+            "session_id": session_id,
+            "current_stage": StageType.DONE.value,
+            "agent_type": agent_type,
+            "user_message": user_message,
+            "output": {"type": "agent_response", "message": response},
+        }

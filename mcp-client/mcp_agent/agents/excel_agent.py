@@ -36,9 +36,7 @@ class ExcelAgent(BaseAgent):
 
 ## Language Rule
 
-Detect the language from the user's message and respond in the SAME language.
-- If user writes in Vietnamese, reply in Vietnamese.
-- If user writes in English, reply in English.
+Default to English. Switch to Vietnamese ONLY if the user's LATEST message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "tóm tắt", "biểu đồ", "công thức"). Do not switch based on prior turns or mixed-language input — short English keyword queries reply in English.
 
 ## File Path Rules
 

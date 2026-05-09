@@ -504,8 +504,8 @@ class ChatShareRepository:
         session in ``project_id``, return that share's owner google_sub.
 
         Used to bypass owner-only checks (e.g. ``ProjectRepository.get_project_by_id``)
-        on derived flows like Superset guest-token minting, where the recipient
-        legitimately needs to access a resource scoped to the owner.
+        on derived flows where the recipient legitimately needs to access a
+        resource scoped to the owner.
         """
         if not recipient_google_sub or not project_id:
             return None

@@ -5,14 +5,14 @@ A client library for connecting to and interacting with MCP (Model Context Proto
 using OpenAI GPT models. Supports multi-agent setup with approval-aware execution.
 
 Layered structure:
-- agents/       — BaseAgent, DatabaseAgent, ExcelAgent, SupersetAgent
+- agents/       — BaseAgent, DatabaseAgent, ExcelAgent, ChartAgent
 - orchestration/ — Orchestrator, IntentService
 - session/     — SessionManager
 - graph/       — LangGraph workflow (AgentWorkflow, per-agent workflows)
 """
 
 # Agents
-from mcp_agent.agents import BaseAgent, DatabaseAgent, ExcelAgent, SupersetAgent
+from mcp_agent.agents import BaseAgent, ChartAgent, DatabaseAgent, ExcelAgent
 
 # Session
 from mcp_agent.session import SessionManager
@@ -26,9 +26,9 @@ from mcp_agent.graph import AgentState, AgentWorkflow, StageType, SessionStatus
 __all__ = [
     # Agents
     "BaseAgent",
+    "ChartAgent",
     "DatabaseAgent",
     "ExcelAgent",
-    "SupersetAgent",
     # Session
     "SessionManager",
     # Orchestration

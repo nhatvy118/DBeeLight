@@ -10,7 +10,7 @@ from typing import List
 # Each workflow has:
 #   id: unique identifier used for routing
 #   name: human-readable name
-#   agent_type: which agent handles this ("database", "excel", "superset")
+#   agent_type: which agent handles this ("database", "excel", "chart")
 #   triggers: keywords/patterns that indicate this workflow
 #   description: brief description for intent classification
 #   example_queries: sample user queries that match this workflow
@@ -93,22 +93,22 @@ EXCEL_WORKFLOWS = [
     },
 ]
 
-SUPERSET_WORKFLOWS = [
+CHART_WORKFLOWS = [
     {
-        "id": "superset_chart",
-        "name": "Superset Visualization",
-        "agent_type": "superset",
+        "id": "chart_render",
+        "name": "Chart Visualization",
+        "agent_type": "chart",
         "triggers": [
-            "chart", "graph", "visualization", "dashboard", "plot",
-            "biểu đồ", "đồ thị", "trực quan", "superset",
-            "bar chart", "line chart", "pie chart", "table chart",
-            "timeseries", "heatmap",
+            "chart", "graph", "visualization", "plot",
+            "biểu đồ", "đồ thị", "trực quan",
+            "bar chart", "line chart", "pie chart", "scatter",
+            "histogram", "heatmap", "boxplot", "area chart",
         ],
-        "description": "Create charts and dashboards in Superset. Register database, write SQL, create virtual datasets, and embed charts for iframe display.",
+        "description": "Render an interactive Vega-Lite chart from data in the project's database. Writes SQL, executes against the active connection, returns a Vega-Lite v5 spec the frontend can render directly.",
         "example_queries": [
-            "Create a bar chart showing monthly sales",
-            "Build a dashboard for inventory trends",
-            "Show me a pie chart of revenue by category",
+            "Show me monthly sales as a line chart",
+            "Top 5 customers by revenue as a bar chart",
+            "Distribution of order amounts (histogram)",
             "Tạo biểu đồ đường thể hiện doanh số theo tháng",
         ],
     },
@@ -118,7 +118,7 @@ SUPERSET_WORKFLOWS = [
 ALL_WORKFLOWS = {
     "database": DATABASE_WORKFLOWS,
     "excel": EXCEL_WORKFLOWS,
-    "superset": SUPERSET_WORKFLOWS,
+    "chart": CHART_WORKFLOWS,
 }
 
 

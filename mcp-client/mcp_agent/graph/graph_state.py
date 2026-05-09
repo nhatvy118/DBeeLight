@@ -47,15 +47,6 @@ class AgentState(TypedDict):
     chart_type: Optional[str]
     chart_data: Optional[Dict[str, Any]]
 
-    # Superset-specific state (populated deterministically by SupersetAgentWorkflow)
-    superset_db_id: Optional[int]
-    superset_db_name: Optional[str]
-    superset_db_backend: Optional[str]
-    superset_tables: list
-    superset_plan: Dict[str, Any]
-    superset_dataset_id: Optional[int]
-    superset_chart_id: Optional[int]
-
     # Flow control
     wait_user: bool
     approved: bool
@@ -80,8 +71,8 @@ def create_initial_state(
     Args:
         session_id: Unique session identifier
         user_message: User's input message
-        agent_type: Which agent is handling this ("database", "excel", etc.)
-        project_id: Optional project UUID — when set, scopes Superset DB lookup to this UUID
+        agent_type: Which agent is handling this ("database", "excel", "chart")
+        project_id: Optional project UUID — when set, scopes downstream DB access to this project
         user_id: Optional user identifier (for audit / future RLS)
         allowed_db_uri: Optional pre-resolved DB URI for the project, avoids re-querying database_agent
     """
@@ -114,15 +105,6 @@ def create_initial_state(
         # Chart
         "chart_type": None,
         "chart_data": None,
-
-        # Superset
-        "superset_db_id": None,
-        "superset_db_name": None,
-        "superset_db_backend": None,
-        "superset_tables": [],
-        "superset_plan": {},
-        "superset_dataset_id": None,
-        "superset_chart_id": None,
 
         # Email
         "email_to": None,

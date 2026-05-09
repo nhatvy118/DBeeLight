@@ -1,0 +1,13 @@
+[project]
+name = "chart-server"
+version = "0.1.0"
+description = "MCP server: SQL → Vega-Lite spec. Per-session DB connection injected by orchestrator."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp[cli]>=1.22.0",
+    "sqlalchemy>=2.0.0",
+    "aiosqlite>=0.20.0",
+    "asyncpg>=0.29.0",
+    "psycopg2-binary>=2.9.0",
+]

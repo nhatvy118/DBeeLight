@@ -176,7 +176,7 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
                 "content": """Analyze the database request and extract:
 - operation: CREATE, SELECT, INSERT, UPDATE, DELETE, etc.
 - tables: list of every table name referenced
-- detected_language: en or vi
+- detected_language: "en" by default. Use "vi" ONLY if the LATEST user message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "truy vấn", "kết nối", "danh sách"). Ignore conversation history. Short English-keyword queries like "list tables" → "en".
 - resolved_query: rewrite latest user message into a self-contained request
 
 Return JSON."""

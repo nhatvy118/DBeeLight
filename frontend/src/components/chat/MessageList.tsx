@@ -1,5 +1,4 @@
 import ChatMessage from './ChatMessage';
-import SupersetEmbeddedChart from './SupersetEmbeddedChart';
 
 const SQL_TYPE_OPTIONS = [
   'INTEGER',
@@ -43,18 +42,6 @@ export type SchemaPreviewData = {
   columns: SchemaPreviewColumn[];
 };
 
-export type ChartEmbed = {
-  embedUrl: string;
-  embeddedUuid?: string;
-  guestToken?: string;
-  supersetDomain?: string;
-  ttlSeconds?: number;
-  projectId?: string;
-  /** Persisted from the chat marker — lets the embed component ask the backend
-   *  to re-wrap the chart if the original ``embeddedUuid`` no longer exists. */
-  chartId?: number;
-};
-
 export type UiAttachment = {
   /** Display name shown to the user (original filename). */
   name: string;
@@ -72,10 +59,6 @@ export type UiMessage = {
   exportToExcel?: ExportData | null;
   schemaPreview?: SchemaPreviewData | null;
   schemaLocked?: boolean;
-  chartEmbedUrl?: string | null;
-  /** Rich embed payload — when ``embeddedUuid`` + ``guestToken`` are both
-   *  present, render via Embedded SDK; otherwise fall back to legacy iframe. */
-  chartEmbed?: ChartEmbed | null;
   /** Assistant message is waiting on LangGraph ``interrupt()`` (schema or SQL gate). */
   workflowResumePending?: boolean;
 };
@@ -328,30 +311,6 @@ export default function MessageList({
             </div>
           )}
 
-          {!msg.isUser && (msg.chartEmbed || msg.chartEmbedUrl) && (
-            <div className="mt-3 mb-2 rounded-xl border border-gray-200 overflow-hidden">
-              <div className="px-3 py-2 bg-indigo-50 text-xs font-medium text-indigo-700">
-                <span>Interactive Chart (Superset)</span>
-              </div>
-              {msg.chartEmbed?.embeddedUuid && msg.chartEmbed?.supersetDomain && msg.chartEmbed?.projectId ? (
-                <SupersetEmbeddedChart
-                  embeddedUuid={msg.chartEmbed.embeddedUuid}
-                  supersetDomain={msg.chartEmbed.supersetDomain}
-                  initialGuestToken={msg.chartEmbed.guestToken}
-                  projectId={msg.chartEmbed.projectId}
-                  chartId={msg.chartEmbed.chartId}
-                />
-              ) : (
-                <iframe
-                  src={msg.chartEmbed?.embedUrl || msg.chartEmbedUrl || ''}
-                  title="Superset Chart"
-                  className="w-full border-0"
-                  style={{ height: '500px' }}
-                  sandbox="allow-scripts allow-same-origin allow-popups"
-                />
-              )}
-            </div>
-          )}
         </div>
       ))}
     </div>

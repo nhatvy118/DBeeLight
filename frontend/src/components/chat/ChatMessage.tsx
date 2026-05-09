@@ -3,6 +3,43 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github-dark.css';
+import VegaLiteChart from './VegaLiteChart';
+
+// Tolerate the agent occasionally wrapping the marker block in a markdown
+// code fence (it copies the format from its system-prompt example). The
+// optional ``` before/after gets eaten alongside the markers so trailing
+// markdown text isn't dragged into a phantom code block.
+const VEGA_SPEC_RE = /(?:```[a-zA-Z]*\s*\n?)?\[VEGA_SPEC_START\]\s*([\s\S]*?)\s*\[VEGA_SPEC_END\](?:\s*\n?```)?/g;
+
+type MessagePart = { type: 'text'; content: string } | { type: 'chart'; spec: string };
+
+/** Split an assistant message on [VEGA_SPEC_START]…[VEGA_SPEC_END] markers
+ * so each chart spec can be rendered as a real <VegaLite> component while
+ * surrounding prose still flows through the markdown renderer. */
+function splitMessageOnVegaSpecs(message: string): MessagePart[] {
+  const parts: MessagePart[] = [];
+  let lastIdx = 0;
+  let match: RegExpExecArray | null;
+  VEGA_SPEC_RE.lastIndex = 0;
+  while ((match = VEGA_SPEC_RE.exec(message)) !== null) {
+    if (match.index > lastIdx) {
+      parts.push({ type: 'text', content: message.slice(lastIdx, match.index) });
+    }
+    parts.push({ type: 'chart', spec: match[1].trim() });
+    lastIdx = VEGA_SPEC_RE.lastIndex;
+  }
+  if (lastIdx < message.length) {
+    parts.push({ type: 'text', content: message.slice(lastIdx) });
+  }
+  return parts.length === 0 ? [{ type: 'text', content: message }] : parts;
+}
+
+/** While the typing animation is running we don't want to stream the raw
+ * Vega-Lite JSON character by character — it's a wall of braces. Replace
+ * each spec block with a short placeholder for the typing pass. */
+function stripVegaSpecsForTyping(message: string): string {
+  return message.replace(VEGA_SPEC_RE, '_[chart rendering…]_');
+}
 
 
 type ChatMessageAttachment = {
@@ -104,7 +141,10 @@ export default function ChatMessage({ message, isUser, attachments, enableTyping
     setIsTyping(true);
     currentIndexRef.current = 0;
 
-    const tokens = message.split(/(\s+)/).filter((t) => t.length > 0);
+    // Don't stream Vega-Lite JSON characters — substitute placeholder so
+    // typing UX stays readable until the final render swaps in the chart.
+    const typingSource = stripVegaSpecsForTyping(message);
+    const tokens = typingSource.split(/(\s+)/).filter((t) => t.length > 0);
 
     const typeNext = () => {
       if (currentIndexRef.current < tokens.length) {
@@ -181,8 +221,6 @@ export default function ChatMessage({ message, isUser, attachments, enableTyping
     );
   }
 
-  const normalizedMessage = normalizeInlineCode(message);
-
   // Copy code to clipboard
   const handleCopyCode = async (code: string, index: number) => {
     try {
@@ -240,92 +278,98 @@ export default function ChatMessage({ message, isUser, attachments, enableTyping
       >
         {/* IMPORTANT:
             While typing -> render plain text only.
-            When finished -> render markdown.
+            When finished -> split on Vega-Lite spec markers and render
+            each chunk as either markdown or an interactive chart.
         */}
-        {isTyping || displayedText !== message ? (
+        {isTyping ? (
           <p className="text-[16px] text-gray-800 dark:text-gray-200 whitespace-pre-wrap break-words leading-[1.75]">
             {displayedText}
-            {isTyping && (
-              <span className="inline-block w-[2px] h-[18px] bg-gray-700 dark:bg-gray-300 ml-0.5 animate-pulse align-text-bottom" />
-            )}
+            <span className="inline-block w-[2px] h-[18px] bg-gray-700 dark:bg-gray-300 ml-0.5 animate-pulse align-text-bottom" />
           </p>
         ) : (
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeHighlight]}
-              components={{
-                code: ({ className, children, ...props }) => {
-                  const isInline = !className;
-                  if (isInline) {
-                    // Inside an inline-code chip, raw backticks are NEVER
-                    // meaningful content — they're markdown delimiters that
-                    // leaked through (agent uses MySQL-style ``name``,
-                    // double/triple wrapping, escape \`, etc.). Strip every
-                    // backtick from the rendered chip so it shows just the
-                    // identifier.
-                    const stripBackticks = (s: string) => s.replace(/`/g, '').trim();
-                    const stripped = Array.isArray(children)
-                      ? children.map((c) => (typeof c === 'string' ? stripBackticks(c) : c))
-                      : typeof children === 'string'
-                        ? stripBackticks(children)
-                        : children;
-                    return (
-                      <code
-                        className="bg-gray-100 dark:bg-slate-800 text-gray-800 dark:text-gray-200 px-1.5 py-0.5 rounded font-mono text-[0.9em]"
-                        {...props}
-                      >
-                        {stripped}
-                      </code>
-                    );
-                  }
-
-                  // Block code — header bar with language label + copy button.
-                  const codeBlockIndex = codeBlockIndexRef.current++;
-                  const codeString = extractCodeText(children).replace(/\n$/, '');
-                  const isCopied = copiedIndex === codeBlockIndex;
-                  const langMatch = /language-([\w-]+)/.exec(className || '');
-                  const language = langMatch ? langMatch[1] : 'text';
-
-                  return (
-                    <div className="my-3 not-prose rounded-lg overflow-hidden border border-gray-800">
-                      <div className="flex items-center justify-between px-3 py-1.5 bg-gray-800 text-gray-300 text-xs">
-                        <span className="font-mono lowercase">{language}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleCopyCode(codeString, codeBlockIndex)}
-                          className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-gray-700 text-gray-300 hover:text-white transition-colors"
-                          aria-label="Copy code"
+          splitMessageOnVegaSpecs(message).map((part, i) =>
+            part.type === 'chart' ? (
+              <VegaLiteChart key={i} specJson={part.spec} />
+            ) : (
+              <ReactMarkdown
+                key={i}
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeHighlight]}
+                components={{
+                  code: ({ className, children, ...props }) => {
+                    const isInline = !className;
+                    if (isInline) {
+                      // Inside an inline-code chip, raw backticks are NEVER
+                      // meaningful content — they're markdown delimiters that
+                      // leaked through (agent uses MySQL-style ``name``,
+                      // double/triple wrapping, escape \`, etc.). Strip every
+                      // backtick from the rendered chip so it shows just the
+                      // identifier.
+                      const stripBackticks = (s: string) => s.replace(/`/g, '').trim();
+                      const stripped = Array.isArray(children)
+                        ? children.map((c) => (typeof c === 'string' ? stripBackticks(c) : c))
+                        : typeof children === 'string'
+                          ? stripBackticks(children)
+                          : children;
+                      return (
+                        <code
+                          className="bg-gray-100 dark:bg-slate-800 text-gray-800 dark:text-gray-200 px-1.5 py-0.5 rounded font-mono text-[0.9em]"
+                          {...props}
                         >
-                          {isCopied ? (
-                            <>
-                              <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                              </svg>
-                              Copied
-                            </>
-                          ) : (
-                            <>
-                              <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                              </svg>
-                              Copy
-                            </>
-                          )}
-                        </button>
-                      </div>
-                      <pre className="bg-gray-900 m-0 p-4 overflow-x-auto">
-                        <code className={`${className} text-gray-100 text-sm font-mono block leading-relaxed`} {...props}>
-                          {children}
+                          {stripped}
                         </code>
-                      </pre>
-                    </div>
-                  );
-                },
-              }}
-            >
-              {normalizedMessage}
-            </ReactMarkdown>
-          )}
+                      );
+                    }
+
+                    // Block code — header bar with language label + copy button.
+                    const codeBlockIndex = codeBlockIndexRef.current++;
+                    const codeString = extractCodeText(children).replace(/\n$/, '');
+                    const isCopied = copiedIndex === codeBlockIndex;
+                    const langMatch = /language-([\w-]+)/.exec(className || '');
+                    const language = langMatch ? langMatch[1] : 'text';
+
+                    return (
+                      <div className="my-3 not-prose rounded-lg overflow-hidden border border-gray-800">
+                        <div className="flex items-center justify-between px-3 py-1.5 bg-gray-800 text-gray-300 text-xs">
+                          <span className="font-mono lowercase">{language}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyCode(codeString, codeBlockIndex)}
+                            className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-gray-700 text-gray-300 hover:text-white transition-colors"
+                            aria-label="Copy code"
+                          >
+                            {isCopied ? (
+                              <>
+                                <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                                Copied
+                              </>
+                            ) : (
+                              <>
+                                <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                </svg>
+                                Copy
+                              </>
+                            )}
+                          </button>
+                        </div>
+                        <pre className="bg-gray-900 m-0 p-4 overflow-x-auto">
+                          <code className={`${className} text-gray-100 text-sm font-mono block leading-relaxed`} {...props}>
+                            {children}
+                          </code>
+                        </pre>
+                      </div>
+                    );
+                  },
+                }}
+              >
+                {normalizeInlineCode(part.content)}
+              </ReactMarkdown>
+            )
+          )
+        )}
       </div>
     </div>
   );

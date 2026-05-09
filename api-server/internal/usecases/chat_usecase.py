@@ -4,7 +4,6 @@ import asyncio
 import json as _json
 import logging
 import re
-import time
 import uuid
 from typing import AsyncIterator, Optional
 
@@ -96,14 +95,6 @@ class ChatUseCase:
         self._project_repo = project_repo
         self._share_repo = share_repo
         self._file_usecase = file_usecase
-        # In-memory guest-token cache to dedupe rapid mint calls (page reload
-        # storms, embed-sdk timer overlaps). Superset rate-limits the
-        # /api/v1/security/guest_token/ endpoint to 50 rps; without this,
-        # zombie timers from old mounts can lock the whole app out for the
-        # current minute. Key = (user_key, embedded_uuid). TTL kept under the
-        # token's actual JWT expiry so we never serve a stale token.
-        self._guest_token_cache: dict[tuple[str, str], tuple[float, dict]] = {}
-        self._guest_token_cache_safety_seconds = 30
 
     async def _get_share_context(
         self, session_id: str | None, user_key: str
@@ -326,8 +317,8 @@ class ChatUseCase:
         # Auto-connect database based on context:
         # - In project: connect to project's SQLite .db file
         # - Outside project: leave as-is (user manages PostgreSQL connection manually via chat)
-        # ``project_db_url`` is captured for forwarding to workflows so Superset can scope
-        # by project_id without re-querying database_agent (Phase 1 of scoping refactor).
+        # ``project_db_url`` is captured for forwarding to workflows / chart-server
+        # so they scope by the active project's DB without re-querying database_agent.
         project_db_url: str | None = None
         if project_id_uuid and self._project_repo:
             try:
@@ -341,18 +332,13 @@ class ChatUseCase:
                         connect_result = await agent.connect_to_project_db(db_url)
                         logger.info(f"UseCase: Database connection result: {connect_result}")
 
-                        # Also register the project database in Superset for visualization.
-                        # Project-scoped name uses the UUID directly (single source of truth
-                        # for downstream MCP tool-level enforcement).
+                        # Also point the chart-server at the same DB so chart tools
+                        # can render visualizations from this project's data.
                         try:
-                            superset_result = await agent.connect_project_to_superset(
-                                project_id=str(project_id_uuid),
-                                db_url=db_url,
-                                project_name="",
-                            )
-                            logger.info(f"UseCase: Superset registration result: {superset_result}")
+                            chart_result = await agent.connect_chart_to_project_db(db_url)
+                            logger.info(f"UseCase: Chart server connection result: {chart_result}")
                         except Exception as e:
-                            logger.warning(f"UseCase: Failed to register project in Superset: {e}")
+                            logger.warning(f"UseCase: Failed to connect chart server to project: {e}")
             except Exception as e:
                 logger.warning(f"UseCase: Failed to auto-connect project database: {e}")
 
@@ -419,6 +405,10 @@ class ChatUseCase:
                         await agent.connect_to_project_db(session_sql_url)
                     except Exception as e:
                         logger.warning("UseCase: session-file DB connect failed: %s", e)
+                    try:
+                        await agent.connect_chart_to_project_db(session_sql_url)
+                    except Exception as e:
+                        logger.warning("UseCase: session-file chart connect failed: %s", e)
                     try:
                         if "sqlite" in (session_sql_url or "").lower():
                             agent.connection_info = {"engine": "sqlite"}
@@ -596,122 +586,6 @@ class ChatUseCase:
             logger.error(f"UseCase: Error processing query: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to process query: {str(e)}") from e
 
-    async def mint_superset_guest_token(
-        self,
-        user_key: str,
-        embedded_uuid: str,
-        project_id: str,
-        ttl_seconds: int = 300,
-        chart_id: Optional[int] = None,
-    ) -> dict:
-        """Verify project ownership, then mint a Superset Guest Token via MCP.
-
-        Trust model:
-        - Caller (frontend) supplies (embedded_uuid, project_id).
-        - We verify ``user_key`` actually owns ``project_id`` via ProjectRepository.
-        - We do NOT independently verify that ``embedded_uuid`` belongs to that
-          project — embedded_uuids are treated as semi-secret and only delivered
-          through authenticated chat replies.
-
-        Auto-recreate: when a chart was created in a previous Superset session
-        and the metadata DB has since been reset, the original wrapper dashboard
-        is gone. If ``chart_id`` is provided and the chart still exists, we
-        re-wrap it to obtain a new ``embedded_uuid`` and re-mint. The returned
-        ``embedded_uuid`` may therefore differ from the requested one — the
-        frontend must update its iframe accordingly.
-        """
-        if not embedded_uuid or not embedded_uuid.strip():
-            raise HTTPException(status_code=400, detail="embedded_uuid is required")
-        if not project_id or not project_id.strip():
-            raise HTTPException(status_code=400, detail="project_id is required")
-
-        try:
-            uuid.UUID(project_id)
-        except (ValueError, TypeError):
-            raise HTTPException(status_code=400, detail="Invalid project_id")
-
-        if not self._project_repo:
-            raise HTTPException(status_code=500, detail="Project repository unavailable")
-
-        project = await self._project_repo.get_project_by_id(project_id, user_key)
-        if not project and self._share_repo:
-            # Forked-share recipients don't own the project. If they have an
-            # active share for it, look the project up under the owner instead
-            # so charts in shared chats render for the recipient too.
-            owner_sub = await self._share_repo.get_owner_for_recipient_project(
-                recipient_google_sub=user_key, project_id=project_id
-            )
-            if owner_sub:
-                project = await self._project_repo.get_project_by_id(project_id, owner_sub)
-        if not project:
-            raise HTTPException(status_code=403, detail="Project not accessible")
-
-        ttl = int(ttl_seconds or 300)
-        cache_key = (user_key, embedded_uuid)
-        now = time.time()
-        cached = self._guest_token_cache.get(cache_key)
-        if cached and cached[0] > now + self._guest_token_cache_safety_seconds:
-            return cached[1]
-
-        agent = await self._agent_repo.get_agent(user_key=user_key)
-        result = await agent.mint_superset_guest_token(
-            embedded_uuid=embedded_uuid,
-            project_id=project_id,
-            user_id=user_key,
-            ttl_seconds=ttl,
-        )
-
-        if (not isinstance(result, dict) or result.get("error")) and chart_id:
-            try:
-                rewrap = await agent.rewrap_chart_for_embed(
-                    chart_id=int(chart_id),
-                    project_id=project_id,
-                )
-            except Exception as e:
-                rewrap = {"error": f"rewrap failed: {e}"}
-            new_uuid = (rewrap or {}).get("embedded_uuid")
-            if new_uuid and new_uuid != embedded_uuid:
-                result = await agent.mint_superset_guest_token(
-                    embedded_uuid=new_uuid,
-                    project_id=project_id,
-                    user_id=user_key,
-                    ttl_seconds=int(ttl_seconds or 300),
-                )
-                if isinstance(result, dict) and not result.get("error"):
-                    result["embedded_uuid"] = new_uuid
-
-        if not isinstance(result, dict) or result.get("error"):
-            # Combine error + message so the caller sees the actual upstream
-            # cause (e.g. "404 Not Found: Embedded dashboard <uuid> missing"),
-            # not just the generic header that wraps it.
-            err = (result or {}).get("error") or "Failed to mint guest token"
-            extra = (result or {}).get("message") or (result or {}).get("details")
-            msg = f"{err}: {extra}" if extra and extra != err else str(err)
-            logger.warning(
-                "[mint_guest_token] failed: %s | embedded_uuid=%s project_id=%s chart_id=%s",
-                msg, embedded_uuid, project_id, chart_id,
-            )
-            raise HTTPException(status_code=502, detail=msg)
-
-        token = result.get("token")
-        if not token:
-            raise HTTPException(status_code=502, detail="Guest token missing in response")
-
-        response = {
-            "token": token,
-            "embed_url": result.get("embed_url") or "",
-            "superset_domain": result.get("supersetDomain") or result.get("superset_domain"),
-            "embedded_uuid": result.get("embedded_uuid") or embedded_uuid,
-            "ttl_seconds": int(result.get("ttl_seconds") or ttl_seconds or 300),
-        }
-        # Cache under both the original and (if rewrapped) the new uuid so
-        # subsequent requests with either key dedupe to the same token.
-        expires_at = now + response["ttl_seconds"]
-        self._guest_token_cache[(user_key, embedded_uuid)] = (expires_at, response)
-        if response["embedded_uuid"] != embedded_uuid:
-            self._guest_token_cache[(user_key, response["embedded_uuid"])] = (expires_at, response)
-        return response
-
     async def chat_stream(
         self,
         user_key: str,
@@ -834,6 +708,10 @@ class ChatUseCase:
                     db_url = project["db_url"]
                     if db_url and not db_url.startswith("placeholder://"):
                         await agent.connect_to_project_db(db_url)
+                        try:
+                            await agent.connect_chart_to_project_db(db_url)
+                        except Exception as e:
+                            logger.warning(f"UseCase: Chart connect failed in workflow_resume: {e}")
             except Exception as e:
                 logger.warning(f"UseCase: Failed to auto-connect project database in workflow_resume: {e}")
 
@@ -974,6 +852,10 @@ class ChatUseCase:
                         logger.info(f"UseCase: Auto-connecting to project database (execute_sql): {db_url}")
                         connect_result = await agent.connect_to_project_db(db_url)
                         logger.info(f"UseCase: Database connection result (execute_sql): {connect_result}")
+                        try:
+                            await agent.connect_chart_to_project_db(db_url)
+                        except Exception as e:
+                            logger.warning(f"UseCase: Chart connect failed in execute_sql: {e}")
             except Exception as e:
                 logger.warning(f"UseCase: Failed to auto-connect project database in execute_sql: {e}")
 

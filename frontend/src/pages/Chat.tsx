@@ -330,6 +330,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     let cleaned = text
       .replace(/\n?\[CREATE_TABLE_SCHEMA_JSON_START\][\s\S]*?\[CREATE_TABLE_SCHEMA_JSON_END\]\n?/g, '\n')
       .replace(/\n?\[SCHEMA_CONFIRM_INTERNAL_START\][\s\S]*?\[SCHEMA_CONFIRM_INTERNAL_END\]\n?/g, '\n')
+      // Legacy Superset chart-embed markers — Superset has been removed but old
+      // assistant messages still carry them; strip so they don't render as raw text.
       .replace(/\n?\[CHART_EMBED_URL_START\][\s\S]*?\[CHART_EMBED_URL_END\]\n?/g, '\n')
       .replace(/\n?\[CHART_EMBED_META_START\][\s\S]*?\[CHART_EMBED_META_END\]\n?/g, '\n')
       // File upload markers — internal hint for the agent, not user-facing.
@@ -390,97 +392,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       };
     }
     return null;
-  };
-
-  const extractChartEmbedUrl = (text: string): string | null => {
-    const match = text.match(/\[CHART_EMBED_URL_START\]([\s\S]*?)\[CHART_EMBED_URL_END\]/);
-    if (match) {
-      return match[1].trim();
-    }
-    return null;
-  };
-
-  /** Extract chart_id from the persisted meta marker, if present. Older chat
-   *  rows don't have this marker — auto-recreate falls back to legacy behavior
-   *  in that case. */
-  const extractChartIdFromContent = (text: string): number | undefined => {
-    const match = text.match(/\[CHART_EMBED_META_START\]([\s\S]*?)\[CHART_EMBED_META_END\]/);
-    if (!match) return undefined;
-    try {
-      const parsed = JSON.parse(match[1].trim()) as { chart_id?: number };
-      return typeof parsed.chart_id === 'number' ? parsed.chart_id : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-
-  /** Parse the embedded UUID + Superset domain out of a stored embed URL.
-   *  Older history rows persist only the URL (no tool_events), but we still
-   *  want to render via the guest-token component on reload — so we rebuild
-   *  the ChartEmbed shape from the URL alone and let the component mint a
-   *  fresh token on mount. */
-  const buildChartEmbedFromStoredUrl = (
-    url: string | null,
-    chartId?: number,
-  ): import('../components/chat/MessageList').ChartEmbed | null => {
-    if (!url) return null;
-    const match = url.match(/^(https?:\/\/[^/]+)\/embedded\/([a-fA-F0-9-]+)/);
-    if (!match) return null;
-    return {
-      embedUrl: url,
-      embeddedUuid: match[2],
-      guestToken: undefined,
-      supersetDomain: match[1],
-      ttlSeconds: undefined,
-      projectId: selectedProject?.id || propProjectId || undefined,
-      chartId,
-    } as import('../components/chat/MessageList').ChartEmbed;
-  };
-
-  type ChartEmbedPayload = {
-    embedUrl: string;
-    embeddedUuid?: string;
-    guestToken?: string;
-    supersetDomain?: string;
-    ttlSeconds?: number;
-    chartId?: number;
-  };
-
-  const extractChartEmbedFromToolEvents = (events?: ToolEvent[]): ChartEmbedPayload | null => {
-    if (!events || !Array.isArray(events)) return null;
-    const ev = events.find((e) => e?.type === 'chart_embed' && e?.payload);
-    if (!ev?.payload) return null;
-    // Two payload shapes from the backend:
-    // 1) Legacy: payload is just the embed URL string
-    // 2) Project mode: payload is { embed_url, embedded_uuid, guest_token, ... }
-    if (typeof ev.payload === 'string') {
-      return { embedUrl: ev.payload };
-    }
-    const p = ev.payload as Record<string, any>;
-    if (!p.embedded_uuid && !p.embed_url) return null;
-    return {
-      embedUrl: typeof p.embed_url === 'string' ? p.embed_url : '',
-      embeddedUuid: typeof p.embedded_uuid === 'string' ? p.embedded_uuid : undefined,
-      guestToken: typeof p.guest_token === 'string' ? p.guest_token : undefined,
-      supersetDomain: typeof p.superset_domain === 'string' ? p.superset_domain : undefined,
-      ttlSeconds: typeof p.ttl_seconds === 'number' ? p.ttl_seconds : undefined,
-      chartId: typeof p.chart_id === 'number' ? p.chart_id : undefined,
-    };
-  };
-
-  /** Build the rich ``chartEmbed`` for a UiMessage from a chat response. */
-  const buildChartEmbedFromResponse = (res: any): import('../components/chat/MessageList').ChartEmbed | null => {
-    const fromEvents = extractChartEmbedFromToolEvents(res?.tool_events as ToolEvent[] | undefined);
-    if (!fromEvents) return null;
-    return {
-      embedUrl: fromEvents.embedUrl,
-      embeddedUuid: fromEvents.embeddedUuid,
-      guestToken: fromEvents.guestToken,
-      supersetDomain: fromEvents.supersetDomain,
-      ttlSeconds: fromEvents.ttlSeconds,
-      projectId: selectedProject?.id || propProjectId || undefined,
-      chartId: fromEvents.chartId,
-    };
   };
 
   const isStopVisible = isLoading || isAssistantTyping;
@@ -568,28 +479,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
               const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
               const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
-              const persistedChartEmbed =
-                msg.role === 'assistant'
-                  ? (() => {
-                      const persistedChartId = extractChartIdFromContent(rawContent);
-                      const fromEvents = extractChartEmbedFromToolEvents((msg as any).tool_events);
-                      if (fromEvents && fromEvents.embeddedUuid) {
-                        return {
-                          embedUrl: fromEvents.embedUrl,
-                          embeddedUuid: fromEvents.embeddedUuid,
-                          guestToken: undefined,
-                          supersetDomain: fromEvents.supersetDomain,
-                          ttlSeconds: fromEvents.ttlSeconds,
-                          projectId: selectedProject?.id || propProjectId || undefined,
-                          chartId: fromEvents.chartId ?? persistedChartId,
-                        } as import('../components/chat/MessageList').ChartEmbed;
-                      }
-                      return buildChartEmbedFromStoredUrl(
-                        extractChartEmbedUrl(rawContent),
-                        persistedChartId,
-                      );
-                    })()
-                  : null;
               return {
                 text: msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
                 isUser: msg.role === 'user',
@@ -600,11 +489,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
                 schemaPreview,
                 schemaLocked: msg.role === 'assistant' ? !!schemaPreview : undefined,
-                chartEmbedUrl: msg.role === 'assistant' ? extractChartEmbedUrl(rawContent) : null,
-                chartEmbed: persistedChartEmbed,
               };
             })
-            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || !!m.chartEmbedUrl || !!m.chartEmbed || (m.attachments && m.attachments.length > 0));
+            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
           setMessages(convertedMessages);
           setSessionId(sid);
           setShareInfo(res.share_info ?? null);
@@ -712,8 +599,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             exportToExcel: extractExportData(res.response),
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
             schemaLocked: false,
-            chartEmbedUrl: extractChartEmbedUrl(res.response),
-            chartEmbed: buildChartEmbedFromResponse(res),
             workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
           },
         ]);
@@ -841,8 +726,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 : undefined,
             exportToExcel: extractExportData(resText),
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
-            chartEmbedUrl: extractChartEmbedUrl(resText),
-            chartEmbed: buildChartEmbedFromResponse(res),
             workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
           };
           return updated;
@@ -975,8 +858,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 : undefined,
             exportToExcel: extractExportData(resText),
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
-            chartEmbedUrl: extractChartEmbedUrl(resText),
-            chartEmbed: buildChartEmbedFromResponse(res),
             workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
           },
         ]);
@@ -1053,8 +934,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               sqlActionId: extractSqlActionId(resText),
               exportToExcel: extractExportData(resText),
               schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
-              chartEmbedUrl: extractChartEmbedUrl(resText),
-              chartEmbed: buildChartEmbedFromResponse(res),
                 workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
             },
           ];
@@ -1236,28 +1115,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
               const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
               const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
-              const persistedChartEmbed =
-                msg.role === 'assistant'
-                  ? (() => {
-                      const persistedChartId = extractChartIdFromContent(rawContent);
-                      const fromEvents = extractChartEmbedFromToolEvents((msg as any).tool_events);
-                      if (fromEvents && fromEvents.embeddedUuid) {
-                        return {
-                          embedUrl: fromEvents.embedUrl,
-                          embeddedUuid: fromEvents.embeddedUuid,
-                          guestToken: undefined,
-                          supersetDomain: fromEvents.supersetDomain,
-                          ttlSeconds: fromEvents.ttlSeconds,
-                          projectId: selectedProject?.id || propProjectId || undefined,
-                          chartId: fromEvents.chartId ?? persistedChartId,
-                        } as import('../components/chat/MessageList').ChartEmbed;
-                      }
-                      return buildChartEmbedFromStoredUrl(
-                        extractChartEmbedUrl(rawContent),
-                        persistedChartId,
-                      );
-                    })()
-                  : null;
               return {
                 text: cleanedText,
                 isUser: msg.role === 'user',
@@ -1268,11 +1125,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
                 schemaPreview,
                 schemaLocked: msg.role === 'assistant' ? !!schemaPreview : undefined,
-                chartEmbedUrl: msg.role === 'assistant' ? extractChartEmbedUrl(rawContent) : null,
-                chartEmbed: persistedChartEmbed,
               };
             })
-            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || !!m.chartEmbedUrl || !!m.chartEmbed || (m.attachments && m.attachments.length > 0));
+            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
           setMessages(convertedMessages);
           setSessionId(sid);
           setShareInfo(res.share_info ?? null);

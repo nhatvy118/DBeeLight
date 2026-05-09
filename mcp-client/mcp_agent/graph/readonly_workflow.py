@@ -40,7 +40,7 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
 - tables: list of every table name referenced (required for ALTER/INSERT/UPDATE/DELETE/DROP/SELECT), e.g. "add column to table bicycle" -> ["bicycle"]
 - filters: WHERE conditions
 - exports: if user wants to export to Excel
-- detected_language: en or vi
+- detected_language: "en" by default. Use "vi" ONLY if the LATEST user message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "truy vấn", "kết nối", "danh sách"). Ignore conversation history. Short English-keyword queries like "list tables" → "en".
 - resolved_query: rewrite latest user message into a self-contained request by resolving context references
 - connection: object for CONNECT with keys host, port, database, username, password (use null if unknown)
 - IMPORTANT: if operation is CONNECT, ALWAYS include `connection` with all five keys.
@@ -186,7 +186,7 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
     logger.info(f"[ReadOnly] Schema discovery response: {log_block[:500]}...")
 
     if missing:
-        miss_fmt = ", ".join(f"`{m}`" for m in missing)
+        miss_fmt = ", ".join(f"{m}" for m in missing)
         msg = (
             f"**Unknown table(s):** {miss_fmt}\n\n"
             "Those tables are not in the connected database. "

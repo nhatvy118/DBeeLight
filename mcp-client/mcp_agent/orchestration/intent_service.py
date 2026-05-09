@@ -8,6 +8,7 @@ Falls back to general-purpose agent if no workflow matches.
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from openai import OpenAI
@@ -21,7 +22,17 @@ from mcp_agent.orchestration.workflow_registry import (
 
 logger = logging.getLogger(__name__)
 
-_VALID_FALLBACK_AGENTS = frozenset({"database", "excel", "superset"})
+_VALID_FALLBACK_AGENTS = frozenset({"database", "excel", "chart"})
+
+_VI_MARKER_RE = re.compile(r"[ăâđêôơưĂÂĐÊÔƠƯ]|[Ạ-ỹ]")
+
+
+def detect_user_lang(text: str) -> str:
+    """Return 'vi' if the text contains Vietnamese-specific diacritics, else 'en'.
+
+    Conservative: ASCII-only English (e.g. "list tables") returns 'en'.
+    """
+    return "vi" if _VI_MARKER_RE.search(text or "") else "en"
 
 # Six orchestrator branches at the same level: three DB LangGraphs + three agents.
 OrchestratorRoute = Literal[
@@ -30,7 +41,7 @@ OrchestratorRoute = Literal[
     "db_mutation",
     "database",
     "excel",
-    "superset",
+    "chart",
 ]
 
 ORCHESTRATOR_ROUTES: List[Dict[str, str]] = [
@@ -39,7 +50,7 @@ ORCHESTRATOR_ROUTES: List[Dict[str, str]] = [
     {"id": "db_mutation", "kind": "workflow", "label": "Database mutation (INSERT/UPDATE/DELETE/ALTER/DROP/…)"},
     {"id": "database", "kind": "agent", "label": "Database agent (general tool loop)"},
     {"id": "excel", "kind": "agent", "label": "Excel agent"},
-    {"id": "superset", "kind": "agent", "label": "Superset agent"},
+    {"id": "chart", "kind": "agent", "label": "Chart agent (Vega-Lite visualization from SQL)"},
 ]
 
 _VALID_ORCHESTRATOR_ROUTES = frozenset(r["id"] for r in ORCHESTRATOR_ROUTES)
@@ -124,11 +135,10 @@ ROUTE_ACCESS_LEVEL: Dict[str, AccessLevel] = {
     # ``read_data`` so the request is not blocked outright; SQL-level gates
     # in execute_sql() still reject mutation SQL the agent might emit.
     "database":        "read_data",
-    # Excel and Superset produce derived artifacts (files, charts) that don't
-    # mutate the project database. Even "create chart" is metadata in
-    # Superset, not a write to project data — so they sit at read_data.
+    # Excel and chart agents produce derived artifacts (files, Vega-Lite specs)
+    # that don't mutate the project database — they only read. Sit at read_data.
     "excel":           "read_data",
-    "superset":        "read_data",
+    "chart":           "read_data",
 }
 
 _INTENT_CLASSIFICATION_PROMPT = """You are an orchestration router. Pick exactly ONE branch for the user request.
@@ -145,7 +155,7 @@ Branches:
 3) "db_mutation" — INSERT, UPDATE, DELETE, ALTER, DROP, data export/mutation workflows, etc.
 4) "database" — ONLY when the request is about databases but does **not** fit 1–3 (vague help, troubleshooting, conversational DB Q&A with no clear readonly/create/mutation shape).
 5) "excel" — Spreadsheets, CSV/XLSX, rows/columns, analyze/transform Excel files.
-6) "superset" — Charts, dashboards, BI, Superset visualization.
+6) "chart" — Visualizing data from the project DB as interactive Vega-Lite charts (line/bar/pie/scatter/heatmap/histogram/area/boxplot). Pick this when the user asks for a chart, plot, graph, biểu đồ, đồ thị on data that lives in the connected database.
 
 Reference (registry workflows for wording only):
 {workflow_descriptions}
@@ -153,7 +163,7 @@ Reference (registry workflows for wording only):
 Return strict JSON with:
 - "needs_clarification": REQUIRED boolean — true ONLY if the user request is ambiguous and you cannot safely choose a route yet.
 - "clarification_question": REQUIRED string or null — if needs_clarification is true, ask ONE concise follow-up question to disambiguate; otherwise null.
-- "route": REQUIRED when needs_clarification=false — exactly one of: "db_readonly" | "db_create_table" | "db_mutation" | "database" | "excel" | "superset"
+- "route": REQUIRED when needs_clarification=false — exactly one of: "db_readonly" | "db_create_table" | "db_mutation" | "database" | "excel" | "chart"
 - "nl_query": normalized natural-language query
 - "chart_type": chart hint if visualization requested, else null
 - "requires_export": true if user asks export/download file, else false
@@ -171,7 +181,7 @@ class IntentResult(BaseModel):
     clarification_question: Optional[str] = None
     route: Optional[OrchestratorRoute] = None
     workflow_id: Optional[str] = None
-    fallback_agent: Optional[Literal["database", "excel", "superset"]] = None
+    fallback_agent: Optional[Literal["database", "excel", "chart"]] = None
     nl_query: str
     chart_type: Optional[str] = None
     requires_export: bool = False
@@ -248,7 +258,7 @@ class IntentService:
 
         Args:
             prompt: User's input message
-            available_agents: List of agent IDs available (e.g. ["database", "excel", "superset"])
+            available_agents: List of agent IDs available (e.g. ["database", "excel", "chart"])
             conversation_context: Optional recent user/assistant turns for multi-turn routing
             conversation_summary: Optional running summary for long conversations
 
@@ -304,7 +314,11 @@ class IntentService:
             else None
         )
         if needs_clarification and not clarification_question:
-            clarification_question = "Bạn có thể nói rõ bạn muốn làm gì tiếp theo không?"
+            clarification_question = (
+                "Bạn có thể nói rõ bạn muốn làm gì tiếp theo không?"
+                if detect_user_lang(prompt) == "vi"
+                else "Could you clarify what you'd like to do next?"
+            )
 
         route: Optional[OrchestratorRoute]
         workflow_id: Optional[str]
@@ -393,12 +407,12 @@ def _resolve_orchestrator_route(result: dict, nl_query: str) -> OrchestratorRout
         return "db_mutation"
     if wf == "excel_analyze":
         return "excel"
-    if wf == "superset_chart":
-        return "superset"
+    if wf == "chart_render":
+        return "chart"
     if wf and str(wf).startswith("excel"):
         return "excel"
-    if wf and str(wf).startswith("superset"):
-        return "superset"
+    if wf and str(wf).startswith("chart"):
+        return "chart"
     valid_ids = get_workflow_ids()
     if wf and wf in valid_ids:
         mapped = get_workflow_by_id(str(wf))
@@ -406,29 +420,29 @@ def _resolve_orchestrator_route(result: dict, nl_query: str) -> OrchestratorRout
             at = mapped.get("agent_type")
             if at == "excel":
                 return "excel"
-            if at == "superset":
-                return "superset"
+            if at == "chart":
+                return "chart"
             if at == "database":
                 return "database"
 
     fb = _normalize_fallback_agent(result.get("fallback_agent"))
     if fb == "excel":
         return "excel"
-    if fb == "superset":
-        return "superset"
+    if fb == "chart":
+        return "chart"
     if fb == "database":
         return "database"
 
     inferred = _infer_fallback_agent({**result, "nl_query": nl_query}, nl_query)
     if inferred == "excel":
         return "excel"
-    if inferred == "superset":
-        return "superset"
+    if inferred == "chart":
+        return "chart"
     return "database"
 
 
 def _adjust_route_for_available(route: OrchestratorRoute, available: set[str]) -> OrchestratorRoute:
-    """If excel/superset agent is missing, fall back to general database when possible."""
+    """If excel/chart agent is missing, fall back to general database when possible."""
     if not available:
         return route
     if route in ("db_readonly", "db_create_table", "db_mutation", "database"):
@@ -441,7 +455,7 @@ def _adjust_route_for_available(route: OrchestratorRoute, available: set[str]) -
         return route
     if route == "excel" and "excel" not in available:
         return "database" if "database" in available else route
-    if route == "superset" and "superset" not in available:
+    if route == "chart" and "chart" not in available:
         return "database" if "database" in available else route
     return route
 
@@ -458,13 +472,13 @@ def _route_to_workflow_fields(route: OrchestratorRoute) -> tuple[Optional[str], 
         return None, "database", "database"
     if route == "excel":
         return "excel_analyze", None, "excel"
-    if route == "superset":
-        return "superset_chart", None, "superset"
+    if route == "chart":
+        return "chart_render", None, "chart"
     return None, "database", "database"
 
 
 def _normalize_fallback_agent(value: Any) -> Optional[str]:
-    """Map model output to one of database | excel | superset."""
+    """Map model output to one of database | excel | chart."""
     if value is None:
         return None
     s = str(value).lower().strip()
@@ -481,12 +495,13 @@ def _normalize_fallback_agent(value: Any) -> Optional[str]:
         "xlsx": "excel",
         "xls": "excel",
         "csv": "excel",
-        "chart": "superset",
-        "charts": "superset",
-        "dashboard": "superset",
-        "bi": "superset",
-        "viz": "superset",
-        "visualization": "superset",
+        "charts": "chart",
+        "plot": "chart",
+        "graph": "chart",
+        "viz": "chart",
+        "visualization": "chart",
+        "biểu đồ": "chart",
+        "đồ thị": "chart",
     }
     return aliases.get(s)
 
@@ -494,7 +509,7 @@ def _normalize_fallback_agent(value: Any) -> Optional[str]:
 def _infer_fallback_agent(result: dict, nl_query: str) -> str:
     """Heuristic agent pick when workflow_id is null and model omitted fallback_agent."""
     if result.get("chart_type"):
-        return "superset"
+        return "chart"
     if bool(result.get("requires_export")):
         return "excel"
     ff = str(result.get("file_format") or "").lower().strip()
@@ -505,14 +520,14 @@ def _infer_fallback_agent(result: dict, nl_query: str) -> str:
         w in q
         for w in (
             "chart",
-            "dashboard",
-            "superset",
+            "plot",
+            "graph",
             "visualization",
             "biểu đồ",
             "đồ thị",
         )
     ):
-        return "superset"
+        return "chart"
     if any(
         w in q
         for w in (

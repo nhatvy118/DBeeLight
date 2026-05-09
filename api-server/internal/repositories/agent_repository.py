@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from mcp_agent import DatabaseAgent, ExcelAgent, SessionManager
-from mcp_agent.agents import SupersetAgent
+from mcp_agent.agents import ChartAgent
 from mcp_agent.orchestration import Orchestrator
 
 logger = logging.getLogger("internal")
@@ -33,7 +33,7 @@ class AgentRepository:
             "database/database.py",
             "excel-server/excel_server.py",
             "gsheets-server/gsheets_server.py",
-            "superset/superset_tools.py",
+            "chart-server/chart_server.py",
         ]
         # Which servers each agent connects to (agent_id -> list of server path suffixes).
         # Excel agent connects to BOTH the local-xlsx server and the
@@ -45,7 +45,7 @@ class AgentRepository:
                 "excel-server/excel_server.py",
                 "gsheets-server/gsheets_server.py",
             ],
-            "superset": ["superset/superset_tools.py"],
+            "chart": ["chart-server/chart_server.py"],
         }
         # Server paths whose subprocess needs the *current app user's* google_sub
         # injected via env (so they can act on that user's Google data).
@@ -95,8 +95,8 @@ class AgentRepository:
             )
             db_agent = DatabaseAgent(model=self._model, session_manager=session_manager, agent_id="database")
             excel_agent = ExcelAgent(model=self._model, session_manager=session_manager, agent_id="excel")
-            superset_agent = SupersetAgent(model=self._model, session_manager=session_manager, agent_id="superset")
-            agents = [db_agent, excel_agent, superset_agent]
+            chart_agent = ChartAgent(model=self._model, session_manager=session_manager, agent_id="chart")
+            agents = [db_agent, excel_agent, chart_agent]
 
             base_path = _project_root
             connected_count = 0

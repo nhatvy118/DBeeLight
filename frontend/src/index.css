@@ -27,15 +27,3 @@ html.dark body {
   transition-timing-function: ease;
 }
 
-.superset-embed-mount {
-  position: relative;
-  overflow: hidden;
-}
-
-.superset-embed-mount iframe {
-  width: 100% !important;
-  height: 100% !important;
-  border: 0 !important;
-  display: block;
-}
-
