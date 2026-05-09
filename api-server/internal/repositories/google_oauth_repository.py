@@ -9,6 +9,23 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Scopes requested at login. ``openid`` + ``email`` + ``profile`` are required
+# for app identity; ``spreadsheets.readonly`` lets the gsheets MCP server read
+# any sheet the user provides a URL/ID for.
+#
+# We deliberately AVOID ``drive.readonly`` — that's a *restricted* scope that
+# triggers Google's CASA security audit before publishing. With only
+# ``spreadsheets.readonly`` (sensitive, not restricted) we still need users
+# to be in the OAuth test users list during development, but the verification
+# path to "Production" is much lighter (no security audit).
+#
+# Trade-off: cannot list/search the user's Sheets via Drive — the user has
+# to paste a Google Sheets URL or spreadsheet_id explicitly.
+DEFAULT_SCOPES = (
+    "openid email profile "
+    "https://www.googleapis.com/auth/spreadsheets.readonly"
+)
+
 
 class GoogleOAuthRepository:
     """
@@ -33,13 +50,38 @@ class GoogleOAuthRepository:
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "response_type": "code",
-            "scope": "openid email profile",
+            "scope": DEFAULT_SCOPES,
             "include_granted_scopes": "true",
             "access_type": "offline",
             "prompt": "consent",
             "state": state,
         }
         return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
+
+    def refresh_access_token(
+        self, client_id: str, client_secret: str, refresh_token: str
+    ) -> dict[str, Any]:
+        """Exchange a refresh_token for a fresh access_token.
+
+        Response body shape (from Google): ``{access_token, expires_in,
+        scope, token_type, id_token?}``. Note: ``refresh_token`` is usually
+        NOT included — keep the existing one.
+        """
+        logger.info("Repository: Refreshing Google access_token")
+        data = {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }
+        encoded = urllib.parse.urlencode(data).encode("utf-8")
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token", data=encoded, method="POST"
+        )
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
+            body = resp.read().decode("utf-8")
+        return json.loads(body)
 
     def exchange_code_for_token(self, client_id: str, client_secret: str, redirect_uri: str, code: str) -> dict[str, Any]:
         logger.info(f"Repository: Exchanging OAuth code for token, redirect_uri={redirect_uri}")

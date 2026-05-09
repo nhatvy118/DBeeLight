@@ -29,15 +29,6 @@ class StageType(str, Enum):
     SQL_PREVIEW = "SQL_PREVIEW"
     SQL_EXECUTION = "SQL_EXECUTION"
 
-    # Excel agent stages
-    FILE_LOAD = "FILE_LOAD"
-    DATA_ANALYZE = "DATA_ANALYZE"
-    DATA_TRANSFORM = "DATA_TRANSFORM"
-    EXPORT = "EXPORT"
-    CHART_GENERATE = "CHART_GENERATE"
-    IMPORT_PREPARE = "IMPORT_PREPARE"
-    IMPORT_EXECUTE = "IMPORT_EXECUTE"
-
     # Superset agent stages
     DB_CONNECTION = "DB_CONNECTION"
     SCHEMA_PLAN = "SCHEMA_PLAN"
@@ -106,31 +97,11 @@ SUPERSET_WORKFLOW = AgentWorkflowConfig(
     wait_stages=[],
 )
 
-EXCEL_WORKFLOW = AgentWorkflowConfig(
-    agent_id="excel",
-    stages=[
-        StageType.INTENT_PARSE,
-        StageType.FILE_LOAD,
-        StageType.DATA_ANALYZE,
-        StageType.DATA_TRANSFORM,
-        StageType.CHART_GENERATE,
-        StageType.EXPORT,
-    ],
-    transitions={
-        StageType.INTENT_PARSE.value: StageType.FILE_LOAD.value,
-        StageType.FILE_LOAD.value: StageType.DATA_ANALYZE.value,
-        StageType.DATA_ANALYZE.value: StageType.DATA_TRANSFORM.value,
-        StageType.DATA_TRANSFORM.value: StageType.CHART_GENERATE.value,
-        StageType.CHART_GENERATE.value: StageType.EXPORT.value,
-        StageType.EXPORT.value: StageType.DONE.value,
-    },
-    wait_stages=[],
-)
-
 # Registry of agent workflows
+# Note: ``excel`` has no workflow — the agent's tool loop is invoked directly
+# (see AgentWorkflow._run_non_database).
 AGENT_WORKFLOWS: Dict[str, AgentWorkflowConfig] = {
     "database": DATABASE_WORKFLOW,
-    "excel": EXCEL_WORKFLOW,
     "superset": SUPERSET_WORKFLOW,
 }
 

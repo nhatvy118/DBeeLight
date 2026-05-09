@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { generateShareLink } from '../../services/api';
+import { useTheme } from '../../context/ThemeContext';
+import ShareSessionModal from '../modals/ShareSessionModal';
 import settingsIcon from '../../assets/icons/Settings.svg';
 import logoutIcon from '../../assets/icons/Logout.svg';
 import userIcon from '../../assets/icons/User.svg';
@@ -16,11 +17,11 @@ type Project = {
 
 export default function Header() {
   const { user, isLoading, setUser } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
-  const [shareUrl, setShareUrl] = useState<string>('');
-  const [isGeneratingShare, setIsGeneratingShare] = useState(false);
+  const [shareSessionId, setShareSessionId] = useState<string | null>(null);
   const avatarMenuRef = useRef<HTMLDivElement>(null);
 
   // Close avatar menu when clicking outside
@@ -47,7 +48,12 @@ export default function Header() {
         // Check if it's a project ID (UUID format) or session ID (short format)
         if (projectId.includes('-') && projectId.length > 20) {
           // Likely a project ID (UUID)
-          const projects = JSON.parse(localStorage.getItem('projects') || '[]');
+          let projects: Project[] = [];
+          try {
+            projects = JSON.parse(localStorage.getItem('projects') || '[]') as Project[];
+          } catch {
+            projects = [];
+          }
           const project = projects.find((p: Project) => p.id === projectId);
           if (project) {
             setSelectedProject(project);
@@ -72,64 +78,78 @@ export default function Header() {
     };
   }, []);
 
-  // Handle share button click
-  const handleShareClick = async () => {
+  // Open share modal — requires being inside a specific session.
+  // Walk the URL to figure out which session is currently open. Used by
+  // the Share + Export buttons (both need a session_id to act on).
+  const currentSessionFromUrl = (): string | null => {
+    const parts = window.location.pathname.split('/').filter(Boolean);
+    if (parts.length >= 2 && parts[0] === 'chat') {
+      if (parts.length === 3) return parts[2];
+      if (parts.length === 2) {
+        const id = parts[1];
+        if (!(id.includes('-') && id.length > 20)) return id;
+      }
+    }
+    return null;
+  };
+
+  const handleShareClick = () => {
+    const sessionId = currentSessionFromUrl();
+    if (!sessionId) {
+      window.alert('Open a chat session before sharing.');
+      return;
+    }
+    setShareSessionId(sessionId);
+    setShareModalOpen(true);
+  };
+
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setExportMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [exportMenuOpen]);
+
+  const handleExportMarkdown = async () => {
+    const sessionId = currentSessionFromUrl();
+    if (!sessionId) {
+      window.alert('Open a chat session before exporting.');
+      return;
+    }
+    setExportMenuOpen(false);
     try {
-      setIsGeneratingShare(true);
-      const path = window.location.pathname;
-      const parts = path.split('/').filter(Boolean);
-      
-      let sessionId: string | null = null;
-      let projectId: string | null = null;
-
-      // Parse URL to get session_id and project_id
-      if (parts.length >= 2 && parts[0] === 'chat') {
-        if (parts.length === 3) {
-          // /chat/:projectId/:sessionId
-          projectId = parts[1];
-          sessionId = parts[2];
-        } else if (parts.length === 2) {
-          const id = parts[1];
-          // Check if it's a project ID (UUID) or session ID (short)
-          if (id.includes('-') && id.length > 20) {
-            projectId = id;
-          } else {
-            sessionId = id;
-          }
-        }
-      }
-
-      // Check if both are null - show notice
-      if (!sessionId && !projectId) {
-        window.alert('Please select a chat or project to share');
-        return;
-      }
-
-      const result = await generateShareLink(sessionId, projectId);
-      if (result.success) {
-        setShareUrl(result.share_url);
-        setShareModalOpen(true);
-      } else {
-        window.alert(`Failed to generate share link: ${result.error}`);
-      }
-    } catch (err) {
-      console.error('Failed to generate share link:', err);
-      window.alert(`Failed to generate share link: ${err instanceof Error ? err.message : 'Unknown error'}`);
-    } finally {
-      setIsGeneratingShare(false);
+      const { downloadSessionMarkdown } = await import('../../services/api');
+      await downloadSessionMarkdown(sessionId);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : 'Failed to export');
     }
   };
 
-  // Copy share URL to clipboard
-  const handleCopyShareUrl = async () => {
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      window.alert('Share URL copied to clipboard!');
-      setShareModalOpen(false);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-      window.alert('Failed to copy URL. Please copy manually.');
+  const handleExportPdf = () => {
+    const sessionId = currentSessionFromUrl();
+    if (!sessionId) {
+      window.alert('Open a chat session before exporting.');
+      return;
     }
+    setExportMenuOpen(false);
+    // Open the print-preview route in a new tab — auto-triggers the
+    // browser print dialog where the user picks "Save as PDF".
+    const projectIdFromUrl = (() => {
+      const parts = window.location.pathname.split('/').filter(Boolean);
+      if (parts.length === 3 && parts[0] === 'chat') return parts[1];
+      return null;
+    })();
+    const target = projectIdFromUrl
+      ? `/chat/${projectIdFromUrl}/${sessionId}/print`
+      : `/chat/${sessionId}/print`;
+    window.open(target, '_blank', 'noopener');
   };
 
   const handleLogin = () => {
@@ -147,9 +167,13 @@ export default function Header() {
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
     } finally {
       setUser(null);
-      localStorage.removeItem('projects');
-      localStorage.removeItem('lastSessionId');
-      localStorage.removeItem('lastSessionIdForProject');
+      try {
+        localStorage.removeItem('projects');
+        localStorage.removeItem('lastSessionId');
+        localStorage.removeItem('lastSessionIdForProject');
+      } catch {
+        // ignore if storage is blocked
+      }
       window.history.pushState({}, '', '/');
       window.dispatchEvent(new PopStateEvent('popstate'));
     }
@@ -194,12 +218,48 @@ export default function Header() {
             <button
               type="button"
               onClick={handleShareClick}
-              disabled={isGeneratingShare}
-              className="hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Share"
+              className="hover:opacity-80 transition-opacity"
+              title="Share this chat"
             >
               <img src={shareIcon} alt="Share" className="h-10" />
             </button>
+
+            {/* Export Button + dropdown */}
+            <div className="relative" ref={exportMenuRef}>
+              <button
+                type="button"
+                onClick={() => setExportMenuOpen((o) => !o)}
+                className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                title="Export this chat"
+                aria-haspopup="true"
+                aria-expanded={exportMenuOpen}
+              >
+                Export
+              </button>
+              {exportMenuOpen && (
+                <div
+                  className="absolute right-0 top-full mt-2 w-56 rounded-xl border border-gray-200 bg-white shadow-lg dark:bg-slate-900 dark:border-slate-700 py-1 z-50"
+                  role="menu"
+                >
+                  <button
+                    type="button"
+                    onClick={handleExportMarkdown}
+                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    role="menuitem"
+                  >
+                    Download Markdown (.md)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportPdf}
+                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    role="menuitem"
+                  >
+                    Save as PDF (browser print)
+                  </button>
+                </div>
+              )}
+            </div>
 
             {/* Avatar + dropdown menu */}
             <div className="relative" ref={avatarMenuRef}>
@@ -228,7 +288,7 @@ export default function Header() {
 
               {avatarMenuOpen && (
                 <div
-                  className="absolute right-0 top-full mt-2 w-72 rounded-xl border border-gray-200 bg-white shadow-lg py-2 z-50"
+                  className="absolute right-0 top-full mt-2 w-72 rounded-xl border border-gray-200 bg-white shadow-lg dark:bg-slate-900 dark:border-slate-700 py-2 z-50"
                   role="menu"
                 >
                   {/* User info */}
@@ -259,12 +319,31 @@ export default function Header() {
                   <a
                     href="/account"
                     onClick={() => setAvatarMenuOpen(false)}
-                    className="flex items-center gap-3 px-4 py-2.5 text-gray-700 hover:bg-gray-50 transition-colors"
+                    className="flex items-center gap-3 px-4 py-2.5 text-gray-700 hover:bg-gray-50 transition-colors dark:text-gray-200 dark:hover:bg-slate-800"
                     role="menuitem"
                   >
-                    <img src={settingsIcon} alt="" className="w-5 h-5 text-gray-500" />
+                    <img src={settingsIcon} alt="" className="w-5 h-5 text-gray-500 dark:invert dark:opacity-80" />
                     <span>Setting</span>
                   </a>
+                  {/* Theme toggle */}
+                  <button
+                    type="button"
+                    onClick={toggleTheme}
+                    className="flex w-full items-center gap-3 px-4 py-2.5 text-gray-700 hover:bg-gray-50 transition-colors text-left dark:text-gray-200 dark:hover:bg-slate-800"
+                    role="menuitem"
+                  >
+                    {theme === 'dark' ? (
+                      <svg className="w-5 h-5 text-gray-500 dark:text-gray-300" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="4" />
+                        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                      </svg>
+                    )}
+                    <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
+                  </button>
                   {/* Log out */}
                   <button
                     type="button"
@@ -272,10 +351,10 @@ export default function Header() {
                       setAvatarMenuOpen(false);
                       void handleLogout();
                     }}
-                    className="flex w-full items-center gap-3 px-4 py-2.5 text-gray-700 hover:bg-gray-50 transition-colors text-left"
+                    className="flex w-full items-center gap-3 px-4 py-2.5 text-gray-700 hover:bg-gray-50 transition-colors text-left dark:text-gray-200 dark:hover:bg-slate-800"
                     role="menuitem"
                   >
-                    <img src={logoutIcon} alt="" className="w-5 h-5 text-gray-500" />
+                    <img src={logoutIcon} alt="" className="w-5 h-5 text-gray-500 dark:invert dark:opacity-80" />
                     <span>Log out</span>
                   </button>
                 </div>
@@ -318,39 +397,12 @@ export default function Header() {
       </div>
 
       {/* Share Modal */}
-      {shareModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Share Link</h3>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Copy this link to share:
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={shareUrl}
-                  readOnly
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm bg-gray-50"
-                />
-                <button
-                  type="button"
-                  onClick={handleCopyShareUrl}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm font-medium"
-                >
-                  Copy
-                </button>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShareModalOpen(false)}
-              className="w-full px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm font-medium"
-            >
-              Close
-            </button>
-          </div>
-        </div>
+      {shareModalOpen && shareSessionId && (
+        <ShareSessionModal
+          sessionId={shareSessionId}
+          open={shareModalOpen}
+          onClose={() => setShareModalOpen(false)}
+        />
       )}
     </div>
   );

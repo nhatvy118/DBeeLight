@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import AcceptShare from '../pages/AcceptShare';
 import Account from '../pages/Account';
 import Chat from '../pages/Chat';
 import Home from '../pages/Home';
 import Login from '../pages/Login';
+import PrintChat from '../pages/PrintChat';
 import SignUp from '../pages/SignUp';
 import NotFound from '../pages/NotFound';
 
@@ -82,6 +84,19 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
   if (path === '/') return <Home />;
   if (path === '/login') return <Login />;
   if (path === '/signup') return <SignUp />;
+  if (path.startsWith('/share/accept/')) {
+    const token = path.slice('/share/accept/'.length);
+    return <AcceptShare token={decodeURIComponent(token)} />;
+  }
+  // Print-friendly view of a chat session: ``/chat/.../print``. Used as the
+  // PDF export path — the page auto-triggers ``window.print()`` and the user
+  // saves to PDF via the browser dialog.
+  if (path.startsWith('/chat/') && path.endsWith('/print')) {
+    const inner = path.slice('/chat/'.length, -'/print'.length);
+    const parts = inner.split('/').filter(Boolean);
+    const sessionId = parts[parts.length - 1];
+    if (sessionId) return <PrintChat sessionId={sessionId} />;
+  }
   if (path.startsWith('/chat')) {
     const { projectId, sessionId } = parseChatRoute(path);
     return <Chat projectId={projectId} sessionId={sessionId} onSessionIdChange={onSessionIdChange} />;

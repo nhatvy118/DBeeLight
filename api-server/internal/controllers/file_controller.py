@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+import logging
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+
+from internal.dependencies import get_file_usecase, get_user_key
+from internal.usecases.file_usecase import FileUseCase
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+@router.post("/api/files/upload")
+async def upload_session_file(
+    file: UploadFile = File(...),
+    session_id: str = Form(...),
+    project_id: str | None = Form(None),
+    user_key: str = Depends(get_user_key),
+    usecase: FileUseCase = Depends(get_file_usecase),
+):
+    if user_key == "anonymous":
+        raise HTTPException(status_code=401, detail="Login required to upload files")
+    meta = await usecase.upload_file(
+        session_id=session_id.strip(),
+        user_key=user_key,
+        upload=file,
+        project_id_override=(project_id.strip() if project_id else None),
+    )
+    return {"success": True, "file": meta}
+
+
+@router.get("/api/files")
+async def list_session_files(
+    session_id: str,
+    user_key: str = Depends(get_user_key),
+    usecase: FileUseCase = Depends(get_file_usecase),
+):
+    if user_key == "anonymous":
+        raise HTTPException(status_code=401, detail="Login required")
+    files = await usecase.get_session_files(session_id.strip(), user_key)
+    return {"success": True, "files": files}
+
+
+@router.delete("/api/files/{file_id}")
+async def delete_session_file(
+    file_id: str,
+    user_key: str = Depends(get_user_key),
+    usecase: FileUseCase = Depends(get_file_usecase),
+):
+    if user_key == "anonymous":
+        raise HTTPException(status_code=401, detail="Login required")
+    try:
+        fid = UUID(file_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid file id") from e
+    await usecase.delete_file(fid, user_key)
+    return {"success": True}
+
+
+@router.post("/api/files/{file_id}/summarize")
+async def summarize_session_file(
+    file_id: str,
+    user_key: str = Depends(get_user_key),
+    usecase: FileUseCase = Depends(get_file_usecase),
+):
+    if user_key == "anonymous":
+        raise HTTPException(status_code=401, detail="Login required")
+    try:
+        fid = UUID(file_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid file id") from e
+    summary = await usecase.summarize_file(fid, user_key)
+    return {"success": True, "summary": summary}

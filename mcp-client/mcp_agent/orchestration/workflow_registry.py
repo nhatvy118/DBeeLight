@@ -73,20 +73,22 @@ DATABASE_WORKFLOWS = [
 
 EXCEL_WORKFLOWS = [
     {
-        "id": "excel_analyze",
-        "name": "Excel Data Analysis",
+        "id": "excel_manipulate",
+        "name": "Excel Workbook Manipulation",
         "agent_type": "excel",
         "triggers": [
-            "excel", "spreadsheet", "xlsx", "csv", "xls",
-            "worksheet", "cell", "column", "row",
-            "phân tích excel", "file excel", "bảng tính",
+            "excel", "spreadsheet", "xlsx", "xls",
+            "worksheet", "sheet", "cell", "column", "row",
+            "formula", "pivot", "chart in excel", "format cells",
+            "file excel", "bảng tính", "công thức", "định dạng ô",
         ],
-        "description": "Load, analyze, transform, and chart Excel/spreadsheet files. Import/export between Excel and database.",
+        "description": "Manipulate Excel workbooks: read/write cells and ranges, format ranges, apply formulas, create charts and pivot tables, manage worksheets.",
         "example_queries": [
-            "Analyze the sales data in this Excel file",
-            "Create a pivot table from the spreadsheet",
-            "Import data from Excel to database",
-            "Export query results to Excel",
+            "Read sheet 'Sales' from this workbook",
+            "Write totals to column D using a SUM formula",
+            "Create a pivot table grouping by Category",
+            "Format A1:E1 with a bold header",
+            "Insert a bar chart for the data in A1:C20",
         ],
     },
 ]

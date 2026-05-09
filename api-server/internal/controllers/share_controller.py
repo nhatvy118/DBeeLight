@@ -1,79 +1,172 @@
 from __future__ import annotations
 
-import secrets
-from typing import Optional
+import logging
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
 
-from internal.controllers.schemas import GenerateShareLinkRequest
-from internal.dependencies import get_user_key
+from internal.controllers.schemas import CreateShareRequest
+from internal.dependencies import get_chat_share_usecase, get_user_key
+from internal.usecases.chat_share_usecase import ChatShareUseCase
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# In-memory store for share tokens (in production, use database)
-# Format: {share_token: {"session_id": str, "project_id": Optional[str], "user_key": str}}
-_share_tokens: dict[str, dict[str, str | None]] = {}
+
+def _user_email(request: Request) -> str | None:
+    user = request.session.get("user") if hasattr(request, "session") else None
+    if isinstance(user, dict):
+        email = user.get("email")
+        if isinstance(email, str) and email.strip():
+            return email.strip().lower()
+    return None
 
 
-@router.post("/api/share/generate")
-async def generate_share_link(
-    req: GenerateShareLinkRequest,
+def _user_name(request: Request) -> str | None:
+    user = request.session.get("user") if hasattr(request, "session") else None
+    if isinstance(user, dict):
+        name = user.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return None
+
+
+def _frontend_url(request: Request) -> str:
+    env = (os.getenv("FRONTEND_URL") or "").strip().rstrip("/")
+    if env:
+        return env
+    origin = request.headers.get("origin")
+    if origin:
+        return origin.rstrip("/")
+    return "http://localhost:5173"
+
+
+@router.post("/api/sessions/{session_id}/share")
+async def create_share(
+    session_id: str,
+    body: CreateShareRequest,
     request: Request,
     user_key: str = Depends(get_user_key),
+    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
 ):
-    """
-    Generate a shareable link for a session or project.
-    Returns a share token that can be used to access the shared resource.
-    """
-    session_id = req.session_id
-    project_id = req.project_id
-    
-    # Require at least one of session_id or project_id
-    if not session_id and not project_id:
-        raise HTTPException(status_code=400, detail="Please select a chat or project to share")
+    """Owner shares a chat session with one or more recipients."""
+    # Allow body.session_id to be empty; URL path is authoritative.
+    sid = (session_id or body.session_id or "").strip()
+    result = await usecase.create_share(
+        owner_google_sub=user_key,
+        owner_name=_user_name(request),
+        session_id=sid,
+        recipients=[r.model_dump() for r in body.recipients],
+        owner_email=_user_email(request),
+        frontend_url=_frontend_url(request),
+        notify_via_email=body.notify_via_email,
+    )
+    return {"success": True, **result}
 
-    # Generate unique share token
-    share_token = secrets.token_urlsafe(16)
 
-    # Store share token info
-    _share_tokens[share_token] = {
-        "session_id": session_id,
-        "project_id": project_id,
-        "user_key": user_key,
+@router.get("/api/shares/sent")
+async def list_sent(
+    user_key: str = Depends(get_user_key),
+    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+):
+    shares = await usecase.list_sent(owner_google_sub=user_key)
+    return {"success": True, "shares": shares}
+
+
+@router.get("/api/shares/received")
+async def list_received(
+    request: Request,
+    user_key: str = Depends(get_user_key),
+    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+):
+    shares = await usecase.list_received(
+        recipient_email=_user_email(request),
+        recipient_google_sub=user_key,
+    )
+    return {"success": True, "shares": shares}
+
+
+@router.get("/api/shares/by-token/{accept_token}")
+async def preview_share(
+    accept_token: str,
+    request: Request,
+    user_key: str = Depends(get_user_key),
+    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+):
+    """Lightweight preview for the accept page (does not fork)."""
+    rec = await usecase._repo.get_recipient_by_token(accept_token)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Share link not found")
+    if rec["revoked_at"] is not None or rec["share_revoked_at"] is not None:
+        raise HTTPException(status_code=410, detail="This share has been revoked")
+    user_email = _user_email(request)
+    email_match = (
+        bool(user_email)
+        and (rec["recipient_email"] or "").lower() == user_email.lower()
+    )
+    return {
+        "success": True,
+        "share": {
+            "recipient_email": rec["recipient_email"],
+            "permission": rec["permission"],
+            "session_name": rec["session_name"],
+            "accepted_at": rec["accepted_at"],
+            "forked_session_id": rec["forked_session_id"],
+            "project_id": str(rec["project_id"]),
+            "logged_in": user_key != "anonymous",
+            "email_match": email_match,
+        },
     }
 
-    # Generate share URL
-    frontend_url = request.headers.get("origin") or "http://localhost:5173"
-    if session_id and project_id:
-        share_url = f"{frontend_url}/chat/{project_id}/{session_id}?share={share_token}"
-    elif project_id:
-        share_url = f"{frontend_url}/chat/{project_id}?share={share_token}"
-    elif session_id:
-        share_url = f"{frontend_url}/chat/{session_id}?share={share_token}"
-    else:
-        share_url = f"{frontend_url}/chat?share={share_token}"
 
-    return JSONResponse(
-        content={
-            "success": True,
-            "share_token": share_token,
-            "share_url": share_url,
-        }
+@router.post("/api/shares/{accept_token}/accept")
+async def accept_share(
+    accept_token: str,
+    request: Request,
+    user_key: str = Depends(get_user_key),
+    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+):
+    """Recipient accepts a share — snapshot-forks the session and returns the new session_id."""
+    result = await usecase.accept_share(
+        accept_token=accept_token,
+        recipient_google_sub=user_key,
+        recipient_email=_user_email(request),
     )
+    return {"success": True, **result}
 
 
-@router.get("/api/share/{share_token}")
-async def get_share_info(share_token: str):
-    """Get information about a share token."""
-    if share_token not in _share_tokens:
-        raise HTTPException(status_code=404, detail="Share token not found")
+@router.delete("/api/shares/{share_id}")
+async def revoke_share(
+    share_id: str,
+    user_key: str = Depends(get_user_key),
+    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+):
+    await usecase.revoke_share(share_id=share_id, owner_google_sub=user_key)
+    return {"success": True}
 
-    info = _share_tokens[share_token]
-    return JSONResponse(
-        content={
-            "success": True,
-            "session_id": info.get("session_id"),
-            "project_id": info.get("project_id"),
-        }
+
+@router.post("/api/shares/recipients/{recipient_id}/resend-email")
+async def resend_share_email(
+    recipient_id: str,
+    request: Request,
+    user_key: str = Depends(get_user_key),
+    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+):
+    """Owner re-sends the notification email for a single recipient."""
+    result = await usecase.resend_email(
+        recipient_id=recipient_id,
+        owner_google_sub=user_key,
+        owner_name=_user_name(request),
+        owner_email=_user_email(request),
     )
+    return {"success": True, **result}
+
+
+@router.delete("/api/shares/recipients/{recipient_id}")
+async def revoke_recipient(
+    recipient_id: str,
+    user_key: str = Depends(get_user_key),
+    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+):
+    await usecase.revoke_recipient(recipient_id=recipient_id, owner_google_sub=user_key)
+    return {"success": True}

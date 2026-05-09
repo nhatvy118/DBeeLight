@@ -24,7 +24,7 @@ export default function MainLayout({ children, currentSessionId, onSessionSelect
   const showSidebar = path.startsWith('/chat') && user !== null && !isLoading;
 
   return (
-    <div className="flex h-screen bg-white">
+    <div className="flex h-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-gray-100">
       {showSidebar && (
         <Sidebar
           onSessionSelect={(sid) => onSessionSelect(sid)}

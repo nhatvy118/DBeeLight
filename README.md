@@ -23,23 +23,40 @@ uv sync  # Tạo .venv và cài đặt dependencies
 
 Client sẽ tự động sử dụng Python từ `.venv` của database server để đảm bảo tất cả dependencies đã được cài đặt.
 
-### 2. Excel & Summary Server (`excel-summary/`)
-MCP server cung cấp các công cụ để import/export Excel và tạo visualizations/summaries từ dữ liệu.
+### 2. Excel Server (`excel-server/`)
+Stdio adapter cho [`excel-mcp-server`](https://github.com/haris-musa/excel-mcp-server) (haris-musa, MIT). Cung cấp tool thao tác file Excel: workbook/worksheet ops, đọc/ghi cell, formula, formatting, chart, pivot table, native Excel tables.
 
 **Cài đặt:**
 ```bash
-cd excel-summary
-uv sync  # Tạo .venv và cài đặt dependencies
+cd excel-server
+uv sync  # Tạo .venv và cài đặt excel-mcp-server
 ```
 
 **Sử dụng:**
 - Excel server được kết nối bởi `api-server` thông qua package `mcp_agent`.
 - Hãy chạy `api-server` và gọi các endpoint `/api/chat` để sử dụng.
 
-**Tools:** import_excel, export_excel, render_chart, suggest_charts, generate_chart_spec, describe_result_summary.
+**Tools (24):** create_workbook, create_worksheet, get_workbook_metadata, read_data_from_excel, write_data_to_excel, copy_worksheet, delete_worksheet, rename_worksheet, copy_range, delete_range, validate_excel_range, get_data_validation_info, insert_rows, insert_columns, delete_sheet_rows, delete_sheet_columns, apply_formula, validate_formula_syntax, format_range, merge_cells, unmerge_cells, get_merged_cells, create_chart, create_pivot_table, create_table.
+
+### 2b. Google Sheets Server (`gsheets-server/`)
+Per-user Google Sheets / Drive read access. Mỗi user app login Google → tokens (access + refresh) được lưu encrypted vào `users` table → server này dùng để đọc Sheets thay user.
+
+**Cài đặt:**
+```bash
+cd gsheets-server
+uv sync
+```
+
+**Yêu cầu env (trong `api-server/.env`):**
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (đã có cho login)
+- `TOKEN_ENCRYPTION_KEY`: Fernet key — generate bằng `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Dev có thể bỏ qua (token lưu plaintext + log warning).
+
+**Tools (2):** `get_spreadsheet_info`, `read_google_sheet`. Read-only. User phải paste URL/ID của sheet (không có Drive search vì cố tình tránh `drive.readonly` restricted scope).
+
+**Lưu ý:** User đã login từ trước phải logout + login lại để consent thêm Sheets scope.
 
 ### 3. Excel UI (`excel-ui/`)
-Web UI để upload Excel files, tạo summary và generate charts sử dụng MCP excel-summary server tools.
+Web UI để upload Excel files và thao tác workbook qua MCP excel-server tools.
 
 **Cài đặt:**
 ```bash

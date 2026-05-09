@@ -55,16 +55,42 @@ def get_sql_system_prompt(db_type: str) -> str:
 
 def get_select_system_prompt(db_type: str) -> str:
     """Return SELECT generation system prompt for the given database type."""
+    attached_rule = (
+        "If the additional context includes a section "
+        "'AVAILABLE SQLITE TABLES (use these EXACT names in SQL)', you MUST use the "
+        "exact `table` backtick name shown there and only columns listed under "
+        "`columns:` for that table. Do NOT invent table or column names."
+    )
     if db_type == "postgresql":
         return (
             "You are a PostgreSQL expert. Generate exactly one read-only SELECT statement "
-            "using PostgreSQL syntax for the user's request. Return ONLY SQL, no markdown."
+            "using PostgreSQL syntax for the user's request. Return ONLY SQL, no markdown. "
+            + attached_rule
         )
     # Default to SQLite
     return (
         "You are a SQLite expert. Generate exactly one read-only SELECT statement "
-        "using SQLite syntax for the user's request. Return ONLY SQL, no markdown."
+        "using SQLite syntax for the user's request. Return ONLY SQL, no markdown. "
+        + attached_rule
     )
+
+
+def extract_attached_files_context_block(user_message: str) -> str:
+    """Return the ``[ATTACHED FILES CONTEXT]`` block if present (for SQL generation).
+
+    Chat augments turns as ``<block>\\n\\nUSER MESSAGE:\\n<query>``; we keep the
+    full block so SELECT generation sees AVAILABLE SQLITE TABLES + excerpts.
+    """
+    msg = (user_message or "").strip()
+    if "[ATTACHED FILES CONTEXT]" not in msg:
+        return ""
+    sep = "\n\nUSER MESSAGE:\n"
+    if sep in msg:
+        head = msg.split(sep, 1)[0].strip()
+        if head.startswith("[ATTACHED FILES CONTEXT]"):
+            return head
+    idx = msg.find("[ATTACHED FILES CONTEXT]")
+    return msg[idx:].strip()
 
 
 def get_create_table_system_prompt(db_type: str) -> str:

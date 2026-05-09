@@ -1,5 +1,14 @@
 import { useEffect, useState } from 'react';
-import { createSession, getSessions, createProject, getProjects, type SessionInfo } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
+import {
+  createSession,
+  getSessions,
+  createProject,
+  getProjects,
+  listReceivedShares,
+  type ReceivedShare,
+  type SessionInfo,
+} from '../../services/api';
 import ProjectModal from '../modals/ProjectModal';
 import DatabaseConnectPopup, { type DatabaseConnectionData } from '../modals/DatabaseConnectPopup';
 import settingsIcon from '../../assets/icons/Settings.svg';
@@ -25,28 +34,15 @@ type SidebarProps = {
 };
 
 export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarProps) {
+  const { user } = useAuth();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [receivedShares, setReceivedShares] = useState<ReceivedShare[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [projects, setProjects] = useState<Project[]>([]);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isDatabasePopupOpen, setIsDatabasePopupOpen] = useState(false);
-  const [user, setUser] = useState<{ name?: string; email?: string; picture?: string } | null>(null);
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-
-  // Load user info
-  useEffect(() => {
-    const loadUser = async () => {
-      try {
-        const res = await fetch('/api/auth/me', { method: 'GET', credentials: 'include' });
-        const data = (await res.json()) as { authenticated: boolean; user?: { name?: string; email?: string; picture?: string } | null };
-        setUser(data.authenticated ? (data.user ?? null) : null);
-      } catch {
-        setUser(null);
-      }
-    };
-    void loadUser();
-  }, []);
 
   // Sync selectedProjectId with URL - URL is source of truth
   useEffect(() => {
@@ -124,6 +120,24 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
   useEffect(() => {
     void fetchSessions();
   }, []);
+
+  // Load shares received by the current user.
+  useEffect(() => {
+    if (!user) {
+      setReceivedShares([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await listReceivedShares();
+        if (!cancelled) setReceivedShares(list);
+      } catch (e) {
+        console.error('Failed to load received shares:', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user]);
 
   // Listen for changes in projectSessions to update the display
   useEffect(() => {
@@ -241,9 +255,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
   return (
     <>
       <div
-        className={`h-screen flex flex-col relative transition-all duration-300 ${isCollapsed ? '' : 'border-r-2 border-gray-300'}`}
+        className={`h-screen flex flex-col relative transition-all duration-300 bg-[#F9F9FA] dark:bg-slate-950 ${isCollapsed ? '' : 'border-r-2 border-gray-300 dark:border-slate-800'}`}
         style={{
-          backgroundColor: '#F9F9FA',
           flex: isCollapsed ? '0 0 auto' : '1 1 15%',
           width: isCollapsed ? '80px' : undefined,
           minWidth: isCollapsed ? '80px' : '200px'
@@ -252,7 +265,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
         {/* Main Content Area - Flex container for proportional sections */}
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* Logo Section - Smaller */}
-          <div className="p-4 border-b-2 border-gray-300 relative group flex-shrink-0" style={{ flex: '0 0 auto', minHeight: '60px' }}>
+          <div className="p-4 border-b-2 border-gray-300 dark:border-slate-800 relative group flex-shrink-0" style={{ flex: '0 0 auto', minHeight: '60px' }}>
             <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-2'}`}>
               <img
                 src={beeLogo}
@@ -260,7 +273,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
                 className={`w-8 h-8 transition-opacity ${isCollapsed ? 'group-hover:opacity-0' : ''}`}
               />
               {!isCollapsed && (
-                <span className="text-xl font-semibold text-gray-900">LightDBee</span>
+                <span className="text-xl font-semibold text-gray-900 dark:text-gray-100">LightDBee</span>
               )}
             </div>
             {/* Sidebar Icon - Show on hover when collapsed */}
@@ -295,7 +308,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
             <div className="space-y-0.5">
               <button
                 onClick={handleNewChat}
-                className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-1.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left`}
+                className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-1.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left dark:text-gray-300 dark:hover:bg-slate-800`}
                 type="button"
                 title={isCollapsed ? 'New chat' : undefined}
               >
@@ -305,7 +318,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
 
               <button
                 onClick={() => setIsDatabasePopupOpen(true)}
-                className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-1.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left`}
+                className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-1.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left dark:text-gray-300 dark:hover:bg-slate-800`}
                 type="button"
                 title={isCollapsed ? 'Connect Database' : undefined}
               >
@@ -315,7 +328,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
 
               <button
                 onClick={() => setIsProjectModalOpen(true)}
-                className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-1.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left`}
+                className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-1.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left dark:text-gray-300 dark:hover:bg-slate-800`}
                 type="button"
                 title={isCollapsed ? 'Add Project' : undefined}
               >
@@ -327,9 +340,9 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
 
           {/* Projects Section - 3 parts */}
           {!isCollapsed && (
-            <div className="border-t border-gray-200 flex-shrink-0 flex flex-col overflow-hidden" style={{ flex: '3 1 0' }}>
+            <div className="border-t border-gray-200 dark:border-slate-800 flex-shrink-0 flex flex-col overflow-hidden" style={{ flex: '3 1 0' }}>
               <div className="px-4 py-3 flex-shrink-0">
-                <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Projects</h2>
+                <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Projects</h2>
               </div>
               <div className="flex-1 overflow-y-auto px-4 pb-3">
                 {projects.length === 0 ? (
@@ -348,7 +361,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
                             onSessionSelect(null as any);
                           }
                         }}
-                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left ${selectedProjectId === project.id ? 'bg-gray-100 font-semibold' : ''}`}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left dark:text-gray-300 dark:hover:bg-slate-800 ${selectedProjectId === project.id ? 'bg-gray-100 dark:bg-slate-800 font-semibold' : ''}`}
                         type="button"
                       >
                         <img src={folderIcon} alt="Folder" className="w-5 h-5 flex-shrink-0" />
@@ -361,11 +374,59 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
             </div>
           )}
 
+          {/* Shared with me */}
+          {!isCollapsed && receivedShares.length > 0 && (
+            <div className="border-t border-gray-200 dark:border-slate-800 flex-shrink-0 flex flex-col overflow-hidden" style={{ flex: '2 1 0' }}>
+              <div className="px-4 py-3 flex-shrink-0">
+                <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Shared with me</h2>
+              </div>
+              <div className="flex-1 overflow-y-auto px-4 pb-3">
+                <div className="space-y-1">
+                  {receivedShares.map((s) => {
+                    const isAccepted = !!s.accepted_at && !!s.forked_session_id;
+                    const target = isAccepted
+                      ? `/chat/${s.project_id}/${s.forked_session_id}`
+                      : `/share/accept/${encodeURIComponent(s.accept_token)}`;
+                    const permLabel =
+                      s.permission === 'view_only'
+                        ? 'View only'
+                        : s.permission === 'read_data'
+                          ? 'Read'
+                          : 'Edit';
+                    return (
+                      <button
+                        key={s.recipient_id}
+                        onClick={() => navigate(target)}
+                        className={`w-full text-left px-3 py-2 rounded-lg transition-colors text-sm hover:bg-gray-100 dark:hover:bg-slate-800 ${
+                          currentSessionId === s.forked_session_id
+                            ? 'bg-gray-100 font-medium text-gray-900'
+                            : 'text-gray-700'
+                        }`}
+                        type="button"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate">
+                            {s.session_name || 'Shared chat'}
+                          </span>
+                          <span className="text-xs text-gray-500 flex-shrink-0">{permLabel}</span>
+                        </div>
+                        <div className="text-xs text-gray-400 truncate">
+                          {isAccepted ? 'from ' : 'pending — '}
+                          {s.owner_name || s.owner_email || 'Unknown'}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Chats Section - 3 parts */}
           {!isCollapsed && (
-            <div className="border-t border-gray-200 flex-shrink-0 flex flex-col overflow-hidden" style={{ flex: '3 1 0' }}>
+            <div className="border-t border-gray-200 dark:border-slate-800 flex-shrink-0 flex flex-col overflow-hidden" style={{ flex: '3 1 0' }}>
               <div className="px-4 py-3 flex-shrink-0">
-                <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Chat History</h2>
+                <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Chat History</h2>
               </div>
               <div className="flex-1 overflow-y-auto px-4 pb-3">
                 {isLoading ? (
@@ -379,8 +440,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
                         key={session.session_id}
                         onClick={() => handleSessionClick(session.session_id)}
                         className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors text-sm ${currentSessionId === session.session_id
-                          ? 'bg-gray-100 text-gray-900 font-medium'
-                          : 'hover:bg-gray-50 text-gray-700'
+                          ? 'bg-gray-100 dark:bg-slate-800 text-gray-900 dark:text-gray-100 font-medium'
+                          : 'hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300'
                           }`}
                         type="button"
                       >
@@ -408,7 +469,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
               <img src={userIcon} alt="User" className="w-10 h-10" />
             )}
             {!isCollapsed && (
-              <span className="text-base font-medium text-gray-900 truncate">
+              <span className="text-base font-medium text-gray-900 dark:text-gray-100 truncate">
                 {user?.name || user?.email || 'User'}
               </span>
             )}

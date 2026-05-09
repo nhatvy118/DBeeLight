@@ -34,8 +34,19 @@ export type CreateSessionResponse =
   | { success: true; session_id: string | null; session_info: unknown }
   | { success: false; error: string };
 
+export type SessionShareInfo = {
+  permission: 'view_only' | 'read_data' | 'edit_data';
+  revoked: boolean;
+  share_id: string;
+};
+
 export type GetSessionResponse =
-  | { success: true; session_info: unknown; messages: unknown[] }
+  | {
+      success: true;
+      session_info: unknown;
+      messages: unknown[];
+      share_info: SessionShareInfo | null;
+    }
   | { success: false; error: string };
 
 export type HealthResponse = { status: 'ok'; agent_initialized: boolean };
@@ -195,6 +206,36 @@ export async function getSession(sessionId: string): Promise<GetSessionResponse>
   return (await response.json()) as GetSessionResponse;
 }
 
+/**
+ * Download the session as a Markdown file. Triggers a browser save dialog
+ * via a synthesized link click — no API client state, just file pipe.
+ */
+export async function downloadSessionMarkdown(sessionId: string): Promise<void> {
+  const response = await fetch(
+    url(`/api/sessions/${encodeURIComponent(sessionId)}/export.md`),
+    { credentials: 'include' },
+  );
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error((data as any).detail || 'Failed to export session');
+  }
+
+  // Filename hint: prefer Content-Disposition; fall back to ``chat.md``.
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="?([^"]+)"?/);
+  const filename = match ? match[1] : 'chat.md';
+
+  const blob = await response.blob();
+  const objectUrl = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(objectUrl);
+  a.remove();
+}
+
 export async function healthCheck(): Promise<HealthResponse> {
   const response = await fetch(url('/api/health'), { method: 'GET', credentials: 'include' });
   if (!response.ok) throw new Error('Health check failed');
@@ -249,22 +290,174 @@ export async function createProject(name: string, description?: string, db_url: 
   return (await response.json()) as CreateProjectResponse;
 }
 
-export type GenerateShareLinkResponse =
-  | { success: true; share_token: string; share_url: string }
-  | { success: false; error: string };
+// ----- Chat session sharing -----
 
-export async function generateShareLink(sessionId: string | null = null, projectId: string | null = null): Promise<GenerateShareLinkResponse> {
-  const response = await fetch(url('/api/share/generate'), {
+export type SharePermission = 'view_only' | 'read_data' | 'edit_data';
+
+export type ShareRecipientInput = {
+  email: string;
+  permission: SharePermission;
+};
+
+export type ShareRecipientCreated = {
+  id: string;
+  email: string;
+  permission: SharePermission;
+  accept_token: string;
+  accept_url: string;
+};
+
+export type CreateShareResponse = {
+  success: true;
+  share_id: string;
+  session_id: string;
+  project_id: string;
+  recipients: ShareRecipientCreated[];
+};
+
+export async function createShare(
+  sessionId: string,
+  recipients: ShareRecipientInput[],
+  options: { notifyViaEmail?: boolean } = {},
+): Promise<CreateShareResponse> {
+  const notify = options.notifyViaEmail ?? true;
+  const response = await fetch(url(`/api/sessions/${encodeURIComponent(sessionId)}/share`), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, project_id: projectId }),
+    body: JSON.stringify({ session_id: sessionId, recipients, notify_via_email: notify }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error((data as any).detail || (data as any).error || 'Failed to create share');
+  }
+  return data as CreateShareResponse;
+}
+
+export async function resendShareEmail(recipientId: string): Promise<void> {
+  const response = await fetch(
+    url(`/api/shares/recipients/${encodeURIComponent(recipientId)}/resend-email`),
+    { method: 'POST', credentials: 'include' },
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data as any).detail || 'Failed to resend email');
+  }
+}
+
+export type SentShareRecipient = {
+  id: string;
+  email: string;
+  permission: SharePermission;
+  accept_token: string;
+  accepted_at: string | null;
+  revoked_at: string | null;
+  forked_session_id: string | null;
+  email_sent_at: string | null;
+  email_error: string | null;
+};
+
+export type SentShare = {
+  share_id: string;
+  session_id: string;
+  project_id: string;
+  session_name: string | null;
+  created_at: string;
+  revoked_at: string | null;
+  recipients: SentShareRecipient[];
+};
+
+export async function listSentShares(): Promise<SentShare[]> {
+  const response = await fetch(url('/api/shares/sent'), { credentials: 'include' });
+  if (!response.ok) throw new Error('Failed to list sent shares');
+  const data = await response.json();
+  return (data.shares || []) as SentShare[];
+}
+
+export type ReceivedShare = {
+  recipient_id: string;
+  share_id: string;
+  permission: SharePermission;
+  accept_token: string;
+  accepted_at: string | null;
+  forked_session_id: string | null;
+  session_id: string;
+  project_id: string;
+  session_name: string | null;
+  shared_at: string;
+  owner_name: string | null;
+  owner_email: string | null;
+};
+
+export async function listReceivedShares(): Promise<ReceivedShare[]> {
+  const response = await fetch(url('/api/shares/received'), { credentials: 'include' });
+  if (!response.ok) throw new Error('Failed to list received shares');
+  const data = await response.json();
+  return (data.shares || []) as ReceivedShare[];
+}
+
+export type SharePreview = {
+  recipient_email: string;
+  permission: SharePermission;
+  session_name: string | null;
+  accepted_at: string | null;
+  forked_session_id: string | null;
+  project_id: string;
+  logged_in: boolean;
+  email_match: boolean;
+};
+
+export async function previewShare(acceptToken: string): Promise<SharePreview> {
+  const response = await fetch(url(`/api/shares/by-token/${encodeURIComponent(acceptToken)}`), {
+    credentials: 'include',
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error((data as any).detail || 'Failed to load share');
+  }
+  return data.share as SharePreview;
+}
+
+export type AcceptShareResponse = {
+  success: true;
+  session_id: string;
+  project_id: string;
+  permission: SharePermission;
+  already_accepted: boolean;
+};
+
+export async function acceptShare(acceptToken: string): Promise<AcceptShareResponse> {
+  const response = await fetch(url(`/api/shares/${encodeURIComponent(acceptToken)}/accept`), {
+    method: 'POST',
+    credentials: 'include',
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error((data as any).detail || 'Failed to accept share');
+  }
+  return data as AcceptShareResponse;
+}
+
+export async function revokeShare(shareId: string): Promise<void> {
+  const response = await fetch(url(`/api/shares/${encodeURIComponent(shareId)}`), {
+    method: 'DELETE',
+    credentials: 'include',
   });
   if (!response.ok) {
-    const data = (await response.json()) as { error?: string };
-    return { success: false, error: data.error || 'Failed to generate share link' };
+    const data = await response.json().catch(() => ({}));
+    throw new Error((data as any).detail || 'Failed to revoke share');
   }
-  return (await response.json()) as GenerateShareLinkResponse;
+}
+
+export async function revokeShareRecipient(recipientId: string): Promise<void> {
+  const response = await fetch(url(`/api/shares/recipients/${encodeURIComponent(recipientId)}`), {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error((data as any).detail || 'Failed to revoke recipient');
+  }
 }
 
 export type ExecuteSqlResponse = ChatResponse;
@@ -381,6 +574,75 @@ export async function uploadExcel(
     return { success: false, error: detail };
   }
   return (await response.json()) as UploadExcelResponse;
+}
+
+// ----- Session file memory (RAG) -----
+
+export type SessionFileMeta = {
+  id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  summary?: string | null;
+  sqlite_table_name?: string | null;
+  uploaded_at?: string | null;
+};
+
+export async function listSessionFiles(sessionId: string): Promise<SessionFileMeta[]> {
+  const response = await fetch(
+    url(`/api/files?session_id=${encodeURIComponent(sessionId)}`),
+    { credentials: 'include' },
+  );
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error((data as { detail?: string }).detail || 'Failed to list session files');
+  }
+  const data = (await response.json()) as { files?: SessionFileMeta[] };
+  return data.files ?? [];
+}
+
+export async function uploadSessionFile(
+  sessionId: string,
+  file: File,
+  projectId: string | null = null,
+): Promise<SessionFileMeta> {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('session_id', sessionId);
+  if (projectId) form.append('project_id', projectId);
+  const response = await fetch(url('/api/files/upload'), {
+    method: 'POST',
+    credentials: 'include',
+    body: form,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data as { detail?: string }).detail || 'Failed to upload file');
+  }
+  const wrapped = data as { file: SessionFileMeta };
+  return wrapped.file;
+}
+
+export async function deleteSessionFile(fileId: string): Promise<void> {
+  const response = await fetch(url(`/api/files/${encodeURIComponent(fileId)}`), {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error((data as { detail?: string }).detail || 'Failed to delete file');
+  }
+}
+
+export async function deleteChatSession(sessionId: string): Promise<void> {
+  const response = await fetch(url(`/api/sessions/${encodeURIComponent(sessionId)}`), {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error((data as { detail?: string }).detail || 'Failed to delete session');
+  }
 }
 
 

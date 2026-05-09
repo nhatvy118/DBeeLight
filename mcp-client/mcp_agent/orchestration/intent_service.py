@@ -45,11 +45,98 @@ ORCHESTRATOR_ROUTES: List[Dict[str, str]] = [
 _VALID_ORCHESTRATOR_ROUTES = frozenset(r["id"] for r in ORCHESTRATOR_ROUTES)
 INTENT_CONTEXT_TURNS = max(2, int(os.getenv("INTENT_CONTEXT_TURNS", "6")))
 
+
+def _has_attached_files_context(prompt: str) -> bool:
+    return (prompt or "").lstrip().startswith("[ATTACHED FILES CONTEXT]")
+
+
+def _looks_excel_native(nl_query: str) -> bool:
+    """True when the user likely wants Excel/workbook operations (not just data questions)."""
+    q = (nl_query or "").lower()
+    keywords = (
+        # summary intent should stay in Excel-native lane
+        "summary", "summarize", "summarise", "tóm tắt", "tom tat",
+        # formatting / layout
+        "format", "formatting", "conditional format", "merge", "unmerge", "font", "color", "border",
+        "wrap", "freeze", "filter view",
+        # excel features
+        "pivot", "pivot table", "chart", "plot", "graph", "worksheet", "workbook", "sheet",
+        "formula", "vlookup", "xlookup", "sumif", "countif",
+        # write back
+        "write", "fill", "update cells", "insert row", "delete row", "insert column", "delete column",
+        "export to excel", "download excel", "xlsx",
+        # Vietnamese
+        "định dạng", "bảng pivot", "pivot", "biểu đồ", "đồ thị", "công thức", "sheet", "worksheet",
+        "ghi vào", "điền vào", "xuất excel", "tải excel",
+    )
+    return any(k in q for k in keywords)
+
+
+def _looks_sql_tabular(nl_query: str) -> bool:
+    """True when the user likely wants SQL-style querying over tabular data."""
+    q = (nl_query or "").lower()
+    keywords = (
+        "select", "where", "group by", "order by", "having", "join", "distinct", "count", "sum", "avg", "min", "max",
+        "top ", "limit",
+        # Vietnamese
+        "lọc", "đếm", "tổng", "trung bình", "nhóm theo", "sắp xếp", "distinct", "join",
+    )
+    return any(k in q for k in keywords)
+
+
+def _policy_override_route(
+    *,
+    prompt: str,
+    nl_query: str,
+    file_format: str | None,
+    route: OrchestratorRoute,
+) -> OrchestratorRoute:
+    """Deterministic routing overrides to keep Excel vs SQL behavior consistent."""
+    ff = (file_format or "").lower().strip()
+    has_ctx = _has_attached_files_context(prompt)
+
+    # When we have RAG file context, prefer SQL for data questions over tabular uploads.
+    if has_ctx:
+        if _looks_excel_native(nl_query):
+            # Excel-native tasks should still go to Excel agent.
+            return "excel"
+        if ff in {"csv", "xlsx", "xls", "excel"} or _looks_sql_tabular(nl_query):
+            return "db_readonly"
+
+    # Without explicit file-context, keep Excel for explicit workbook tasks,
+    # but default CSV questions to SQL (DB agent) when they look tabular.
+    if ff == "csv" and not _looks_excel_native(nl_query):
+        if _looks_sql_tabular(nl_query) or "csv" in (nl_query or "").lower():
+            return "db_readonly"
+
+    return route
+
+AccessLevel = Literal["view_only", "read_data", "edit_data"]
+
+# Minimum permission a caller needs to run a query of this route. Derived
+# from the route deterministically — no LLM involved. Used by callers like
+# share-permission gating to decide whether to allow the request.
+ROUTE_ACCESS_LEVEL: Dict[str, AccessLevel] = {
+    "db_readonly":     "read_data",
+    "db_create_table": "edit_data",
+    "db_mutation":     "edit_data",
+    # General DB tool loop — could be either read or write. Mark as
+    # ``read_data`` so the request is not blocked outright; SQL-level gates
+    # in execute_sql() still reject mutation SQL the agent might emit.
+    "database":        "read_data",
+    # Excel and Superset produce derived artifacts (files, charts) that don't
+    # mutate the project database. Even "create chart" is metadata in
+    # Superset, not a write to project data — so they sit at read_data.
+    "excel":           "read_data",
+    "superset":        "read_data",
+}
+
 _INTENT_CLASSIFICATION_PROMPT = """You are an orchestration router. Pick exactly ONE branch for the user request.
 
 **Decision order (important):**
 - For anything database-related, decide in this order: first try **1 → 2 → 3** (the three structured DB workflows). Only if the request clearly fits NONE of them, use **4** (general Database Agent).
 - Non-database topics: use **5** or **6** when appropriate.
+- If the user message begins with "[ATTACHED FILES CONTEXT]" (indexed excerpts from files uploaded in this chat session), prefer **db_readonly** or **database** for filtering, comparing, aggregating, DISTINCT/JOIN questions over uploaded tabular data. Use **excel** only when the user explicitly wants spreadsheet formatting, in-cell charts, or workbook structure edits — not for plain data questions about uploaded sheets.
 
 Branches:
 
@@ -91,6 +178,9 @@ class IntentResult(BaseModel):
     table_hint: Optional[str] = None
     file_format: Optional[str] = None
     agent_type: Optional[str] = None
+    # Minimum permission needed to execute this route. Derived deterministically
+    # from ``route``; not classified by the LLM.
+    access_level: Optional[AccessLevel] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = self.model_dump()
@@ -226,6 +316,12 @@ class IntentService:
             workflow_id, fallback_agent, agent_type = (None, None, None)
         else:
             route = _resolve_orchestrator_route(result, nl_query)
+            route = _policy_override_route(
+                prompt=prompt,
+                nl_query=nl_query,
+                file_format=(str(result.get("file_format")).strip().lower() if result.get("file_format") else None),
+                route=route,
+            )
             route = _adjust_route_for_available(route, available)
             workflow_id, fallback_agent, agent_type = _route_to_workflow_fields(route)
 
@@ -241,6 +337,7 @@ class IntentService:
             requires_export=bool(result.get("requires_export")),
             table_hint=(str(result["table_hint"]).strip() if result.get("table_hint") else None),
             file_format=(str(result["file_format"]).strip().lower() if result.get("file_format") else None),
+            access_level=(ROUTE_ACCESS_LEVEL.get(route) if route else None),
         )
 
         logger.info(

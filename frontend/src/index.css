@@ -9,6 +9,22 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Theme background — overridden when <html class="dark"> via tailwind. */
+  background-color: #ffffff;
+  color: #111827; /* gray-900 */
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+html.dark body {
+  background-color: #0f172a; /* slate-900 */
+  color: #e5e7eb; /* gray-200 */
+}
+
+/* Smooth color transitions on theme switch — keeps it from feeling jarring. */
+* {
+  transition-property: background-color, border-color, color;
+  transition-duration: 150ms;
+  transition-timing-function: ease;
 }
 
 .superset-embed-mount {

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Dict, Any
 
 from openai import OpenAI
@@ -11,6 +12,14 @@ from mcp_agent.graph.graph_state import AgentState, create_initial_state
 from mcp_agent.graph.state import StageType
 
 logger = logging.getLogger(__name__)
+
+
+def _sqlite_table_names_from_attached_context(msg: str) -> list[str]:
+    """Parse ``table: `name``` lines from RAG context (when present)."""
+    if not msg or "AVAILABLE SQLITE TABLES" not in msg:
+        return []
+    return re.findall(r"table:\s*`([^`]+)`", msg)
+
 
 # Nodes
 async def intent_parse(state: AgentState, llm, agent) -> AgentState:
@@ -109,6 +118,14 @@ Return JSON."""
             "password": conn.get("password"),
         }
 
+    raw_um = str(state.get("user_message") or "")
+    from_ctx = _sqlite_table_names_from_attached_context(raw_um)
+    merged_tables: list = list(safe_intent.get("tables") or [])
+    for t in from_ctx:
+        if t and t not in merged_tables:
+            merged_tables.append(t)
+    safe_intent["tables"] = merged_tables
+
     logger.info(
         "[ReadOnly] Parsed operation=%s, derived_intent=%s, connection=%s",
         operation,
@@ -120,7 +137,7 @@ Return JSON."""
         **state,
         "intent": safe_intent,
         "detected_language": safe_intent.get("detected_language", "en"),
-        "tables": safe_intent.get("tables", []),
+        "tables": merged_tables,
         "followup_context": recent_context,
     }
 
@@ -267,19 +284,20 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
         from mcp_agent.graph.database_utils import (
             strip_sql_fences,
             is_execute_query_error_response,
+            json_query_rows_to_markdown_table,
             detect_db_type,
             get_select_system_prompt,
+            extract_attached_files_context_block,
         )
         db_type = detect_db_type(agent)
+        attached = extract_attached_files_context_block(user_message)
+        messages = [{"role": "system", "content": get_select_system_prompt(db_type)}]
+        if attached:
+            messages.append({"role": "system", "content": attached})
+        messages.append({"role": "user", "content": effective_message})
         sel_resp = llm.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": get_select_system_prompt(db_type),
-                },
-                {"role": "user", "content": effective_message},
-            ],
+            messages=messages,
             temperature=0,
         )
         select_sql = strip_sql_fences(sel_resp.choices[0].message.content or "")
@@ -288,9 +306,15 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
         except Exception as e:
             query_result = f"Error executing SELECT: {e}"
 
+        # Keep SQL block unchanged, and format result for better markdown rendering:
+        # - JSON rows -> markdown table
+        # - non-JSON / parse-fail -> fenced text block (avoid long inline text)
+        result_markdown = json_query_rows_to_markdown_table(query_result)
+        rendered_result = result_markdown if result_markdown else f"```text\n{query_result}\n```"
+
         response = (
             f"```sql\n{select_sql}\n```\n\n"
-            f"{query_result}"
+            f"{rendered_result}"
         )
         output_type = "error" if is_execute_query_error_response(query_result) else "query_result"
         return {

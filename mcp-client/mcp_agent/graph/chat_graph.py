@@ -28,6 +28,7 @@ SUMMARY_MODEL_MAX_TOKENS = max(32, int(os.getenv("CHAT_SUMMARY_MODEL_MAX_TOKENS"
 SUMMARY_TRIGGER_TOKENS = max(128, int(os.getenv("CHAT_SUMMARY_TRIGGER_TOKENS", "384")))
 SUMMARY_INPUT_MAX_TOKENS = max(128, int(os.getenv("CHAT_SUMMARY_INPUT_MAX_TOKENS", "384")))
 SUMMARY_MAX_TOKENS = max(32, int(os.getenv("CHAT_SUMMARY_MAX_TOKENS", "96")))
+CHAT_HISTORY_HARD_CAP_TOKENS = max(4096, int(os.getenv("CHAT_HISTORY_HARD_CAP_TOKENS", "20000")))
 
 
 class ChatGraphState(MessagesState, total=False):
@@ -46,6 +47,10 @@ class ChatGraphState(MessagesState, total=False):
     project_id: NotRequired[Optional[str]]
     user_id: NotRequired[Optional[str]]
     allowed_db_uri: NotRequired[Optional[str]]
+    # Optional: an IntentResult dict already classified by the caller
+    # (e.g. chat_usecase running its share-permission gate). Skips a
+    # duplicate LLM call inside the orchestrator's _parse_intent_node.
+    pre_classified_intent: NotRequired[Optional[Dict[str, Any]]]
 
 
 def chat_checkpoint_config(session_id: str) -> Dict[str, Any]:
@@ -105,6 +110,17 @@ def _running_summary_text(context: Any) -> str:
     return str(summary or "").strip()
 
 
+def _truncate_messages_token_budget(messages: Sequence[BaseMessage], max_tokens: int) -> List[BaseMessage]:
+    """Drop oldest messages until the thread fits within an approximate token budget."""
+    msgs = list(messages)
+    while len(msgs) > 1:
+        total = sum(count_tokens_approximately(_text_content(m.content)) for m in msgs)
+        if total <= max_tokens:
+            return msgs
+        msgs.pop(0)
+    return msgs
+
+
 def build_chat_graph(orchestrator: Any, checkpointer: Any):
     """Compile chat graph: ingest → maybe_summarize → orchestrate."""
     summarization_model = init_chat_model(
@@ -140,8 +156,12 @@ def build_chat_graph(orchestrator: Any, checkpointer: Any):
         msgs = list(state.get("messages") or [])
         summarized = list(state.get("summarized_messages") or [])
         summary_text = _running_summary_text(state.get("context"))
-        intent_msgs = summarized or msgs
-        query = _last_user_text(intent_msgs)
+        trimmed = _truncate_messages_token_budget(msgs, CHAT_HISTORY_HARD_CAP_TOKENS)
+        intent_msgs = summarized or trimmed
+        # Summarization snapshots can occasionally lag one turn behind and miss
+        # the newest HumanMessage. Fallback to trimmed live messages before
+        # concluding the user input is empty.
+        query = _last_user_text(intent_msgs) or _last_user_text(trimmed)
         if not query.strip():
             return {
                 "messages": [AIMessage(content="Error: empty user message.")],
@@ -165,6 +185,7 @@ def build_chat_graph(orchestrator: Any, checkpointer: Any):
                 project_id=state.get("project_id"),
                 user_id=state.get("user_id"),
                 allowed_db_uri=state.get("allowed_db_uri"),
+                pre_classified_intent=state.get("pre_classified_intent"),
             )
         except Exception as e:
             logger.exception("[ChatGraph] orchestrate_node: %s", e)

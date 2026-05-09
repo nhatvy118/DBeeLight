@@ -6,12 +6,16 @@ from functools import lru_cache
 from fastapi import Request
 
 from internal.repositories.agent_repository import AgentRepository
+from internal.repositories.chat_share_repository import ChatShareRepository
 from internal.repositories.google_oauth_repository import GoogleOAuthRepository
 from internal.repositories.project_repository import ProjectRepository
 from internal.repositories.user_repository import UserRepository
+from internal.services.email_service import EmailService
 from internal.usecases.auth_usecase import AuthUseCase
+from internal.usecases.chat_share_usecase import ChatShareUseCase
 from internal.usecases.chat_usecase import ChatUseCase
 from internal.usecases.project_usecase import ProjectUseCase
+from internal.usecases.file_usecase import FileUseCase
 from internal.usecases.sessions_usecase import SessionsUseCase
 from internal.utils.redis_client import get_redis_client
 
@@ -49,7 +53,37 @@ def get_user_key(request: Request) -> str:
 def get_chat_usecase(request: Request) -> ChatUseCase:
     pool = getattr(request.app.state, "db_pool", None)
     project_repo = ProjectRepository(pool) if pool else None
-    return ChatUseCase(get_agent_repository(request), project_repo)
+    share_repo = ChatShareRepository(pool) if pool else None
+    file_uc = FileUseCase(pool, project_repo) if pool else None
+    return ChatUseCase(get_agent_repository(request), project_repo, share_repo, file_uc)
+
+
+def get_file_usecase(request: Request) -> FileUseCase:
+    pool = getattr(request.app.state, "db_pool", None)
+    if pool is None:
+        raise RuntimeError("Database pool not initialized")
+    return FileUseCase(pool, ProjectRepository(pool))
+
+
+def get_chat_share_repository(request: Request) -> ChatShareRepository:
+    pool = getattr(request.app.state, "db_pool", None)
+    if pool is None:
+        raise RuntimeError("Database pool not initialized")
+    return ChatShareRepository(pool)
+
+
+@lru_cache
+def _email_service_singleton() -> EmailService | None:
+    """One EmailService for the process. ``None`` when RESEND_API_KEY isn't
+    set — share endpoints handle that gracefully."""
+    return EmailService.from_env()
+
+
+def get_chat_share_usecase(request: Request) -> ChatShareUseCase:
+    return ChatShareUseCase(
+        get_chat_share_repository(request),
+        email_service=_email_service_singleton(),
+    )
 
 
 def get_sessions_usecase(request: Request) -> SessionsUseCase:

@@ -23,6 +23,7 @@ from internal.controllers import (
     auth_controller,
     chat_controller,
     excel_controller,
+    file_controller,
     health_controller,
     project_controller,
     sessions_controller,
@@ -82,6 +83,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_controller.router)
     app.include_router(chat_controller.router)
     app.include_router(excel_controller.router)
+    app.include_router(file_controller.router)
     app.include_router(sessions_controller.router)
     app.include_router(project_controller.router)
     app.include_router(share_controller.router)

@@ -55,9 +55,17 @@ export type ChartEmbed = {
   chartId?: number;
 };
 
+export type UiAttachment = {
+  /** Display name shown to the user (original filename). */
+  name: string;
+};
+
 export type UiMessage = {
   text: string;
   isUser: boolean;
+  /** File(s) the user attached when sending this turn — rendered as a chip
+   *  above the message bubble, ChatGPT-style. */
+  attachments?: UiAttachment[];
   sqlToExecute?: string | null;
   sqlActionId?: string;
   sqlActionState?: 'pending' | 'running' | 'executed' | 'cancelled';
@@ -107,12 +115,13 @@ export default function MessageList({
   if (messages.length === 0) return null;
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-6">
       {messages.map((msg, index) => (
-        <div key={index} className={msg.isUser ? '' : 'w-full border-b border-gray-100 last:border-b-0'}>
+        <div key={index} className="w-full">
           <ChatMessage
             message={msg.text}
             isUser={msg.isUser}
+            attachments={msg.attachments}
             onTypingStateChange={
               !msg.isUser && index === messages.length - 1 ? onAssistantTypingChange : undefined
             }

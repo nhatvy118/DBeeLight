@@ -34,6 +34,9 @@ class OrchestratorState(TypedDict, total=False):
     project_id: Optional[str]
     user_id: Optional[str]
     allowed_db_uri: Optional[str]
+    # Pre-classified intent (from caller). When present, _parse_intent_node
+    # skips its own LLM classification and reuses this dict.
+    pre_classified_intent: Optional[Dict[str, Any]]
 
 
 class Orchestrator:
@@ -111,6 +114,15 @@ class Orchestrator:
         return "general"
 
     async def _parse_intent_node(self, state: OrchestratorState) -> OrchestratorState:
+        # Reuse caller-provided classification when present (chat_usecase passes
+        # one for share permission gating). Skips a duplicate LLM call.
+        pre = state.get("pre_classified_intent")
+        if isinstance(pre, dict) and pre.get("route"):
+            primary_agent = (
+                pre.get("agent_type") or pre.get("fallback_agent") or "database"
+            )
+            return {**state, "intent_result": pre, "primary_agent": primary_agent}
+
         query = str(state.get("user_message") or "").strip()
         conversation_context = state.get("conversation_context") or []
         conversation_summary = str(state.get("conversation_summary") or "").strip()
@@ -232,7 +244,9 @@ class Orchestrator:
         """Run database path: three workflows from intent, else DatabaseAgent."""
         session_id = str(state.get("session_id") or "")
         intent_result = state.get("intent_result") or {}
-        message = str(intent_result.get("nl_query") or state.get("user_message") or "")
+        # Keep the full augmented user message (including [ATTACHED FILES CONTEXT])
+        # for DB workflows. ``nl_query`` is normalized and may drop RAG table hints.
+        message = str(state.get("user_message") or intent_result.get("nl_query") or "")
         database_route = self._database_route_from_intent(intent_result)
         self._session_agent_map[session_id] = "database"
         try:
@@ -266,7 +280,8 @@ class Orchestrator:
     async def _hybrid_agent_node(self, state: OrchestratorState) -> OrchestratorState:
         session_id = str(state.get("session_id") or "")
         intent_result = state.get("intent_result") or {}
-        message = str(intent_result.get("nl_query") or state.get("user_message") or "")
+        raw_message = str(state.get("user_message") or "")
+        normalized_message = str(intent_result.get("nl_query") or raw_message)
         chart_type = str(intent_result.get("chart_type") or "").strip().lower()
         requires_export = bool(intent_result.get("requires_export"))
         file_format = str(intent_result.get("file_format") or "").strip().lower()
@@ -285,7 +300,8 @@ class Orchestrator:
         tasks = [
             self._run_subgraph_for_agent(
                 session_id=session_id,
-                message=message,
+                # DB needs full attached-files context; other agents use normalized NL query.
+                message=(raw_message if agent_type == "database" else normalized_message),
                 agent_type=agent_type,
                 project_id=state.get("project_id"),
                 user_id=state.get("user_id"),
@@ -423,6 +439,28 @@ class Orchestrator:
         graph.add_edge("AGGREGATE_RESPONSE", END)
         return graph.compile()
 
+    async def classify_intent(
+        self,
+        query: str,
+        conversation_context: Optional[List[Dict[str, Any]]] = None,
+        conversation_summary: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Classify a user query without running the full orchestration graph.
+
+        Used by callers (e.g. share-permission gating in chat_usecase) that
+        need the routing decision *before* deciding whether to invoke the
+        agent at all. Returns the same dict shape as ``IntentResult.to_dict()``
+        — notably the ``route`` field (one of: db_readonly, db_create_table,
+        db_mutation, database, excel, superset).
+        """
+        intent_result = await self._intent_service.classify(
+            query,
+            list(self._agents.keys()),
+            conversation_context=conversation_context or [],
+            conversation_summary=conversation_summary or "",
+        )
+        return intent_result.to_dict()
+
     async def process_query(
         self,
         query: str,
@@ -433,11 +471,17 @@ class Orchestrator:
         project_id: Optional[str] = None,
         user_id: Optional[str] = None,
         allowed_db_uri: Optional[str] = None,
+        pre_classified_intent: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Process query through top-level LangGraph orchestrator.
 
         ``project_id`` / ``user_id`` / ``allowed_db_uri`` flow down to per-agent workflows
         so Superset (and future agents) can enforce that resources are scoped to the project.
+
+        ``pre_classified_intent`` (optional): an ``IntentResult.to_dict()`` payload from
+        a caller that already ran intent classification (e.g. chat_usecase's share
+        permission gate). When present, skips the duplicate classify call in
+        ``_parse_intent_node``.
         """
         if not session_id:
             session_id = str(uuid.uuid4())
@@ -453,6 +497,7 @@ class Orchestrator:
                     "project_id": project_id,
                     "user_id": user_id,
                     "allowed_db_uri": allowed_db_uri,
+                    "pre_classified_intent": pre_classified_intent,
                 }
             )
         except Exception as e:

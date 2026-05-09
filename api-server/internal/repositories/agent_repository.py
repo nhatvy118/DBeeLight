@@ -31,14 +31,26 @@ class AgentRepository:
     ):
         self._default_servers = default_servers or [
             "database/database.py",
-            "excel-summary/excel_summary.py",
+            "excel-server/excel_server.py",
+            "gsheets-server/gsheets_server.py",
             "superset/superset_tools.py",
         ]
-        # Which servers each agent connects to (agent_id -> list of server path suffixes)
+        # Which servers each agent connects to (agent_id -> list of server path suffixes).
+        # Excel agent connects to BOTH the local-xlsx server and the
+        # Google-Sheets server, so the agent picks tools from either pool
+        # based on whether the user references a local file or a Sheets URL.
         self._agent_servers: dict[str, list[str]] = {
             "database": ["database/database.py"],
-            "excel": ["excel-summary/excel_summary.py"],
+            "excel": [
+                "excel-server/excel_server.py",
+                "gsheets-server/gsheets_server.py",
+            ],
             "superset": ["superset/superset_tools.py"],
+        }
+        # Server paths whose subprocess needs the *current app user's* google_sub
+        # injected via env (so they can act on that user's Google data).
+        self._per_user_google_servers: set[str] = {
+            "gsheets-server/gsheets_server.py",
         }
         self._model = model
         self._db_pool = None
@@ -97,9 +109,20 @@ class AgentRepository:
                         logger.warning(f"Server not found: {full_path}")
                         continue
                     server_name = full_path.stem
+                    # Inject per-user env for servers that act on the user's
+                    # behalf (e.g. Google Sheets). For "anonymous" users we
+                    # skip these — they have no Google account to call.
+                    extra_env: dict[str, str] | None = None
+                    if rel in self._per_user_google_servers:
+                        if user_key == "anonymous":
+                            logger.info(
+                                f"Skipping {server_name} for anonymous user (no Google identity)"
+                            )
+                            continue
+                        extra_env = {"USER_GOOGLE_SUB": user_key}
                     try:
                         logger.info(f"Attempting to connect {agent.agent_id} to {server_name} at {full_path}")
-                        await agent.connect_to_server(server_name, str(full_path))
+                        await agent.connect_to_server(server_name, str(full_path), env=extra_env)
                         connected_count += 1
                         logger.info(f"{agent.agent_id} connected to {server_name}")
                     except Exception as e:

@@ -7,8 +7,13 @@ import {
   getSessions,
   executeSql,
   resumeWorkflow,
-  uploadExcel,
+  createSession,
+  listSessionFiles,
+  uploadSessionFile,
+  deleteSessionFile,
   type SessionInfo,
+  type SessionShareInfo,
+  type SessionFileMeta,
   type ToolEvent,
   type GetSessionResponse,
   type StreamEvent,
@@ -68,6 +73,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   // Don't init from propSessionId: so on reload with URL like /chat/projectId/sessionId,
   // the "load session" effect sees propSessionId set but sessionId null and fetches messages.
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [shareInfo, setShareInfo] = useState<SessionShareInfo | null>(null);
   const [selectedProject, setSelectedProject] = useState<{ id: string; name: string } | null>(null);
   const [projectSessions, setProjectSessions] = useState<SessionInfo[]>([]);
   const [sessionPreviews, setSessionPreviews] = useState<Record<string, string>>({});
@@ -78,17 +84,27 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [isUploadingExcel, setIsUploadingExcel] = useState(false);
-  const [attachedExcel, setAttachedExcel] = useState<{
-    originalName: string;
-    serverPath: string;
-    sizeBytes: number;
-  } | null>(null);
+  /** Files indexed for this session (RAG + SQLite); persists across messages */
+  const [sessionFiles, setSessionFiles] = useState<SessionFileMeta[]>([]);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [typingStopSignal, setTypingStopSignal] = useState(0);
   // Live progress label streamed from the backend (e.g. "Đang sinh SQL...").
   // Null when no streaming chat is in flight.
   const [streamingStage, setStreamingStage] = useState<string | null>(null);
   const sendAbortControllerRef = useRef<AbortController | null>(null);
+
+  const refreshSessionFiles = async (sid: string | null) => {
+    if (!sid) {
+      setSessionFiles([]);
+      return;
+    }
+    try {
+      const files = await listSessionFiles(sid);
+      setSessionFiles(files);
+    } catch {
+      setSessionFiles([]);
+    }
+  };
 
   // Load selected project from URL (propProjectId) - URL is source of truth
   useEffect(() => {
@@ -298,12 +314,34 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return id || undefined;
   };
 
+  const extractUploadAttachments = (text: string): { name: string }[] | undefined => {
+    if (!text) return undefined;
+    const out: { name: string }[] = [];
+    const re = /\[UPLOADED_EXCEL_NAME_START\]([\s\S]*?)\[UPLOADED_EXCEL_NAME_END\]/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const name = (m[1] || '').trim();
+      if (name) out.push({ name });
+    }
+    return out.length > 0 ? out : undefined;
+  };
+
   const stripInternalPayloads = (text: string): string => {
     let cleaned = text
       .replace(/\n?\[CREATE_TABLE_SCHEMA_JSON_START\][\s\S]*?\[CREATE_TABLE_SCHEMA_JSON_END\]\n?/g, '\n')
       .replace(/\n?\[SCHEMA_CONFIRM_INTERNAL_START\][\s\S]*?\[SCHEMA_CONFIRM_INTERNAL_END\]\n?/g, '\n')
       .replace(/\n?\[CHART_EMBED_URL_START\][\s\S]*?\[CHART_EMBED_URL_END\]\n?/g, '\n')
-      .replace(/\n?\[CHART_EMBED_META_START\][\s\S]*?\[CHART_EMBED_META_END\]\n?/g, '\n');
+      .replace(/\n?\[CHART_EMBED_META_START\][\s\S]*?\[CHART_EMBED_META_END\]\n?/g, '\n')
+      // File upload markers — internal hint for the agent, not user-facing.
+      .replace(/\n?\[UPLOADED_EXCEL_PATH_START\][\s\S]*?\[UPLOADED_EXCEL_PATH_END\]\n?/g, '\n')
+      .replace(/\n?\[UPLOADED_EXCEL_NAME_START\][\s\S]*?\[UPLOADED_EXCEL_NAME_END\]\n?/g, '\n');
+
+    // Strip the read-only-share system note that older builds accidentally
+    // persisted into the user's message history.
+    cleaned = cleaned.replace(
+      /^\[SHARED SESSION\s*[—-]\s*READ-ONLY MODE\][\s\S]*?\n\s*User message:\s*/i,
+      '',
+    );
 
     // Hide backend internal execution prompts from history display
     if (/^User has confirmed schema\./i.test(cleaned.trim()) && /User request:/i.test(cleaned)) {
@@ -447,31 +485,43 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const isStopVisible = isLoading || isAssistantTyping;
 
+  const isViewOnlyShare = shareInfo?.permission === 'view_only' || shareInfo?.revoked === true;
+
   const canSend = useMemo(() => {
+    // ChatGPT-style: an attachment alone is not enough — the user must type
+    // what they want to do with it. The Send button stays disabled until
+    // there's actual text in the textarea.
     const hasText = query.trim().length > 0;
-    const hasAttachment = attachedExcel != null;
-    return !isStopVisible && !isUploadingExcel && (hasText || hasAttachment);
-  }, [isStopVisible, isUploadingExcel, query, attachedExcel]);
+    if (isViewOnlyShare) return false;
+    return !isStopVisible && !isUploadingExcel && hasText;
+  }, [isStopVisible, isUploadingExcel, query, isViewOnlyShare]);
 
   const handleExcelFileSelected = async (file: File) => {
     setIsUploadingExcel(true);
     try {
-      const res = await uploadExcel(file, sessionId, selectedProject?.id || null);
-      if (!res.success) {
-        window.alert(res.error || 'Failed to upload Excel file');
-        return;
+      let sid = sessionId;
+      if (!sid) {
+        const cr = await createSession(null, selectedProject?.id || propProjectId || null);
+        if (!cr.success || !cr.session_id) {
+          window.alert('Could not create a chat session for this upload');
+          return;
+        }
+        sid = cr.session_id;
+        setSessionId(sid);
+        onSessionIdChange?.(sid);
+        saveLastSession(sid, selectedProject?.id ?? propProjectId ?? null);
+        if (selectedProject?.id || propProjectId) {
+          window.history.pushState({}, '', `/chat/${selectedProject?.id || propProjectId}/${sid}`);
+        } else {
+          window.history.pushState({}, '', `/chat/${sid}`);
+        }
+        window.dispatchEvent(new PopStateEvent('popstate'));
       }
-      setAttachedExcel({
-        originalName: res.file.original_name,
-        serverPath: res.file.server_path,
-        sizeBytes: res.file.size_bytes,
-      });
-      if (query.trim().length === 0) {
-        setQuery(`Tóm tắt file Excel "${res.file.original_name}"`);
-        setTimeout(() => textareaRef.current?.focus(), 0);
-      }
+      await uploadSessionFile(sid!, file, selectedProject?.id || propProjectId || null);
+      await refreshSessionFiles(sid!);
+      setTimeout(() => textareaRef.current?.focus(), 0);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to upload Excel file';
+      const message = err instanceof Error ? err.message : 'Failed to upload file';
       window.alert(message);
     } finally {
       setIsUploadingExcel(false);
@@ -543,6 +593,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               return {
                 text: msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
                 isUser: msg.role === 'user',
+                attachments: msg.role === 'user' ? extractUploadAttachments(rawContent) : undefined,
                 sqlToExecute,
                 sqlActionId,
                 sqlActionState: sqlToExecute ? (persistedSqlState ?? ('pending' as const)) : undefined,
@@ -553,11 +604,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 chartEmbed: persistedChartEmbed,
               };
             })
-            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || !!m.chartEmbedUrl || !!m.chartEmbed);
+            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || !!m.chartEmbedUrl || !!m.chartEmbed || (m.attachments && m.attachments.length > 0));
           setMessages(convertedMessages);
           setSessionId(sid);
+          setShareInfo(res.share_info ?? null);
           onSessionIdChange?.(sid);
           saveLastSession(sid, selectedProject?.id ?? null);
+          void refreshSessionFiles(sid);
         }
       } catch (err) {
         console.error('Failed to load session:', err);
@@ -580,6 +633,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       // URL no longer has a session (e.g. navigated to /chat) — clear local state
       setMessages([]);
       setSessionId(null);
+      setShareInfo(null);
+      setSessionFiles([]);
       onSessionIdChange?.(null);
       saveLastSession(null, null);
     }
@@ -671,6 +726,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           setSessionId(newSessionId);
           onSessionIdChange?.(newSessionId);
           saveLastSession(newSessionId, selectedProject?.id ?? null);
+          void refreshSessionFiles(newSessionId);
 
           // Update URL so /chat becomes /chat/:sessionId (or /chat/:projectId/:sessionId)
           if (selectedProject?.id) {
@@ -735,29 +791,27 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const handleSend = async () => {
     if (isStopVisible || isUploadingExcel) return;
     const hasText = query.trim().length > 0;
-    if (!hasText && !attachedExcel) return;
+    if (!hasText) return;
 
-    const displayText = hasText ? query.trim() : `Uploaded Excel: ${attachedExcel?.originalName ?? ''}`.trim();
-    let sendText = displayText;
-    if (attachedExcel) {
-      const prompt =
-        hasText && displayText
-          ? displayText
-          : `Hãy đọc và tóm tắt file Excel "${attachedExcel.originalName}".`;
-      sendText =
-        `${prompt}\n\n` +
-        `[UPLOADED_EXCEL_PATH_START]\n${attachedExcel.serverPath}\n[UPLOADED_EXCEL_PATH_END]\n` +
-        `[UPLOADED_EXCEL_NAME_START]\n${attachedExcel.originalName}\n[UPLOADED_EXCEL_NAME_END]\n`;
-    }
+    const displayText = query.trim();
+    const sendText = displayText;
+
+    const shouldShowUploadOnce =
+      sessionFiles.length > 0 && !messages.some((m) => m.isUser);
+    const messageAttachments = shouldShowUploadOnce
+      ? sessionFiles.map((f) => ({ name: f.filename }))
+      : undefined;
 
     lockAllSchemaPreviews();
-    setMessages((prev) => [...prev, { text: displayText, isUser: true }]);
+    setMessages((prev) => [
+      ...prev,
+      { text: displayText, isUser: true, attachments: messageAttachments },
+    ]);
     setQuery('');
     // Forcefully reset the textarea to avoid any IME/browser ghost text by
     // both clearing state and remounting the textarea component.
     setInputKey((k) => k + 1);
     await doSend(sendText);
-    if (attachedExcel) setAttachedExcel(null);
   };
 
   const handleRefreshResponse = async (aiIndex: number) => {
@@ -1102,6 +1156,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (prevProjectIdRef.current !== undefined && prevProjectIdRef.current !== currentId) {
       saveLastSession(sessionId, prevProjectIdRef.current ?? null);
       setSessionId(null);
+      setShareInfo(null);
       setMessages([]);
       onSessionIdChange?.(null);
     }
@@ -1206,6 +1261,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               return {
                 text: cleanedText,
                 isUser: msg.role === 'user',
+                attachments: msg.role === 'user' ? extractUploadAttachments(rawContent) : undefined,
                 sqlToExecute,
                 sqlActionId,
                 sqlActionState: sqlToExecute ? (persistedSqlState ?? ('pending' as const)) : undefined,
@@ -1216,9 +1272,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 chartEmbed: persistedChartEmbed,
               };
             })
-            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || !!m.chartEmbedUrl || !!m.chartEmbed);
+            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || !!m.chartEmbedUrl || !!m.chartEmbed || (m.attachments && m.attachments.length > 0));
           setMessages(convertedMessages);
           setSessionId(sid);
+          setShareInfo(res.share_info ?? null);
           onSessionIdChange?.(sid);
         }
       } catch {
@@ -1266,8 +1323,32 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   // - New session created but no messages sent yet
   const isEmptyState = messages.length === 0 && !projectHasHistory;
 
+  const shareBanner = shareInfo ? (
+    <div
+      className={
+        'px-4 py-2 text-sm border-b ' +
+        (shareInfo.revoked
+          ? 'bg-red-50 border-red-200 text-red-800'
+          : shareInfo.permission === 'view_only'
+            ? 'bg-amber-50 border-amber-200 text-amber-900'
+            : shareInfo.permission === 'read_data'
+              ? 'bg-blue-50 border-blue-200 text-blue-900'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-900')
+      }
+    >
+      {shareInfo.revoked
+        ? 'This shared chat has been revoked by the owner. You can no longer continue it.'
+        : shareInfo.permission === 'view_only'
+          ? 'This chat was shared with you in view-only mode — you cannot send messages.'
+          : shareInfo.permission === 'read_data'
+            ? 'This chat was shared with you in read-data mode — only SELECT queries are allowed.'
+            : 'This chat was shared with you with full access to read and modify data.'}
+    </div>
+  ) : null;
+
   return (
-    <div className="flex flex-col h-full bg-white">
+    <div className="flex flex-col h-full bg-white dark:bg-slate-900">
+      {shareBanner}
       {/* Chat Content */}
       {messages.length > 0 && (
         <div className="flex-1 overflow-y-auto px-6 py-6">
@@ -1302,31 +1383,41 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           {/* Greeting text - Show in empty state or when project has history */}
           {(isEmptyState || projectHasHistory) && (
             <div className="text-center mb-6">
-              <h2 className="text-5xl md:text-6xl font-bold text-gray-900">Hi, How are you today?</h2>
+              <h2 className="text-5xl md:text-6xl font-bold text-gray-900 dark:text-gray-100">Hi, How are you today?</h2>
             </div>
           )}
-          <div className="relative bg-white border-2 border-gray-300 rounded-3xl px-4 shadow-lg">
+          <div className="relative bg-white dark:bg-slate-800 border-2 border-gray-300 dark:border-slate-700 rounded-3xl px-4 shadow-lg dark:shadow-none">
             <div className="flex flex-col">
-              {(attachedExcel || isUploadingExcel) && (
-                <div className="flex items-center gap-2 pt-3 pb-1">
+              {(sessionFiles.length > 0 || isUploadingExcel) && (
+                <div className="flex flex-wrap items-center gap-2 pt-3 pb-1">
                   {isUploadingExcel && (
                     <span className="text-xs text-gray-500">Uploading…</span>
                   )}
-                  {attachedExcel && (
-                    <>
-                      <span className="inline-flex items-center gap-2 text-xs bg-gray-100 text-gray-700 px-3 py-1 rounded-full">
-                        <img src={fileIcon} alt="" className="w-4 h-4" />
-                        <span className="max-w-[240px] truncate">{attachedExcel.originalName}</span>
-                      </span>
+                  {sessionFiles.map((f) => (
+                    <span
+                      key={f.id}
+                      className="inline-flex items-center gap-2 text-xs bg-gray-100 text-gray-700 px-3 py-1 rounded-full"
+                    >
+                      <img src={fileIcon} alt="" className="w-4 h-4" />
+                      <span className="max-w-[200px] truncate">{f.filename}</span>
                       <button
                         type="button"
-                        onClick={() => setAttachedExcel(null)}
-                        className="text-xs text-gray-500 hover:text-gray-700"
+                        className="text-gray-500 hover:text-gray-800"
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              await deleteSessionFile(f.id);
+                              await refreshSessionFiles(sessionId);
+                            } catch (e) {
+                              window.alert(e instanceof Error ? e.message : 'Remove failed');
+                            }
+                          })();
+                        }}
                       >
-                        Remove
+                        ×
                       </button>
-                    </>
-                  )}
+                    </span>
+                  ))}
                 </div>
               )}
 
@@ -1346,7 +1437,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                     type="file"
                     className="hidden"
                     multiple={false}
-                    accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+                    accept=".xlsx,.xls,.csv,.pdf,.db,.sqlite,.txt,.md,application/pdf,application/x-sqlite3,text/csv,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                     onChange={handleFileInputChange}
                   />
                 </div>
@@ -1355,6 +1446,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                   key={inputKey}
                   ref={textareaRef}
                   value={query}
+                  disabled={isViewOnlyShare}
                   onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
                     setQuery(e.target.value)
                   }
@@ -1366,15 +1458,17 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                     }
                   }}
                   placeholder={
-                    selectedProject
-                      ? `New chat in ${selectedProject.name}`
-                      : "Ask anything"
+                    isViewOnlyShare
+                      ? "Read-only shared chat — sending disabled"
+                      : selectedProject
+                        ? `New chat in ${selectedProject.name}`
+                        : "Ask anything"
                   }
                   rows={1}
                   autoComplete="off"
                   autoCorrect="off"
                   spellCheck={false}
-                  className="flex-1 resize-none outline-none text-lg"
+                  className="flex-1 resize-none outline-none text-lg bg-transparent text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500"
                   style={{
                     maxHeight: `${MAX_TEXTAREA_HEIGHT}px`,
                     minHeight: "60px",
@@ -1457,7 +1551,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         isEmptyState && (
           <div className="px-8 pb-8">
             <div className="max-w-4xl mx-auto">
-              <p className="text-center text-xs text-gray-500">
+              <p className="text-center text-xs text-gray-500 dark:text-gray-400">
               By using LightDBee, you agree to our Term and Service Policy
               </p>
             </div>

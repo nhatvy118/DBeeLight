@@ -8,7 +8,6 @@ from openai import OpenAI
 from mcp_agent.graph.readonly_workflow import ReadOnlyWorkflow
 from mcp_agent.graph.create_table_workflow import CreateTableWorkflow
 from mcp_agent.graph.mutation_workflow import MutationWorkflow
-from mcp_agent.graph.excel_workflow import ExcelAgentWorkflow
 from mcp_agent.graph.superset_workflow import SupersetAgentWorkflow
 from mcp_agent.graph.graph_state import AgentState, create_initial_state
 from mcp_agent.graph.state import StageType
@@ -50,17 +49,20 @@ class AgentWorkflow:
         self.workflows: Dict[str, Any] = {}
         self._session_workflow_map: Dict[str, str] = {}
         self._database_agent: Any = None
+        # Excel agent has no LangGraph workflow — its tool loop handles the
+        # request directly. We hold a reference for ``_run_non_database``.
+        self._excel_agent: Any = None
         if agents:
             self._init_workflows(agents)
 
     def _init_workflows(self, agents: Dict[str, Any]):
         """Initialize all workflows with agent instances."""
         self._database_agent = agents.get("database")
+        self._excel_agent = agents.get("excel")
         self.workflows = {
             "readonly": ReadOnlyWorkflow(llm=self.llm, agent=agents.get("database")),
             "create_table": CreateTableWorkflow(llm=self.llm, agent=agents.get("database")),
             "mutation": MutationWorkflow(llm=self.llm, agent=agents.get("database")),
-            "excel": ExcelAgentWorkflow(llm=self.llm, agent=agents.get("excel")),
             "superset": SupersetAgentWorkflow(
                 llm=self.llm,
                 agent=agents.get("superset"),
@@ -250,7 +252,48 @@ class AgentWorkflow:
         user_id: Optional[str] = None,
         allowed_db_uri: Optional[str] = None,
     ) -> AgentState:
-        """Run non-database workflows (excel, superset)."""
+        """Run non-database agents (excel, superset).
+
+        ``excel`` has no LangGraph workflow — we delegate straight to the
+        agent's tool loop. ``superset`` still has a workflow for chart
+        creation flow.
+        """
+        # Excel: no workflow, just call the agent's tool loop directly.
+        if agent_type == "excel":
+            agent = self._excel_agent
+            if not agent:
+                logger.error("[Workflow] Excel agent unavailable")
+                return {
+                    "session_id": session_id,
+                    "current_stage": StageType.ERROR.value,
+                    "agent_type": agent_type,
+                    "user_message": user_message,
+                    "error": "Excel agent unavailable",
+                    "output": {"error": "Excel agent unavailable"},
+                }
+            if resume is not None or thread_id is not None:
+                logger.warning("[Workflow] resume/thread_id ignored for agent_type=excel")
+            logger.info(f"[Workflow] Delegating excel to agent tool loop for session {session_id}")
+            try:
+                response = await agent.process_query(user_message, verbose=False)
+            except Exception as e:
+                logger.exception("[Workflow] Excel agent error: %s", e)
+                return {
+                    "session_id": session_id,
+                    "current_stage": StageType.ERROR.value,
+                    "agent_type": agent_type,
+                    "user_message": user_message,
+                    "error": f"Excel agent error: {e}",
+                    "output": {"error": f"Excel agent error: {e}"},
+                }
+            return {
+                "session_id": session_id,
+                "current_stage": StageType.DONE.value,
+                "agent_type": agent_type,
+                "user_message": user_message,
+                "output": {"type": "agent_response", "message": response},
+            }
+
         workflow = self.workflows.get(agent_type)
         if not workflow:
             logger.error(f"[Workflow] Unknown agent type: {agent_type}")

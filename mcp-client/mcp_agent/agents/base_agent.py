@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -13,6 +14,23 @@ from mcp.client.stdio import stdio_client
 from openai import OpenAI
 
 from mcp_agent.session.session_manager import SessionManager
+
+try:
+    from langchain_core.messages.utils import count_tokens_approximately
+except ImportError:
+    def count_tokens_approximately(text: str) -> int:
+        return max(1, len(text) // 4)
+
+
+TOOL_RESULT_MAX_TOKENS = max(512, int(os.getenv("TOOL_RESULT_MAX_TOKENS", "4000")))
+
+
+def _cap_tool_json_payload(raw: str, max_tokens: int) -> str:
+    if count_tokens_approximately(raw) <= max_tokens:
+        return raw
+    # ~4 chars per token heuristic
+    limit_chars = max(500, max_tokens * 4)
+    return raw[:limit_chars] + '\n...[tool output truncated]'
 
 
 class BaseAgent(ABC):
@@ -43,12 +61,22 @@ class BaseAgent(ABC):
         """Build the system prompt for this agent. Must be implemented by subclasses."""
         pass
 
-    async def connect_to_server(self, server_name: str, server_script_path: str) -> None:
+    async def connect_to_server(
+        self,
+        server_name: str,
+        server_script_path: str,
+        env: Optional[Dict[str, str]] = None,
+    ) -> None:
         """Connect to an MCP server.
 
         Args:
             server_name: Server identifier (e.g. "database", "excel").
             server_script_path: Path to server script (.py or .js).
+            env: Extra env vars to pass into the spawned subprocess. Merged on
+                top of the current process env so the child still inherits
+                ``PATH``, ``DATABASE_URL``, etc. Use this for per-user
+                context (e.g. ``USER_GOOGLE_SUB``) when the server needs to
+                act on behalf of a specific app user.
         """
         is_python = server_script_path.endswith(".py")
         is_js = server_script_path.endswith(".js")
@@ -81,7 +109,11 @@ class BaseAgent(ABC):
             command = "node"
             args = [server_script_path]
 
-        server_params = StdioServerParameters(command=command, args=args, env=None)
+        merged_env: Dict[str, str] = {**os.environ}
+        if env:
+            merged_env.update({str(k): str(v) for k, v in env.items() if v is not None})
+
+        server_params = StdioServerParameters(command=command, args=args, env=merged_env)
         stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
         stdio, write = stdio_transport
         session = await self.exit_stack.enter_async_context(ClientSession(stdio, write))
@@ -217,11 +249,13 @@ class BaseAgent(ABC):
                         result_content = result.content
                         if not isinstance(result_content, str):
                             result_content = str(result_content)
+                        packed = json.dumps(result_content)
+                        packed = _cap_tool_json_payload(packed, TOOL_RESULT_MAX_TOKENS)
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "name": tool_name,
-                            "content": json.dumps(result_content),
+                            "content": packed,
                         })
                         # ❌ Do NOT save tool messages - only keep in memory for current conversation
                     except Exception as e:

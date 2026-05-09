@@ -164,7 +164,7 @@ excel_agent = ExcelAgent(model="gpt-4o-mini", session_manager=session_manager, a
 
 # Connect to MCP servers
 await db_agent.connect_to_server("database", "../database/database.py")
-await excel_agent.connect_to_server("excel", "../excel-summary/excel_summary.py")
+await excel_agent.connect_to_server("excel", "../excel-server/excel_server.py")
 
 # Create hybrid orchestrator
 orchestrator = HybridOrchestrator(

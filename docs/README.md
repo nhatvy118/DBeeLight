@@ -61,7 +61,7 @@ User message
 - **Vai trò:** Tạo và cache **một Orchestrator cho mỗi user**.
 - **Luồng:**
   1. `get_agent(user_key)` → nếu đã có orchestrator cho user thì trả về.
-  2. Chưa có: tạo `SessionManager(db_pool, user_id)`, tạo **một hoặc nhiều** agent (hiện tại: một `DatabaseAgent`), connect agent tới các MCP server (`database/database.py`, `excel-summary/excel_summary.py`), tạo `MultiAgentOrchestrator(agents=[...], session_manager=...)`, lưu vào `_orchestrators[user_key]`.
+  2. Chưa có: tạo `SessionManager(db_pool, user_id)`, tạo **một hoặc nhiều** agent (hiện tại: một `DatabaseAgent`), connect agent tới các MCP server (`database/database.py`, `excel-server/excel_server.py`), tạo `MultiAgentOrchestrator(agents=[...], session_manager=...)`, lưu vào `_orchestrators[user_key]`.
   3. Trả về orchestrator.
 - **Cấu hình:** `_default_servers` (đường dẫn script MCP), `_model` (OpenAI model).
 
@@ -122,7 +122,7 @@ class ExcelAgent(BaseAgent):
 Trong **AgentRepository.get_agent()** (api-server):
 
 - Tạo thêm agent (ví dụ `ExcelAgent`) với **cùng** `session_manager` đã tạo cho user.
-- Chỉ connect agent đó tới MCP server tương ứng (ví dụ chỉ `excel-summary/excel_summary.py`), không cần connect DatabaseAgent tới excel.
+- Chỉ connect agent đó tới MCP server tương ứng (ví dụ chỉ `excel-server/excel_server.py`), không cần connect DatabaseAgent tới excel.
 - Đưa agent vào list: `agents = [db_agent, excel_agent]`.
 - Tạo orchestrator: `MultiAgentOrchestrator(agents=agents, session_manager=session_manager, router_model=self._model)`.
 
@@ -134,7 +134,7 @@ db_agent = DatabaseAgent(model=self._model, session_manager=session_manager, age
 excel_agent = ExcelAgent(model=self._model, session_manager=session_manager, agent_id="excel")
 
 await db_agent.connect_to_server("database", str(base_path / "database/database.py"))
-await excel_agent.connect_to_server("excel_summary", str(base_path / "excel-summary/excel_summary.py"))
+await excel_agent.connect_to_server("excel", str(base_path / "excel-server/excel_server.py"))
 
 orchestrator = MultiAgentOrchestrator(agents=[db_agent, excel_agent], session_manager=session_manager, router_model=self._model)
 ```
@@ -187,8 +187,8 @@ mcp-server/
 │       ├── postgres.py          # PostgresAdapter
 │       ├── sqlite.py            # SQLiteAdapter
 │       └── factory.py           # DatabaseAdapterFactory
-└── excel-summary/
-    └── excel_summary.py          # MCP server: tools Excel (nếu dùng)
+└── excel-server/
+    └── excel_server.py           # Stdio adapter cho excel-mcp-server (haris-musa)
 ```
 
 ---
