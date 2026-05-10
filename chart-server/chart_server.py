@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -35,7 +36,12 @@ VEGA_LITE_SCHEMA = "https://vega.github.io/schema/vega-lite/v5.json"
 
 DEFAULT_MAX_ROWS = int(os.environ.get("CHART_MAX_ROWS", "100000"))
 
-_DEFAULT_SQLITE_DIRS = "/Users/pila_vyhuynh/Uni/mcp-server/api-server/databases"
+_API_SERVER_ROOT = Path(__file__).resolve().parents[1] / "api-server"
+# Session file imports use ``api-server/temp_dbs/<session_id>.db``; charts must allow both.
+_DEFAULT_SQLITE_DIRS = ":".join(
+    str((_API_SERVER_ROOT / name).resolve())
+    for name in ("databases", "temp_dbs")
+)
 ALLOWED_SQLITE_DIRS: tuple[str, ...] = tuple(
     p.rstrip("/")
     for p in os.environ.get("CHART_SQLITE_ALLOWED_DIRS", _DEFAULT_SQLITE_DIRS).split(":")

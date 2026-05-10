@@ -4,14 +4,14 @@ import {
   sendMessage,
   createSession,
   uploadSessionFile,
-  listSessionFiles,
+  listUserFilesInventory,
   deleteSessionFile,
-  type SessionFileMeta,
 } from '../services/api';
+import { buildChatMessageWithSessionFiles } from '../utils/sessionFileMarkers';
 import plusIcon from '../assets/icons/Plus.svg';
+import fileIcon from '../assets/icons/File.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
 import arrowUpCircleIcon from '../assets/icons/Arrow-up-circle.svg';
-import fileIcon from '../assets/icons/File.svg';
 
 const MAX_TEXTAREA_HEIGHT = 200;
 const MIN_TEXTAREA_HEIGHT = 60;
@@ -21,25 +21,38 @@ export default function Home() {
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [sessionFiles, setSessionFiles] = useState<SessionFileMeta[]>([]);
   const [isUploadingExcel, setIsUploadingExcel] = useState(false);
+  const [inputAttachedFiles, setInputAttachedFiles] = useState<{ id: string; filename: string }[]>([]);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const refreshFiles = async (sid: string | null) => {
-    if (!sid) {
-      setSessionFiles([]);
-      return;
-    }
+  const canSend = !isLoading && !isUploadingExcel && query.trim().length > 0;
+
+  const handleRemoveSessionFile = async (fileId: string) => {
     try {
-      setSessionFiles(await listSessionFiles(sid));
-    } catch {
-      setSessionFiles([]);
+      await deleteSessionFile(fileId);
+      setMessages((prev) =>
+        prev.flatMap((m) => {
+          if (!m.isUser || !m.attachments?.some((a) => a.fileId === fileId)) return [m];
+          const nextAtt = m.attachments.filter((a) => a.fileId !== fileId);
+          if (nextAtt.length === 0 && !m.text.trim()) return [];
+          return [{ ...m, attachments: nextAtt.length ? nextAtt : undefined }];
+        }),
+      );
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : 'Remove failed');
     }
   };
 
-  const canSend = !isLoading && !isUploadingExcel && query.trim().length > 0;
+  const handleRemoveInputAttachment = async (fileId: string) => {
+    try {
+      await deleteSessionFile(fileId);
+      setInputAttachedFiles((prev) => prev.filter((f) => f.id !== fileId));
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : 'Remove failed');
+    }
+  };
 
   const handleFileSelected = async (file: File) => {
     setIsUploadingExcel(true);
@@ -54,15 +67,35 @@ export default function Home() {
         sid = cr.session_id;
         setSessionId(sid);
       }
-      await uploadSessionFile(sid!, file, null);
-      await refreshFiles(sid!);
+      const { file: uploaded } = await uploadSessionFile(sid!, file, null);
+      setInputAttachedFiles((prev) => [...prev, { id: uploaded.id, filename: uploaded.filename }]);
       if (query.trim().length === 0) {
         setQuery(`Tóm tắt file "${file.name}"`);
-        setTimeout(() => textareaRef.current?.focus(), 0);
       }
+      setTimeout(() => textareaRef.current?.focus(), 0);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Upload failed';
-      window.alert(message);
+      const e = err as Error & { code?: string };
+      if (e.code === 'storage_quota_exceeded' || /5\s*GB|storage limit/i.test(e.message || '')) {
+        try {
+          const inv = await listUserFilesInventory();
+          const lines = inv
+            .slice(0, 12)
+            .map(
+              (r) =>
+                `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — phiên ${r.session_id.slice(0, 8)}…`,
+            );
+          window.alert(
+            'Bạn đã dùng hết 5 GB dung lượng lưu trữ cho file đã tải. Hãy xóa bớt file (× trên chip ở ô nhập hoặc trong khung chat) rồi thử lại.\n\n' +
+              (lines.length ? `Một số file gần đây:\n${lines.join('\n')}` : ''),
+          );
+        } catch {
+          window.alert(
+            'Bạn đã dùng hết 5 GB dung lượng lưu trữ. Hãy xóa file (× trên chip ở ô nhập hoặc trong khung chat) rồi thử lại.',
+          );
+        }
+      } else {
+        window.alert(e instanceof Error ? e.message : 'Upload failed');
+      }
     } finally {
       setIsUploadingExcel(false);
     }
@@ -80,10 +113,19 @@ export default function Home() {
     const hasText = query.trim().length > 0;
     if (!hasText) return;
 
-    const sendPayload = query.trim();
-    const displayText = sendPayload;
+    const displayText = query.trim();
+    const sendPayload = buildChatMessageWithSessionFiles(displayText, inputAttachedFiles);
+    const attachmentsForUi = inputAttachedFiles.map((f) => ({ name: f.filename, fileId: f.id }));
 
-    setMessages((prev) => [...prev, { text: displayText, isUser: true }]);
+    setMessages((prev) => [
+      ...prev,
+      {
+        text: displayText,
+        isUser: true,
+        ...(attachmentsForUi.length > 0 ? { attachments: attachmentsForUi } : {}),
+      },
+    ]);
+    setInputAttachedFiles([]);
     setQuery('');
     setIsLoading(true);
     try {
@@ -92,7 +134,6 @@ export default function Home() {
         setMessages((prev) => [...prev, { text: res.response ?? '', isUser: false }]);
         if (res.session_id) {
           setSessionId(res.session_id);
-          void refreshFiles(res.session_id);
         }
       } else {
         setMessages((prev) => [
@@ -137,7 +178,10 @@ export default function Home() {
       {hasMessages && (
         <div className="flex-1 overflow-y-auto px-4 md:px-8 py-6">
           <div className="max-w-3xl mx-auto">
-            <MessageList messages={messages} />
+            <MessageList
+              messages={messages}
+              onRemoveSessionFile={(fid) => void handleRemoveSessionFile(fid)}
+            />
             <div ref={messagesEndRef} />
           </div>
         </div>
@@ -151,10 +195,10 @@ export default function Home() {
             </h1>
           )}
           <div className="relative bg-white border-2 border-gray-300 rounded-3xl px-4 shadow-lg">
-            {(sessionFiles.length > 0 || isUploadingExcel) && (
+            {(inputAttachedFiles.length > 0 || isUploadingExcel) && (
               <div className="flex flex-wrap gap-2 pt-3 pb-1">
-                {isUploadingExcel && <span className="text-xs text-gray-500">Uploading…</span>}
-                {sessionFiles.map((f) => (
+                {isUploadingExcel && <span className="text-xs text-gray-500">Đang tải file…</span>}
+                {inputAttachedFiles.map((f) => (
                   <span
                     key={f.id}
                     className="inline-flex items-center gap-2 text-xs bg-gray-100 text-gray-700 px-3 py-1 rounded-full"
@@ -164,16 +208,7 @@ export default function Home() {
                     <button
                       type="button"
                       className="text-gray-500 hover:text-gray-800"
-                      onClick={() =>
-                        void (async () => {
-                          try {
-                            await deleteSessionFile(f.id);
-                            await refreshFiles(sessionId);
-                          } catch (e) {
-                            window.alert(e instanceof Error ? e.message : 'Remove failed');
-                          }
-                        })()
-                      }
+                      onClick={() => void handleRemoveInputAttachment(f.id)}
                     >
                       ×
                     </button>

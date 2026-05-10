@@ -132,6 +132,29 @@ class FileRepository:
             user_id,
         )
 
+    async def sum_size_bytes_for_user(self, user_id: str) -> int:
+        row = await self._pool.fetchrow(
+            "SELECT COALESCE(SUM(size_bytes), 0)::bigint AS n FROM files WHERE user_id = $1",
+            user_id,
+        )
+        return int(row["n"] or 0) if row else 0
+
+    async def list_files_for_user_inventory(
+        self, user_id: str, *, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT id, session_id, filename, size_bytes, uploaded_at
+            FROM files
+            WHERE user_id = $1
+            ORDER BY uploaded_at DESC
+            LIMIT $2
+            """,
+            user_id,
+            limit,
+        )
+        return [dict(r) for r in rows]
+
     async def delete_file_row(self, file_id: UUID, user_id: str) -> Optional[dict[str, Any]]:
         """Returns row before delete (for disk cleanup) or None."""
         row = await self._pool.fetchrow(

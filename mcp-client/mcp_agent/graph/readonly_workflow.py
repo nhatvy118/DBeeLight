@@ -21,6 +21,89 @@ def _sqlite_table_names_from_attached_context(msg: str) -> list[str]:
     return re.findall(r"table:\s*`([^`]+)`", msg)
 
 
+def _parse_table_names_from_list_tools(text: str) -> list[str]:
+    """Parse MCP ``list_tables`` text like ``Tables in database: a, b``."""
+    s = (text or "").strip()
+    if not s:
+        return []
+    m = re.search(r"tables?\s+in\s+database:\s*(.+?)(?:\n|$)", s, re.I | re.DOTALL)
+    if not m:
+        return []
+    rest = m.group(1).strip()
+    return [t.strip() for t in re.split(r"[\s,]+", rest) if t.strip()]
+
+
+def _user_message_tail(msg: str) -> str:
+    """The real user turn after RAG (``chat_usecase`` wraps as ``USER MESSAGE:``)."""
+    m = re.search(r"(?is)\bUSER MESSAGE:\s*(.*)\Z", msg or "")
+    if m:
+        return (m.group(1) or "").strip()
+    return (msg or "").strip()
+
+
+def _sqlite_table_tokens_ordered_by_last_mention(text: str, actual_set: set[str]) -> list[str]:
+    """``t_*`` tokens that exist in the DB, ordered by last mention (user cite is usually last in prompt)."""
+    hits: dict[str, int] = {}
+    for m in re.finditer(r"\bt_[A-Za-z0-9_]+\b", text or ""):
+        name = m.group(0)
+        if name in actual_set:
+            hits[name] = m.start()
+    if not hits:
+        return []
+    return [k for k, _ in sorted(hits.items(), key=lambda kv: -kv[1])]
+
+
+def _prioritize_tables_from_user_message(
+    user_message: str,
+    candidate_tables: list[str],
+    actual_tables: list[str],
+) -> list[str]:
+    """Prefer ``t_*`` names the user typed that exist in the DB (esp. after ``USER MESSAGE:``).
+
+    RAG blocks often list a different imported table first (e.g. filename-based vs Sheet1);
+    the LLM can merge that ahead of the table the user actually named.
+    """
+    actual_set = set(actual_tables)
+    stripped_candidates = [str(t).strip() for t in candidate_tables if str(t).strip()]
+
+    tail = _user_message_tail(user_message)
+    ordered = _sqlite_table_tokens_ordered_by_last_mention(tail, actual_set)
+    if ordered:
+        return ordered
+    ordered = _sqlite_table_tokens_ordered_by_last_mention(user_message or "", actual_set)
+    if ordered:
+        return ordered
+    return stripped_candidates
+
+
+def _looks_schema_or_columns_question(text: str) -> bool:
+    """True when the user asks for columns, fields, or table structure (not row data)."""
+    q = (text or "").lower()
+    phrases = (
+        "column name",
+        "column names",
+        "list column",
+        "list columns",
+        "what column",
+        "what columns",
+        "which column",
+        "fields in",
+        "field names",
+        "list of fields",
+        "schema",
+        "structure of the table",
+        "structure of table",
+        "table structure",
+        "describe the table",
+        "describe table",
+        "show columns",
+        "table columns",
+    )
+    if any(p in q for p in phrases):
+        return True
+    return False
+
+
 # Nodes
 async def intent_parse(state: AgentState, llm, agent) -> AgentState:
     """Parse user intent and determine operation type."""
@@ -76,6 +159,8 @@ Return JSON."""
             or "thông tin bảng" in rq_lower
             or "mô tả bảng" in rq_lower
             or "cấu trúc bảng" in rq_lower
+            or _looks_schema_or_columns_question(resolved_query)
+            or _looks_schema_or_columns_question(user_message)
         )
         if schema_like:
             operation = "DESCRIBE_TABLE"
@@ -126,10 +211,23 @@ Return JSON."""
             merged_tables.append(t)
     safe_intent["tables"] = merged_tables
 
+    # LLM often returns UNKNOWN for short schema/column questions; map before query_execution.
+    if operation == "UNKNOWN" and merged_tables and (
+        _looks_schema_or_columns_question(resolved_query)
+        or _looks_schema_or_columns_question(user_message)
+    ):
+        operation = "DESCRIBE_TABLE"
+        safe_intent["operation"] = operation
+
+    if operation in operation_to_intent:
+        safe_intent["derived_intent"] = operation_to_intent[operation]
+    else:
+        safe_intent["derived_intent"] = "unknown"
+
     logger.info(
         "[ReadOnly] Parsed operation=%s, derived_intent=%s, connection=%s",
         operation,
-        derived_intent,
+        safe_intent.get("derived_intent"),
         safe_intent.get("connection"),
     )
 
@@ -153,11 +251,14 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
     log_lines: list[str] = []
     op = str((state.get("intent") or {}).get("operation", "SELECT")).strip().upper()
 
+    tables_result = ""
     try:
         tables_result = await _call_tool(agent, "list_tables", {})
         log_lines.append(f"list_tables: {tables_result}")
     except Exception as e:
         log_lines.append(f"list_tables error: {e}")
+
+    actual_tables = _parse_table_names_from_list_tools(tables_result)
 
     # CREATE targets a new table — names in intent often do not exist yet; skip existence check.
     if op == "CREATE":
@@ -168,8 +269,17 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
             "table_schema": {"tables": tables},
         }
 
+    # Uploaded session DB often has exactly one real table; user may say "user" or omit name.
+    tables_work: list[str] = [str(t).strip() for t in tables if str(t).strip()]
+    um = str(state.get("user_message") or "")
+    if actual_tables:
+        tables_work = _prioritize_tables_from_user_message(um, tables_work, actual_tables)
+    if not tables_work and len(actual_tables) == 1:
+        tables_work = list(actual_tables)
+        log_lines.append(f"[fallback] no table hint → using sole DB table `{tables_work[0]}`")
+
     missing: list[str] = []
-    for t in tables:
+    for t in tables_work:
         name = str(t).strip()
         if not name:
             continue
@@ -181,6 +291,18 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
         except Exception as e:
             log_lines.append(f"describe_table({name}) error: {e}")
             missing.append(name)
+
+    # Wrong hint (e.g. ``user``) but only one physical table — use it for the rest of the turn.
+    if missing and len(actual_tables) == 1:
+        only = actual_tables[0]
+        try:
+            d = await _call_tool(agent, "describe_table", {"table_name": only})
+            log_lines.append(f"describe_table({only}) [hint-mismatch fallback]: {d}")
+            if _describe_table_succeeded(d):
+                missing = []
+                tables_work = [only]
+        except Exception as e:
+            log_lines.append(f"describe_table fallback error: {e}")
 
     log_block = "\n".join(log_lines)
     logger.info(f"[ReadOnly] Schema discovery response: {log_block[:500]}...")
@@ -202,57 +324,122 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
                 "type": "error",
                 "message": msg,
             },
-            "table_schema": {"tables": tables, "missing": missing},
+            "table_schema": {"tables": tables_work, "missing": missing},
         }
 
+    intent_patch = {**(state.get("intent") or {}), "tables": tables_work}
     return {
         **state,
-        "table_schema": {"tables": tables},
+        "intent": intent_patch,
+        "tables": tables_work,
+        "table_schema": {"tables": tables_work},
     }
 
 
 async def query_execution(state: AgentState, llm, agent) -> AgentState:
     """Execute SELECT query directly - no approval needed for read-only."""
+    if state.get("schema_discovery_failed"):
+        # Graph always runs this node after SCHEMA_DISCOVERY; do not overwrite the error output.
+        return state
+
     intent = state.get("intent", {})
     user_message = state["user_message"]
     effective_message = str(intent.get("resolved_query") or user_message)
     operation = intent.get("operation", "SELECT").upper()
     logger.info(f"[ReadOnly] Query execution for: {operation}")
 
-    # Safe DB metadata/connect tools
+    # Safety net if intent_parse still left UNKNOWN (e.g. table list populated only after merge).
+    if operation == "UNKNOWN":
+        combined = f"{effective_message} {user_message}"
+        if _looks_schema_or_columns_question(combined):
+            tables = state.get("tables", []) or intent.get("tables", []) or []
+            if tables and agent:
+                table_name = str(tables[0]).strip()
+                if table_name:
+                    try:
+                        desc = await _call_tool(agent, "describe_table", {"table_name": table_name})
+                        return {
+                            **state,
+                            "sql": None,
+                            "query_result": desc,
+                            "output": {
+                                "type": "query_result",
+                                "data": desc,
+                                "message": desc,
+                            },
+                        }
+                    except Exception as e:
+                        logger.warning("[ReadOnly] UNKNOWN→describe_table fallback failed: %s", e)
+
+    # Safe DB metadata/connect tools — prefer direct MCP calls when we already know the table
+    # (avoids process_query failing on long RAG-prefixed user_message).
     _SAFE_DB_TOOL_OPERATIONS = frozenset(
         {"LIST_TABLES", "DESCRIBE_TABLE", "CONNECT", "DISCONNECT"}
     )
     if operation in _SAFE_DB_TOOL_OPERATIONS:
-        if agent:
-            response = await agent.process_query(
-                effective_message,
-                verbose=False,
-                persist_history=False,
-            )
+        if not agent:
             return {
                 **state,
                 "sql": None,
-                "query_result": response,
+                "query_result": None,
                 "output": {
-                    "type": "query_result",
-                    "data": response,
-                    "message": response,
+                    "type": "error",
+                    "message": "No agent available to execute safe DB tools.",
                 },
             }
+        if operation == "DESCRIBE_TABLE":
+            tables = state.get("tables", []) or intent.get("tables", []) or []
+            if tables:
+                table_name = str(tables[0]).strip()
+                if table_name:
+                    try:
+                        desc = await _call_tool(agent, "describe_table", {"table_name": table_name})
+                        return {
+                            **state,
+                            "sql": None,
+                            "query_result": desc,
+                            "output": {
+                                "type": "query_result",
+                                "data": desc,
+                                "message": desc,
+                            },
+                        }
+                    except Exception as e:
+                        logger.warning("[ReadOnly] describe_table direct call failed: %s", e)
+        if operation == "LIST_TABLES":
+            try:
+                lt = await _call_tool(agent, "list_tables", {})
+                return {
+                    **state,
+                    "sql": None,
+                    "query_result": lt,
+                    "output": {
+                        "type": "query_result",
+                        "data": lt,
+                        "message": lt,
+                    },
+                }
+            except Exception as e:
+                logger.warning("[ReadOnly] list_tables direct call failed: %s", e)
+        response = await agent.process_query(
+            effective_message,
+            verbose=False,
+            persist_history=False,
+        )
         return {
             **state,
             "sql": None,
-            "query_result": None,
+            "query_result": response,
             "output": {
-                "type": "error",
-                "message": "No agent available to execute safe DB tools.",
+                "type": "query_result",
+                "data": response,
+                "message": response,
             },
         }
 
     # Schema/info requests should return table description.
     if operation in {"SELECT", "DESCRIBE_TABLE"}:
-        ql = effective_message.lower()
+        ql = (effective_message + " " + str(user_message)).lower()
         schema_like = (
             "show info about table" in ql
             or "describe table" in ql
@@ -261,6 +448,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
             or "thông tin bảng" in ql
             or "mô tả bảng" in ql
             or "cấu trúc bảng" in ql
+            or _looks_schema_or_columns_question(ql)
         )
         if schema_like and agent:
             tables = state.get("tables", []) or intent.get("tables", []) or []
@@ -292,6 +480,18 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
         db_type = detect_db_type(agent)
         attached = extract_attached_files_context_block(user_message)
         messages = [{"role": "system", "content": get_select_system_prompt(db_type)}]
+        tables_resolved = state.get("tables", []) or intent.get("tables", []) or []
+        if tables_resolved:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Valid SQLite table identifier(s) for this session (use exactly as given, "
+                        "including double-quotes if the name has mixed case): "
+                        + ", ".join(str(t) for t in tables_resolved)
+                    ),
+                }
+            )
         if attached:
             messages.append({"role": "system", "content": attached})
         messages.append({"role": "user", "content": effective_message})

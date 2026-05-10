@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import json
 import logging
 import re
 import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from uuid import UUID
@@ -25,6 +28,35 @@ from internal.services.file_parse_service import parse_file
 from internal.services.retrieval_service import ChunkResult, format_chunks_as_context_block
 
 logger = logging.getLogger(__name__)
+
+# Indexed session files (``/api/files/upload``) — total stored bytes per user.
+USER_STORAGE_LIMIT_BYTES = 5 * 1024 * 1024 * 1024
+
+# Session file markers from the chat UI (``frontend/src/utils/sessionFileMarkers.ts``).
+_SESSION_FILE_PAIR_RE = re.compile(
+    r"\[SESSION_FILE_ID_START\](?P<fid>[\s\S]*?)\[SESSION_FILE_ID_END\]\s*\n?\s*"
+    r"\[UPLOADED_EXCEL_NAME_START\](?P<fname>[\s\S]*?)\[UPLOADED_EXCEL_NAME_END\]"
+)
+
+
+def _csv_to_xlsx_for_mcp(csv_path: Path, xlsx_path: Path) -> None:
+    """Convert CSV to a one-sheet .xlsx; Excel MCP (openpyxl) cannot read CSV directly."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    with csv_path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+        sample = f.read(8192)
+        f.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        except csv.Error:
+            dialect = csv.excel
+        reader = csv.reader(f, dialect=dialect)
+        for row in reader:
+            ws.append(row)
+    wb.save(xlsx_path)
 
 
 def _api_server_root() -> Path:
@@ -90,6 +122,168 @@ class FileUseCase:
             raise HTTPException(status_code=404, detail="Session not found")
         return {"id": row["id"], "project_id": str(row["project_id"]) if row["project_id"] else None}
 
+    async def get_user_storage_usage(self, user_key: str) -> int:
+        """Total bytes of indexed session files for this user."""
+        return await self._files.sum_size_bytes_for_user(user_key)
+
+    def _resolve_disk_path_for_excel_mcp(self, local_path_str: str) -> str | None:
+        """Absolute path for Excel MCP tools: CSV is materialized as sibling .xlsx when needed."""
+        try:
+            p = Path(local_path_str).expanduser().resolve()
+        except OSError:
+            return None
+        if not p.is_file():
+            return None
+        ext = p.suffix.lower()
+        if ext == ".csv":
+            xlsx_p = p.with_suffix(".xlsx")
+            try:
+                if (not xlsx_p.is_file()) or (xlsx_p.stat().st_mtime < p.stat().st_mtime):
+                    _csv_to_xlsx_for_mcp(p, xlsx_p)
+            except Exception as e:
+                logger.warning("CSV→XLSX for Excel MCP failed (%s): %s", p, e)
+                return None
+            return str(xlsx_p.resolve())
+        if ext in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+            return str(p)
+        return str(p)
+
+    async def inject_session_excel_paths_into_prompt(self, text: str, user_key: str) -> str:
+        """Append ``[UPLOADED_EXCEL_PATH_*]`` after each session file pair so the Excel agent uses real paths."""
+        if not (text or "").strip() or not user_key or user_key == "anonymous":
+            return text
+        if "[SESSION_FILE_ID_START]" not in text:
+            return text
+        parts: list[str] = []
+        pos = 0
+        for m in _SESSION_FILE_PAIR_RE.finditer(text):
+            parts.append(text[pos : m.start()])
+            block = m.group(0)
+            tail = text[m.end() : m.end() + 320].lstrip()
+            if tail.startswith("[UPLOADED_EXCEL_PATH_START]"):
+                parts.append(block)
+                pos = m.end()
+                continue
+            fid_raw = (m.group("fid") or "").strip()
+            try:
+                fid = UUID(fid_raw)
+            except ValueError:
+                parts.append(block)
+                pos = m.end()
+                continue
+            row = await self._files.get_file(fid, user_key)
+            if not row:
+                parts.append(block)
+                pos = m.end()
+                continue
+            abs_path = self._resolve_disk_path_for_excel_mcp(str(row.get("local_path") or ""))
+            if not abs_path:
+                parts.append(block)
+                pos = m.end()
+                continue
+            parts.append(
+                f"{block}\n[UPLOADED_EXCEL_PATH_START]{abs_path}[UPLOADED_EXCEL_PATH_END]"
+            )
+            pos = m.end()
+        parts.append(text[pos:])
+        return "".join(parts)
+
+    def _session_file_marker_content(self, file_id: UUID, filename: str) -> str:
+        return (
+            f"[SESSION_FILE_ID_START]{file_id}[SESSION_FILE_ID_END]\n"
+            f"[UPLOADED_EXCEL_NAME_START]{filename}[UPLOADED_EXCEL_NAME_END]"
+        )
+
+    async def append_session_file_upload_message(
+        self,
+        *,
+        session_id: str,
+        user_key: str,
+        file_id: UUID,
+        filename: str,
+    ) -> dict[str, Any]:
+        """Persist a user-visible chat line so the UI can show the upload (markers stripped for display)."""
+        content = self._session_file_marker_content(file_id, filename)
+        msg: dict[str, Any] = {
+            "role": "user",
+            "content": content,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        stack_key = f"{user_key}:{session_id}:stack"
+        pushed = False
+        try:
+            from internal.utils.redis_client import redis_stack_push
+
+            pushed = await redis_stack_push(stack_key, msg)
+        except Exception as e:
+            logger.warning("Redis chat append failed, will try DB: %s", e)
+        if pushed:
+            return msg
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT content FROM session WHERE id = $1 AND user_id = $2 FOR UPDATE",
+                    session_id,
+                    user_key,
+                )
+                if row is None:
+                    return msg
+                data = row["content"]
+                if isinstance(data, str):
+                    data = json.loads(data)
+                if not isinstance(data, dict):
+                    data = {"session_id": session_id, "messages": []}
+                messages = list(data.get("messages") or [])
+                messages.append(msg)
+                data["messages"] = messages
+                data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                await conn.execute(
+                    "UPDATE session SET content = $1::jsonb WHERE id = $2 AND user_id = $3",
+                    json.dumps(data, ensure_ascii=False),
+                    session_id,
+                    user_key,
+                )
+        return msg
+
+    async def _prune_session_messages_with_file_id(
+        self,
+        session_id: str,
+        user_key: str,
+        file_id: UUID,
+    ) -> None:
+        marker = f"[SESSION_FILE_ID_START]{file_id}[SESSION_FILE_ID_END]"
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT content FROM session WHERE id = $1 AND user_id = $2 FOR UPDATE",
+                    session_id,
+                    user_key,
+                )
+                if row is None:
+                    return
+                data = row["content"]
+                if isinstance(data, str):
+                    data = json.loads(data)
+                if not isinstance(data, dict):
+                    return
+                messages = list(data.get("messages") or [])
+                new_messages = [
+                    m
+                    for m in messages
+                    if marker not in str((m or {}).get("content") or "")
+                ]
+                if len(new_messages) == len(messages):
+                    return
+                data["messages"] = new_messages
+                data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                await conn.execute(
+                    "UPDATE session SET content = $1::jsonb WHERE id = $2 AND user_id = $3",
+                    json.dumps(data, ensure_ascii=False),
+                    session_id,
+                    user_key,
+                )
+
     async def upload_file(
         self,
         *,
@@ -115,6 +309,20 @@ class FileUseCase:
                     break
                 size_bytes += len(chunk)
                 f.write(chunk)
+
+        used_before = await self._files.sum_size_bytes_for_user(user_key)
+        if used_before + int(size_bytes) > USER_STORAGE_LIMIT_BYTES:
+            dest_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "code": "storage_quota_exceeded",
+                    "message": "User storage limit reached (5 GB). Delete some uploaded files and try again.",
+                    "used_bytes": used_before,
+                    "limit_bytes": USER_STORAGE_LIMIT_BYTES,
+                    "attempted_bytes": int(size_bytes),
+                },
+            )
 
         mime = upload.content_type or "application/octet-stream"
 
@@ -230,6 +438,22 @@ class FileUseCase:
         base = (name or "").strip().split("/")[-1].split("\\")[-1]
         base = re.sub(r"[^A-Za-z0-9._ -]+", "_", base).strip()
         return base or "upload.bin"
+
+    async def list_user_files_inventory(self, user_key: str) -> list[dict[str, Any]]:
+        rows = await self._files.list_files_for_user_inventory(user_key)
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            ts = r.get("uploaded_at")
+            out.append(
+                {
+                    "id": str(r["id"]),
+                    "session_id": r["session_id"],
+                    "filename": r["filename"],
+                    "size_bytes": int(r["size_bytes"] or 0),
+                    "uploaded_at": ts.isoformat() if ts else None,
+                }
+            )
+        return out
 
     async def get_session_files(self, session_id: str, user_key: str) -> list[dict[str, Any]]:
         await self._require_session(session_id, user_key)
@@ -408,9 +632,18 @@ class FileUseCase:
         row = await self._files.delete_file_row(file_id, user_key)
         if row is None:
             raise HTTPException(status_code=404, detail="File not found")
+        sid = row.get("session_id")
+        if sid:
+            try:
+                await self._prune_session_messages_with_file_id(str(sid), user_key, file_id)
+            except Exception as e:
+                logger.warning("prune session messages for deleted file failed: %s", e)
         lp = row.get("local_path")
         if lp:
-            Path(lp).unlink(missing_ok=True)
+            p = Path(lp)
+            p.unlink(missing_ok=True)
+            if p.suffix.lower() == ".csv":
+                p.with_suffix(".xlsx").unlink(missing_ok=True)
         # Drop table from sqlite if we stored db path + table name
         tname = row.get("sqlite_table_name")
         dbp = row.get("sqlite_db_path")

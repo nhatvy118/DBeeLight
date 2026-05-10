@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json as _json
 import logging
+import os
 import re
+import time
 import uuid
 from typing import AsyncIterator, Optional
 
@@ -15,10 +18,15 @@ from internal.repositories.project_repository import ProjectRepository
 from internal.usecases.file_usecase import FileUseCase
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from mcp_agent.graph.chat_graph import chat_checkpoint_config, langchain_messages_to_session_rows
-from mcp_agent.progress import set_progress_callback, reset_progress_callback
 
 logger = logging.getLogger(__name__)
+
+_chat_graph = importlib.import_module("mcp_agent.graph.chat_graph")
+chat_checkpoint_config = _chat_graph.chat_checkpoint_config
+langchain_messages_to_session_rows = _chat_graph.langchain_messages_to_session_rows
+_progress = importlib.import_module("mcp_agent.progress")
+set_progress_callback = _progress.set_progress_callback
+reset_progress_callback = _progress.reset_progress_callback
 
 
 def _sse_format(event: dict) -> str:
@@ -41,9 +49,6 @@ def _looks_like_summary_request(text: str) -> bool:
         return False
     # English
     if any(w in q for w in ("summarize", "summary", "summarise", "tl;dr")):
-        return True
-    # Vietnamese
-    if any(w in q for w in ("tóm tắt", "tom tat", "tổng quan", "tong quan", "nội dung", "noi dung")):
         return True
     return False
 
@@ -81,6 +86,67 @@ def _is_read_only_sql(sql: str) -> bool:
     if not first:
         return False
     return first[0].upper() in _READ_ONLY_SQL_VERBS
+
+
+def _classify_file_data_intent_heuristic(text: str) -> str:
+    """Return `yes` | `no` | `uncertain` for file-data intent."""
+    s = (text or "").strip().lower()
+    if not s:
+        return "no"
+
+    strong_yes = (
+        "from file",
+        "from uploaded file",
+        "uploaded file",
+        "in file",
+        "in excel",
+        "in sheet",
+        "trong file",
+        "trong excel",
+        "trong sheet",
+        "where ",
+        "group by",
+        "having",
+        "order by",
+        "count(",
+        "sum(",
+        "avg(",
+        "min(",
+        "max(",
+    )
+    if any(p in s for p in strong_yes):
+        return "yes"
+
+    likely_yes = (
+        "filter",
+        "column",
+        "sheet",
+        "row",
+        "dob",
+        " > ",
+        " < ",
+        " = ",
+        ">=",
+        "<=",
+    )
+    if any(p in s for p in likely_yes):
+        return "uncertain"
+
+    strong_no = (
+        "hello",
+        "hi ",
+        "thanks",
+        "thank you",
+        "explain architecture",
+        "debug",
+        "fix bug",
+        "deploy",
+        "help me",
+    )
+    if any(p in s for p in strong_no):
+        return "no"
+
+    return "uncertain"
 
 
 class ChatUseCase:
@@ -166,6 +232,73 @@ class ChatUseCase:
             if isinstance(sql, str) and sql.strip():
                 return sql.strip()
         return None
+
+    async def _llm_file_data_intent_check(self, query: str) -> tuple[bool | None, float]:
+        """
+        Ask LLM whether the query likely needs uploaded-file data.
+        Returns (decision_or_none, latency_ms).
+        """
+        t0 = time.perf_counter()
+        try:
+            from openai import AsyncOpenAI
+        except Exception:
+            return None, (time.perf_counter() - t0) * 1000.0
+
+        client = AsyncOpenAI()
+        model = os.getenv("FILE_INTENT_MODEL", "gpt-4o-mini")
+        timeout_s = max(0.5, float(os.getenv("FILE_INTENT_TIMEOUT_S", "3.0")))
+        prompt = (
+            "Decide if the user message needs data from an uploaded file in this chat session. "
+            "Return JSON only: {\"use_file_data\": true|false}. "
+            "True for filters/aggregations/column lookups over uploaded spreadsheets. "
+            "False for generic conversation, architecture, debugging, or unrelated DB questions."
+        )
+        try:
+            resp = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=model,
+                    temperature=0,
+                    max_tokens=20,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": query[:2000]},
+                    ],
+                    response_format={"type": "json_object"},
+                ),
+                timeout=timeout_s,
+            )
+            content = (resp.choices[0].message.content or "").strip()
+            parsed = _json.loads(content) if content else {}
+            v = parsed.get("use_file_data")
+            if isinstance(v, bool):
+                return v, (time.perf_counter() - t0) * 1000.0
+            return None, (time.perf_counter() - t0) * 1000.0
+        except Exception:
+            return None, (time.perf_counter() - t0) * 1000.0
+
+    async def _resolve_file_data_intent(
+        self,
+        query: str,
+        *,
+        should_try_llm: bool,
+    ) -> tuple[bool, str, str, float | None]:
+        """
+        Resolve file-data intent using heuristic + optional LLM.
+        Returns: (decision, decision_source, heuristic_state, llm_latency_ms_or_none)
+        """
+        heuristic_state = _classify_file_data_intent_heuristic(query)
+        if heuristic_state == "yes":
+            return True, "heuristic", heuristic_state, None
+        if heuristic_state == "no":
+            return False, "heuristic", heuristic_state, None
+        if not should_try_llm:
+            return False, "heuristic_uncertain_default", heuristic_state, None
+
+        llm_decision, llm_latency_ms = await self._llm_file_data_intent_check(query)
+        if llm_decision is None:
+            # Fallback policy requested: heuristic-only on LLM failure.
+            return False, "fallback_heuristic", heuristic_state, llm_latency_ms
+        return bool(llm_decision), "llm", heuristic_state, llm_latency_ms
 
     async def _persist_pending_approval_from_workflow(
         self,
@@ -296,6 +429,9 @@ class ChatUseCase:
                     )
                 raise HTTPException(status_code=403, detail=rejection_text)
 
+        route_for_rag = str((pre_classified_intent or {}).get("route") or "").strip().lower()
+        semantic_retrieval = bool((pre_classified_intent or {}).get("semantic_retrieval"))
+
         # Validate project_id as UUID (from projects.id) if provided
         project_id_uuid: str | None = None
         if project_id:
@@ -372,10 +508,46 @@ class ChatUseCase:
             # Should never happen, but keep it safe: fallback to the value inside session_manager.
             current_session_id = (await agent.session_manager.get_session_info()).get("session_id") or None
 
-        # Shortcut: if user asks to summarize and there is exactly one attached file
-        # in the session, use FileUseCase.summarize_file (RAG-style) instead of routing
-        # to Excel/DB agents (which may require file paths/markers).
+        has_session_files = False
         if self._file_usecase and current_session_id and user_key != "anonymous":
+            try:
+                has_session_files = len(
+                    await self._file_usecase.get_session_files(current_session_id, user_key)
+                ) > 0
+            except Exception as e:
+                logger.warning("UseCase: failed to inspect session files for RAG gating: %s", e)
+
+        should_try_llm_for_file_intent = has_session_files and not semantic_retrieval
+        has_file_data_intent, decision_source, heuristic_state, llm_latency_ms = (
+            await self._resolve_file_data_intent(
+                original_user_query,
+                should_try_llm=should_try_llm_for_file_intent,
+            )
+        )
+        needs_uploaded_file_data = bool(semantic_retrieval or has_file_data_intent)
+
+        use_file_rag = has_session_files and needs_uploaded_file_data
+        logger.info(
+            "UseCase: RAG gating route=%s semantic_retrieval=%s "
+            "has_file_data_intent=%s needs_uploaded_file_data=%s has_session_files=%s "
+            "use_file_rag=%s decision_source=%s heuristic_state=%s llm_latency_ms=%s "
+            "has_file_usecase=%s",
+            route_for_rag or "<none>",
+            semantic_retrieval,
+            has_file_data_intent,
+            needs_uploaded_file_data,
+            has_session_files,
+            use_file_rag,
+            decision_source,
+            heuristic_state,
+            f"{llm_latency_ms:.1f}" if isinstance(llm_latency_ms, float) else "n/a",
+            bool(self._file_usecase),
+        )
+
+        # Shortcut: only for Excel route. If user asks to summarize and there is
+        # exactly one attached file in the session, use FileUseCase.summarize_file
+        # (RAG-style) instead of routing to the generic tool loop.
+        if use_file_rag and self._file_usecase and current_session_id and user_key != "anonymous":
             try:
                 if _looks_like_summary_request(original_user_query):
                     session_files = await self._file_usecase.get_session_files(current_session_id, user_key)
@@ -394,7 +566,7 @@ class ChatUseCase:
                 logger.warning("UseCase: summarize shortcut failed: %s", e)
 
         rag_augmented_query = query
-        if self._file_usecase and current_session_id and user_key != "anonymous":
+        if use_file_rag and self._file_usecase and current_session_id and user_key != "anonymous":
             try:
                 session_sql_url = await self._file_usecase.get_session_sqlite_url(
                     current_session_id, user_key
@@ -424,6 +596,16 @@ class ChatUseCase:
                     rag_augmented_query = f"{block}\n\nUSER MESSAGE:\n{query}"
             except Exception as e:
                 logger.warning("UseCase: session file RAG failed: %s", e)
+
+        if self._file_usecase and user_key != "anonymous" and "[SESSION_FILE_ID_START]" in (
+            rag_augmented_query or ""
+        ):
+            try:
+                rag_augmented_query = await self._file_usecase.inject_session_excel_paths_into_prompt(
+                    rag_augmented_query, user_key
+                )
+            except Exception as e:
+                logger.warning("UseCase: session excel path injection failed: %s", e)
 
         logger.info(f"UseCase: Processing query: {query[:100]}...")
         try:

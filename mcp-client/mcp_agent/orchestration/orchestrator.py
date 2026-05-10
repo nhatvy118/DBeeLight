@@ -190,7 +190,9 @@ class Orchestrator:
     async def _run_agent_node(self, state: OrchestratorState, agent_key: str) -> OrchestratorState:
         session_id = str(state.get("session_id") or "")
         intent_result = state.get("intent_result") or {}
-        message = str(intent_result.get("nl_query") or state.get("user_message") or "")
+        # Prefer raw ``user_message`` so markers (e.g. ``[UPLOADED_EXCEL_PATH_*]``,
+        # RAG blocks) reach Excel/Chart. ``nl_query`` is normalized and drops them.
+        message = str(state.get("user_message") or intent_result.get("nl_query") or "")
         agent_type = self._agent_key_to_type(agent_key)
         self._session_agent_map[session_id] = agent_type
         try:
@@ -296,8 +298,12 @@ class Orchestrator:
         tasks = [
             self._run_subgraph_for_agent(
                 session_id=session_id,
-                # DB needs full attached-files context; other agents use normalized NL query.
-                message=(raw_message if agent_type == "database" else normalized_message),
+                # DB + Excel need full message (RAG / upload path markers). Chart uses NL.
+                message=(
+                    raw_message
+                    if agent_type in ("database", "excel")
+                    else normalized_message
+                ),
                 agent_type=agent_type,
             )
             for agent_type in selected_agents

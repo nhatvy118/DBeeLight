@@ -31,6 +31,34 @@ async def upload_session_file(
     return {"success": True, "file": meta}
 
 
+@router.get("/api/files/quota")
+async def get_files_quota(
+    user_key: str = Depends(get_user_key),
+    usecase: FileUseCase = Depends(get_file_usecase),
+):
+    if user_key == "anonymous":
+        raise HTTPException(status_code=401, detail="Login required")
+    used = await usecase.get_user_storage_usage(user_key)
+    limit = FileUseCase.USER_STORAGE_LIMIT_BYTES
+    return {
+        "success": True,
+        "used_bytes": used,
+        "limit_bytes": limit,
+        "remaining_bytes": max(0, limit - used),
+    }
+
+
+@router.get("/api/files/inventory")
+async def list_user_files_inventory(
+    user_key: str = Depends(get_user_key),
+    usecase: FileUseCase = Depends(get_file_usecase),
+):
+    if user_key == "anonymous":
+        raise HTTPException(status_code=401, detail="Login required")
+    files = await usecase.list_user_files_inventory(user_key)
+    return {"success": True, "files": files}
+
+
 @router.get("/api/files")
 async def list_session_files(
     session_id: str,

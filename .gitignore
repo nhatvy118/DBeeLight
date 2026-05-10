@@ -72,3 +72,5 @@ sessions/
 
 # sqlite databases
 api-server/databases/*
+api-server/temp_dbs/*
+test_file/*

@@ -45,6 +45,8 @@ export type SchemaPreviewData = {
 export type UiAttachment = {
   /** Display name shown to the user (original filename). */
   name: string;
+  /** Present for session-indexed uploads so the user can remove storage-backed files. */
+  fileId?: string;
 };
 
 export type UiMessage = {
@@ -65,6 +67,8 @@ export type UiMessage = {
 
 type MessageListProps = {
   messages: UiMessage[];
+  /** Remove an indexed session file (× on upload chip); deletes server-side and updates UI. */
+  onRemoveSessionFile?: (fileId: string) => void;
   onRefreshResponse?: (aiIndex: number) => void;
   onExecuteSql?: (aiIndex: number) => void;
   onCancelSql?: (aiIndex: number) => void;
@@ -84,6 +88,7 @@ type MessageListProps = {
 
 export default function MessageList({
   messages,
+  onRemoveSessionFile,
   onRefreshResponse,
   onExecuteSql,
   onCancelSql,
@@ -105,6 +110,7 @@ export default function MessageList({
             message={msg.text}
             isUser={msg.isUser}
             attachments={msg.attachments}
+            onRemoveSessionFile={msg.isUser ? onRemoveSessionFile : undefined}
             onTypingStateChange={
               !msg.isUser && index === messages.length - 1 ? onAssistantTypingChange : undefined
             }

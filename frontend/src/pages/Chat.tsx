@@ -8,21 +8,25 @@ import {
   executeSql,
   resumeWorkflow,
   createSession,
-  listSessionFiles,
+  listUserFilesInventory,
   uploadSessionFile,
   deleteSessionFile,
   type SessionInfo,
   type SessionShareInfo,
-  type SessionFileMeta,
   type ToolEvent,
   type GetSessionResponse,
   type StreamEvent,
 } from '../services/api';
+import {
+  buildChatMessageWithSessionFiles,
+  extractSessionFileAttachments,
+  stripSessionFileMarkers,
+} from '../utils/sessionFileMarkers';
 import plusIcon from '../assets/icons/Plus.svg';
+import fileIcon from '../assets/icons/File.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
 import arrowUpCircleIcon from '../assets/icons/Arrow-up-circle.svg';
 import stopCircleIcon from '../assets/icons/Stop_circle.svg';
-import fileIcon from '../assets/icons/File.svg';
 
 const MAX_TEXTAREA_HEIGHT = 200;
 const MIN_TEXTAREA_HEIGHT = 60;
@@ -84,27 +88,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [isUploadingExcel, setIsUploadingExcel] = useState(false);
-  /** Files indexed for this session (RAG + SQLite); persists across messages */
-  const [sessionFiles, setSessionFiles] = useState<SessionFileMeta[]>([]);
+  /** Session files staged above the textarea until the user sends (Enter). */
+  const [inputAttachedFiles, setInputAttachedFiles] = useState<{ id: string; filename: string }[]>([]);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [typingStopSignal, setTypingStopSignal] = useState(0);
   // Live progress label streamed from the backend (e.g. "Đang sinh SQL...").
   // Null when no streaming chat is in flight.
   const [streamingStage, setStreamingStage] = useState<string | null>(null);
   const sendAbortControllerRef = useRef<AbortController | null>(null);
-
-  const refreshSessionFiles = async (sid: string | null) => {
-    if (!sid) {
-      setSessionFiles([]);
-      return;
-    }
-    try {
-      const files = await listSessionFiles(sid);
-      setSessionFiles(files);
-    } catch {
-      setSessionFiles([]);
-    }
-  };
 
   // Load selected project from URL (propProjectId) - URL is source of truth
   useEffect(() => {
@@ -314,29 +305,20 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return id || undefined;
   };
 
-  const extractUploadAttachments = (text: string): { name: string }[] | undefined => {
-    if (!text) return undefined;
-    const out: { name: string }[] = [];
-    const re = /\[UPLOADED_EXCEL_NAME_START\]([\s\S]*?)\[UPLOADED_EXCEL_NAME_END\]/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
-      const name = (m[1] || '').trim();
-      if (name) out.push({ name });
-    }
-    return out.length > 0 ? out : undefined;
-  };
+  const extractUploadAttachments = extractSessionFileAttachments;
 
   const stripInternalPayloads = (text: string): string => {
-    let cleaned = text
-      .replace(/\n?\[CREATE_TABLE_SCHEMA_JSON_START\][\s\S]*?\[CREATE_TABLE_SCHEMA_JSON_END\]\n?/g, '\n')
-      .replace(/\n?\[SCHEMA_CONFIRM_INTERNAL_START\][\s\S]*?\[SCHEMA_CONFIRM_INTERNAL_END\]\n?/g, '\n')
-      // Legacy Superset chart-embed markers — Superset has been removed but old
-      // assistant messages still carry them; strip so they don't render as raw text.
-      .replace(/\n?\[CHART_EMBED_URL_START\][\s\S]*?\[CHART_EMBED_URL_END\]\n?/g, '\n')
-      .replace(/\n?\[CHART_EMBED_META_START\][\s\S]*?\[CHART_EMBED_META_END\]\n?/g, '\n')
-      // File upload markers — internal hint for the agent, not user-facing.
-      .replace(/\n?\[UPLOADED_EXCEL_PATH_START\][\s\S]*?\[UPLOADED_EXCEL_PATH_END\]\n?/g, '\n')
-      .replace(/\n?\[UPLOADED_EXCEL_NAME_START\][\s\S]*?\[UPLOADED_EXCEL_NAME_END\]\n?/g, '\n');
+    let cleaned = stripSessionFileMarkers(
+      text
+        .replace(/\n?\[CREATE_TABLE_SCHEMA_JSON_START\][\s\S]*?\[CREATE_TABLE_SCHEMA_JSON_END\]\n?/g, '\n')
+        .replace(/\n?\[SCHEMA_CONFIRM_INTERNAL_START\][\s\S]*?\[SCHEMA_CONFIRM_INTERNAL_END\]\n?/g, '\n')
+        // Legacy Superset chart-embed markers — Superset has been removed but old
+        // assistant messages still carry them; strip so they don't render as raw text.
+        .replace(/\n?\[CHART_EMBED_URL_START\][\s\S]*?\[CHART_EMBED_URL_END\]\n?/g, '\n')
+        .replace(/\n?\[CHART_EMBED_META_START\][\s\S]*?\[CHART_EMBED_META_END\]\n?/g, '\n')
+        // File path markers for the agent; name/id handled in stripSessionFileMarkers
+        .replace(/\n?\[UPLOADED_EXCEL_PATH_START\][\s\S]*?\[UPLOADED_EXCEL_PATH_END\]\n?/g, '\n'),
+    );
 
     // Strip the read-only-share system note that older builds accidentally
     // persisted into the user's message history.
@@ -407,6 +389,31 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return !isStopVisible && !isUploadingExcel && hasText;
   }, [isStopVisible, isUploadingExcel, query, isViewOnlyShare]);
 
+  const handleRemoveSessionFile = async (fileId: string) => {
+    try {
+      await deleteSessionFile(fileId);
+      setMessages((prev) =>
+        prev.flatMap((m) => {
+          if (!m.isUser || !m.attachments?.some((a) => a.fileId === fileId)) return [m];
+          const nextAtt = m.attachments.filter((a) => a.fileId !== fileId);
+          if (nextAtt.length === 0 && !m.text.trim()) return [];
+          return [{ ...m, attachments: nextAtt.length ? nextAtt : undefined }];
+        }),
+      );
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : 'Remove failed');
+    }
+  };
+
+  const handleRemoveInputAttachment = async (fileId: string) => {
+    try {
+      await deleteSessionFile(fileId);
+      setInputAttachedFiles((prev) => prev.filter((f) => f.id !== fileId));
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : 'Remove failed');
+    }
+  };
+
   const handleExcelFileSelected = async (file: File) => {
     setIsUploadingExcel(true);
     try {
@@ -428,12 +435,32 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         }
         window.dispatchEvent(new PopStateEvent('popstate'));
       }
-      await uploadSessionFile(sid!, file, selectedProject?.id || propProjectId || null);
-      await refreshSessionFiles(sid!);
+      const { file: uploaded } = await uploadSessionFile(sid!, file, selectedProject?.id || propProjectId || null);
+      setInputAttachedFiles((prev) => [...prev, { id: uploaded.id, filename: uploaded.filename }]);
       setTimeout(() => textareaRef.current?.focus(), 0);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to upload file';
-      window.alert(message);
+      const e = err as Error & { code?: string };
+      if (e.code === 'storage_quota_exceeded' || /5\s*GB|storage limit/i.test(e.message || '')) {
+        try {
+          const inv = await listUserFilesInventory();
+          const lines = inv
+            .slice(0, 12)
+            .map(
+              (r) =>
+                `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — phiên ${r.session_id.slice(0, 8)}…`,
+            );
+          window.alert(
+            'Bạn đã dùng hết 5 GB dung lượng lưu trữ cho file đã tải. Hãy xóa bớt file (× trên chip ở ô nhập hoặc trong khung chat) rồi thử lại.\n\n' +
+              (lines.length ? `Một số file gần đây:\n${lines.join('\n')}` : ''),
+          );
+        } catch {
+          window.alert(
+            'Bạn đã dùng hết 5 GB dung lượng lưu trữ. Hãy xóa file (× trên chip ở ô nhập hoặc trong khung chat) rồi thử lại.',
+          );
+        }
+      } else {
+        window.alert(e instanceof Error ? e.message : 'Failed to upload file');
+      }
     } finally {
       setIsUploadingExcel(false);
     }
@@ -493,11 +520,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             })
             .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
           setMessages(convertedMessages);
+          setInputAttachedFiles([]);
           setSessionId(sid);
           setShareInfo(res.share_info ?? null);
           onSessionIdChange?.(sid);
           saveLastSession(sid, selectedProject?.id ?? null);
-          void refreshSessionFiles(sid);
         }
       } catch (err) {
         console.error('Failed to load session:', err);
@@ -519,9 +546,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (sessionWasExplicitlyRemoved && sessionId) {
       // URL no longer has a session (e.g. navigated to /chat) — clear local state
       setMessages([]);
+      setInputAttachedFiles([]);
       setSessionId(null);
       setShareInfo(null);
-      setSessionFiles([]);
       onSessionIdChange?.(null);
       saveLastSession(null, null);
     }
@@ -611,7 +638,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           setSessionId(newSessionId);
           onSessionIdChange?.(newSessionId);
           saveLastSession(newSessionId, selectedProject?.id ?? null);
-          void refreshSessionFiles(newSessionId);
 
           // Update URL so /chat becomes /chat/:sessionId (or /chat/:projectId/:sessionId)
           if (selectedProject?.id) {
@@ -679,24 +705,24 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (!hasText) return;
 
     const displayText = query.trim();
-    const sendText = displayText;
-
-    const shouldShowUploadOnce =
-      sessionFiles.length > 0 && !messages.some((m) => m.isUser);
-    const messageAttachments = shouldShowUploadOnce
-      ? sessionFiles.map((f) => ({ name: f.filename }))
-      : undefined;
+    const sendPayload = buildChatMessageWithSessionFiles(displayText, inputAttachedFiles);
+    const attachmentsForUi = inputAttachedFiles.map((f) => ({ name: f.filename, fileId: f.id }));
 
     lockAllSchemaPreviews();
     setMessages((prev) => [
       ...prev,
-      { text: displayText, isUser: true, attachments: messageAttachments },
+      {
+        text: displayText,
+        isUser: true,
+        ...(attachmentsForUi.length > 0 ? { attachments: attachmentsForUi } : {}),
+      },
     ]);
+    setInputAttachedFiles([]);
     setQuery('');
     // Forcefully reset the textarea to avoid any IME/browser ghost text by
     // both clearing state and remounting the textarea component.
     setInputKey((k) => k + 1);
-    await doSend(sendText);
+    await doSend(sendPayload);
   };
 
   const handleRefreshResponse = async (aiIndex: number) => {
@@ -707,7 +733,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     setIsLoading(true);
     try {
-      const res = await sendMessage(userMsg.text, sessionId, selectedProject?.id || null);
+      const sendPayload = buildChatMessageWithSessionFiles(
+        userMsg.text,
+        (userMsg.attachments || [])
+          .filter((a): a is typeof a & { fileId: string } => !!a.fileId)
+          .map((a) => ({ id: a.fileId, filename: a.name })),
+      );
+      const res = await sendMessage(sendPayload, sessionId, selectedProject?.id || null);
       const resText = res.response;
       if (resText && resText.trim().length > 0) {
         setMessages((prev) => {
@@ -1037,6 +1069,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       setSessionId(null);
       setShareInfo(null);
       setMessages([]);
+      setInputAttachedFiles([]);
       onSessionIdChange?.(null);
     }
     prevProjectIdRef.current = currentId;
@@ -1129,6 +1162,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             })
             .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
           setMessages(convertedMessages);
+          setInputAttachedFiles([]);
           setSessionId(sid);
           setShareInfo(res.share_info ?? null);
           onSessionIdChange?.(sid);
@@ -1210,6 +1244,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           <div className="max-w-5xl mx-auto w-full">
             <MessageList
               messages={messages}
+              onRemoveSessionFile={(fid) => void handleRemoveSessionFile(fid)}
               onRefreshResponse={(idx) => void handleRefreshResponse(idx)}
               onExecuteSql={(idx) => void handleExecuteSql(idx)}
               onCancelSql={(idx) => void handleCancelSql(idx)}
@@ -1243,31 +1278,22 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           )}
           <div className="relative bg-white dark:bg-slate-800 border-2 border-gray-300 dark:border-slate-700 rounded-3xl px-4 shadow-lg dark:shadow-none">
             <div className="flex flex-col">
-              {(sessionFiles.length > 0 || isUploadingExcel) && (
+              {(inputAttachedFiles.length > 0 || isUploadingExcel) && (
                 <div className="flex flex-wrap items-center gap-2 pt-3 pb-1">
                   {isUploadingExcel && (
-                    <span className="text-xs text-gray-500">Uploading…</span>
+                    <span className="text-xs text-gray-500 dark:text-slate-400">Đang tải file…</span>
                   )}
-                  {sessionFiles.map((f) => (
+                  {inputAttachedFiles.map((f) => (
                     <span
                       key={f.id}
-                      className="inline-flex items-center gap-2 text-xs bg-gray-100 text-gray-700 px-3 py-1 rounded-full"
+                      className="inline-flex items-center gap-2 text-xs bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-slate-200 px-3 py-1 rounded-full"
                     >
                       <img src={fileIcon} alt="" className="w-4 h-4" />
                       <span className="max-w-[200px] truncate">{f.filename}</span>
                       <button
                         type="button"
-                        className="text-gray-500 hover:text-gray-800"
-                        onClick={() => {
-                          void (async () => {
-                            try {
-                              await deleteSessionFile(f.id);
-                              await refreshSessionFiles(sessionId);
-                            } catch (e) {
-                              window.alert(e instanceof Error ? e.message : 'Remove failed');
-                            }
-                          })();
-                        }}
+                        className="text-gray-500 hover:text-gray-800 dark:hover:text-slate-100"
+                        onClick={() => void handleRemoveInputAttachment(f.id)}
                       >
                         ×
                       </button>

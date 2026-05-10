@@ -44,12 +44,15 @@ function stripVegaSpecsForTyping(message: string): string {
 
 type ChatMessageAttachment = {
   name: string;
+  fileId?: string;
 };
 
 type ChatMessageProps = {
   message: string;
   isUser: boolean;
   attachments?: ChatMessageAttachment[];
+  /** × on a session file chip removes the uploaded file from storage. */
+  onRemoveSessionFile?: (fileId: string) => void;
   enableTyping?: boolean;
   onTypingStateChange?: (isTyping: boolean) => void;
   typingStopSignal?: number;
@@ -114,7 +117,15 @@ function normalizeInlineCode(text: string): string {
     .join('');
 }
 
-export default function ChatMessage({ message, isUser, attachments, enableTyping = true, onTypingStateChange, typingStopSignal = 0 }: ChatMessageProps) {
+export default function ChatMessage({
+  message,
+  isUser,
+  attachments,
+  onRemoveSessionFile,
+  enableTyping = true,
+  onTypingStateChange,
+  typingStopSignal = 0,
+}: ChatMessageProps) {
   const [displayedText, setDisplayedText] = useState<string>('');
   const [isTyping, setIsTyping] = useState<boolean>(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
@@ -198,7 +209,7 @@ export default function ChatMessage({ message, isUser, attachments, enableTyping
             <div className="flex flex-col items-end gap-1">
               {attachments.map((att, i) => (
                 <span
-                  key={i}
+                  key={att.fileId ?? `${i}-${att.name}`}
                   className="inline-flex items-center gap-1.5 text-xs bg-gray-100 text-gray-700 px-3 py-1.5 rounded-full border border-gray-200 max-w-[16rem]"
                   title={att.name}
                 >
@@ -207,11 +218,21 @@ export default function ChatMessage({ message, isUser, attachments, enableTyping
                     <polyline points="14 2 14 8 20 8" />
                   </svg>
                   <span className="truncate">{att.name}</span>
+                  {att.fileId && onRemoveSessionFile ? (
+                    <button
+                      type="button"
+                      className="text-gray-500 hover:text-gray-800 ml-0.5"
+                      aria-label={`Remove ${att.name}`}
+                      onClick={() => onRemoveSessionFile(att.fileId!)}
+                    >
+                      ×
+                    </button>
+                  ) : null}
                 </span>
               ))}
             </div>
           )}
-          {message && (
+          {!!(message || '').trim() && (
             <div className="bg-gray-100 dark:bg-slate-800 text-gray-900 dark:text-gray-100 rounded-3xl px-5 py-2.5">
               <p className="text-[16px] whitespace-pre-wrap break-words leading-[1.6]">{message}</p>
             </div>

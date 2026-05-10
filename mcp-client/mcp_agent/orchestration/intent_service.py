@@ -70,17 +70,21 @@ def _looks_excel_native(nl_query: str) -> bool:
         # formatting / layout
         "format", "formatting", "conditional format", "merge", "unmerge", "font", "color", "border",
         "wrap", "freeze", "filter view",
-        # excel features
-        "pivot", "pivot table", "chart", "plot", "graph", "worksheet", "workbook", "sheet",
+        # excel features (avoid bare "sheet" substring match on full prompts — use word-boundary regex below for nl_query)
+        "pivot", "pivot table", "chart", "plot", "graph", "worksheet", "workbook",
         "formula", "vlookup", "xlookup", "sumif", "countif",
         # write back
         "write", "fill", "update cells", "insert row", "delete row", "insert column", "delete column",
         "export to excel", "download excel", "xlsx",
-        # Vietnamese
-        "định dạng", "bảng pivot", "pivot", "biểu đồ", "đồ thị", "công thức", "sheet", "worksheet",
-        "ghi vào", "điền vào", "xuất excel", "tải excel",
     )
-    return any(k in q for k in keywords)
+    if any(k in q for k in keywords):
+        return True
+    # Workbook structure: "how many sheets", ".csv" filename must not force SQL-only (see _policy_override_route).
+    if re.search(r"\bsheets?\b", q):
+        return True
+    if re.search(r"\bworksheets?\b", q):
+        return True
+    return False
 
 
 def _looks_sql_tabular(nl_query: str) -> bool:
@@ -89,8 +93,6 @@ def _looks_sql_tabular(nl_query: str) -> bool:
     keywords = (
         "select", "where", "group by", "order by", "having", "join", "distinct", "count", "sum", "avg", "min", "max",
         "top ", "limit",
-        # Vietnamese
-        "lọc", "đếm", "tổng", "trung bình", "nhóm theo", "sắp xếp", "distinct", "join",
     )
     return any(k in q for k in keywords)
 
@@ -116,8 +118,12 @@ def _policy_override_route(
 
     # Without explicit file-context, keep Excel for explicit workbook tasks,
     # but default CSV questions to SQL (DB agent) when they look tabular.
-    if ff == "csv" and not _looks_excel_native(nl_query):
-        if _looks_sql_tabular(nl_query) or "csv" in (nl_query or "").lower():
+    # Do not treat ".csv" in the *filename* inside nl_query as "must use SQL" if the question is workbook/sheet metadata.
+    if ff in {"csv", "xlsx", "xls", "excel"} and not _looks_excel_native(nl_query):
+        qn = (nl_query or "").lower()
+        sqlish = _looks_sql_tabular(nl_query)
+        mentions_csv_word = re.search(r"\bcsv\b", qn) is not None
+        if sqlish or mentions_csv_word:
             return "db_readonly"
 
     return route
@@ -146,7 +152,8 @@ _INTENT_CLASSIFICATION_PROMPT = """You are an orchestration router. Pick exactly
 **Decision order (important):**
 - For anything database-related, decide in this order: first try **1 → 2 → 3** (the three structured DB workflows). Only if the request clearly fits NONE of them, use **4** (general Database Agent).
 - Non-database topics: use **5** or **6** when appropriate.
-- If the user message begins with "[ATTACHED FILES CONTEXT]" (indexed excerpts from files uploaded in this chat session), prefer **db_readonly** or **database** for filtering, comparing, aggregating, DISTINCT/JOIN questions over uploaded tabular data. Use **excel** only when the user explicitly wants spreadsheet formatting, in-cell charts, or workbook structure edits — not for plain data questions about uploaded sheets.
+- If the user message includes uploaded dataset context (e.g. "[UPLOADED DATASETS]" or "[ATTACHED FILES CONTEXT]"), prefer **db_readonly** or **database** for filtering, comparing, aggregating, DISTINCT/JOIN questions over uploaded tabular data. Use **excel** only when the user explicitly wants spreadsheet formatting, in-cell charts, or workbook structure edits.
+- Set "semantic_retrieval" to true only when the user needs semantic grounding from unstructured document text (summaries, policy/contract interpretation, "what does this document say..."). For structured SQL-style analysis over uploaded tables, set "semantic_retrieval" to false.
 
 Branches:
 
@@ -169,6 +176,7 @@ Return strict JSON with:
 - "requires_export": true if user asks export/download file, else false
 - "table_hint": table/entity hint if mentioned, else null
 - "file_format": output/input file format if present (csv, xlsx, json, etc.), else null
+- "semantic_retrieval": true only when semantic document grounding is needed; false for SQL/filter/aggregate/ranking over structured uploaded tables
 
 Return JSON only."""
 
@@ -187,6 +195,7 @@ class IntentResult(BaseModel):
     requires_export: bool = False
     table_hint: Optional[str] = None
     file_format: Optional[str] = None
+    semantic_retrieval: bool = False
     agent_type: Optional[str] = None
     # Minimum permission needed to execute this route. Derived deterministically
     # from ``route``; not classified by the LLM.
@@ -301,6 +310,7 @@ class IntentService:
                 "requires_export": False,
                 "table_hint": None,
                 "file_format": None,
+                "semantic_retrieval": False,
             }
 
         nl_query = str(result.get("nl_query") or prompt).strip() or prompt
@@ -315,9 +325,7 @@ class IntentService:
         )
         if needs_clarification and not clarification_question:
             clarification_question = (
-                "Bạn có thể nói rõ bạn muốn làm gì tiếp theo không?"
-                if detect_user_lang(prompt) == "vi"
-                else "Could you clarify what you'd like to do next?"
+                "Could you clarify what you'd like to do next?"
             )
 
         route: Optional[OrchestratorRoute]
@@ -351,6 +359,7 @@ class IntentService:
             requires_export=bool(result.get("requires_export")),
             table_hint=(str(result["table_hint"]).strip() if result.get("table_hint") else None),
             file_format=(str(result["file_format"]).strip().lower() if result.get("file_format") else None),
+            semantic_retrieval=bool(result.get("semantic_retrieval")),
             access_level=(ROUTE_ACCESS_LEVEL.get(route) if route else None),
         )
 
@@ -500,8 +509,6 @@ def _normalize_fallback_agent(value: Any) -> Optional[str]:
         "graph": "chart",
         "viz": "chart",
         "visualization": "chart",
-        "biểu đồ": "chart",
-        "đồ thị": "chart",
     }
     return aliases.get(s)
 
@@ -535,8 +542,8 @@ def _infer_fallback_agent(result: dict, nl_query: str) -> str:
             "xlsx",
             "csv",
             "spreadsheet",
-            "xuất file",
-            "tải file",
+            "export file",
+            "download file",
             "sheet",
         )
     ):

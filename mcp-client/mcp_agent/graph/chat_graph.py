@@ -158,10 +158,11 @@ def build_chat_graph(orchestrator: Any, checkpointer: Any):
         summary_text = _running_summary_text(state.get("context"))
         trimmed = _truncate_messages_token_budget(msgs, CHAT_HISTORY_HARD_CAP_TOKENS)
         intent_msgs = summarized or trimmed
-        # Summarization snapshots can occasionally lag one turn behind and miss
-        # the newest HumanMessage. Fallback to trimmed live messages before
-        # concluding the user input is empty.
-        query = _last_user_text(intent_msgs) or _last_user_text(trimmed)
+        # Prefer the live message tail for the active turn. Summarized snapshots
+        # can drop session markers (e.g. ``[UPLOADED_EXCEL_PATH_*]``) that the
+        # Excel/chart paths require. Summarization can also lag one turn — fall
+        # back to summarized history if the tail is empty.
+        query = _last_user_text(trimmed) or _last_user_text(intent_msgs)
         if not query.strip():
             return {
                 "messages": [AIMessage(content="Error: empty user message.")],

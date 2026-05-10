@@ -601,11 +601,63 @@ export async function listSessionFiles(sessionId: string): Promise<SessionFileMe
   return data.files ?? [];
 }
 
+export type UploadSessionFileResult = {
+  file: SessionFileMeta;
+};
+
+function uploadErrorMessage(data: unknown): string {
+  if (typeof data !== 'object' || data === null) return 'Failed to upload file';
+  const d = data as { detail?: unknown };
+  const detail = d.detail;
+  if (typeof detail === 'string') return detail;
+  if (typeof detail === 'object' && detail !== null && 'message' in detail) {
+    return String((detail as { message?: string }).message || 'Failed to upload file');
+  }
+  return 'Failed to upload file';
+}
+
+export type FileQuotaInfo = {
+  used_bytes: number;
+  limit_bytes: number;
+  remaining_bytes: number;
+};
+
+export async function getFilesQuota(): Promise<FileQuotaInfo> {
+  const response = await fetch(url('/api/files/quota'), { credentials: 'include' });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data as { detail?: string }).detail || 'Failed to load storage quota');
+  }
+  const w = data as FileQuotaInfo;
+  return {
+    used_bytes: w.used_bytes,
+    limit_bytes: w.limit_bytes,
+    remaining_bytes: w.remaining_bytes,
+  };
+}
+
+export type UserFileInventoryRow = {
+  id: string;
+  session_id: string;
+  filename: string;
+  size_bytes: number;
+  uploaded_at?: string | null;
+};
+
+export async function listUserFilesInventory(): Promise<UserFileInventoryRow[]> {
+  const response = await fetch(url('/api/files/inventory'), { credentials: 'include' });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data as { detail?: string }).detail || 'Failed to list files');
+  }
+  return (data as { files?: UserFileInventoryRow[] }).files ?? [];
+}
+
 export async function uploadSessionFile(
   sessionId: string,
   file: File,
   projectId: string | null = null,
-): Promise<SessionFileMeta> {
+): Promise<UploadSessionFileResult> {
   const form = new FormData();
   form.append('file', file);
   form.append('session_id', sessionId);
@@ -617,10 +669,21 @@ export async function uploadSessionFile(
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error((data as { detail?: string }).detail || 'Failed to upload file');
+    const err = new Error(uploadErrorMessage(data)) as Error & {
+      status?: number;
+      code?: string;
+      detail?: unknown;
+    };
+    err.status = response.status;
+    const det = (data as { detail?: { code?: string } }).detail;
+    if (typeof det === 'object' && det && typeof det.code === 'string') {
+      err.code = det.code;
+    }
+    err.detail = (data as { detail?: unknown }).detail;
+    throw err;
   }
   const wrapped = data as { file: SessionFileMeta };
-  return wrapped.file;
+  return { file: wrapped.file };
 }
 
 export async function deleteSessionFile(fileId: string): Promise<void> {
