@@ -92,7 +92,7 @@ async def delete_session(
     request: Request,
     user_key: str = Depends(get_user_key),
 ):
-    """Delete session row, attached file rows/chunks, local uploads, and temp SQLite DB."""
+    """Delete session row, attached file rows/chunks, ``file_handle/...`` session tree, and temp SQLite DB."""
     pool = getattr(request.app.state, "db_pool", None)
     if pool is None:
         raise HTTPException(status_code=500, detail="Database unavailable")

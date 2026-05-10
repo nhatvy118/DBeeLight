@@ -215,6 +215,33 @@ class ChatUseCase:
     def _attach_sql_action_id_marker(text: str, action_id: str) -> str:
         return f"{text}\n\n[SQL_ACTION_ID_START]{action_id}[SQL_ACTION_ID_END]"
 
+    async def _maybe_persist_excel_export_in_assistant_reply(
+        self, response_text: str, session_id: str | None, user_key: str
+    ) -> str:
+        """Persist inline Excel export to ``file_handle/{{user}}/{{session}}/export/`` and strip base64."""
+        if (
+            not self._file_usecase
+            or not (session_id or "").strip()
+            or user_key == "anonymous"
+            or "[EXCEL_BASE64_START]" not in (response_text or "")
+        ):
+            return response_text
+        try:
+            return await self._file_usecase.rewrite_assistant_text_persist_excel_export(
+                response_text,
+                session_id=(session_id or "").strip(),
+                user_key=user_key,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Persist Excel export failed (keeping inline base64): %s",
+                e,
+                exc_info=True,
+            )
+            return response_text
+
     @staticmethod
     def _extract_sql_preview_from_tool_events(tool_events: list[dict]) -> str | None:
         """Prefer structured sql_preview tool event over parsing assistant text."""
@@ -700,6 +727,10 @@ class ChatUseCase:
                 action_id = str(uuid.uuid4())
                 response_text = self._attach_sql_action_id_marker(response_text, action_id)
 
+            response_text = await self._maybe_persist_excel_export_in_assistant_reply(
+                response_text, current_session_id, user_key
+            )
+
             logger.info(
                 "UseCase: Query processed, session_id=%s, agent=%s, success=%s",
                 current_session_id,
@@ -932,6 +963,10 @@ class ChatUseCase:
         if sql_preview:
             action_id = str(uuid.uuid4())
             response_text = self._attach_sql_action_id_marker(response_text, action_id)
+
+        response_text = await self._maybe_persist_excel_export_in_assistant_reply(
+            response_text, sid, user_key
+        )
 
         if (response_text or "").strip():
             await agent.session_manager.add_message("assistant", response_text)
@@ -1170,6 +1205,10 @@ class ChatUseCase:
 
             if current_session_id and (action_id or "").strip():
                 await agent.session_manager.set_sql_action_state(current_session_id, action_id, "executed")
+
+            result_text = await self._maybe_persist_excel_export_in_assistant_reply(
+                result_text, current_session_id, user_key
+            )
 
             # Persist assistant execution result so it survives page reload/history fetch.
             if agent.session_manager and (result_text or "").strip():

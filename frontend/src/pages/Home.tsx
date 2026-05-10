@@ -6,8 +6,14 @@ import {
   uploadSessionFile,
   listUserFilesInventory,
   deleteSessionFile,
+  downloadStoredSessionFile,
 } from '../services/api';
 import { buildChatMessageWithSessionFiles } from '../utils/sessionFileMarkers';
+import {
+  extractExportData,
+  stripExcelMarkersFromText,
+  triggerExcelDownload,
+} from '../utils/excelExportMarkers';
 import plusIcon from '../assets/icons/Plus.svg';
 import fileIcon from '../assets/icons/File.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
@@ -28,22 +34,6 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const canSend = !isLoading && !isUploadingExcel && query.trim().length > 0;
-
-  const handleRemoveSessionFile = async (fileId: string) => {
-    try {
-      await deleteSessionFile(fileId);
-      setMessages((prev) =>
-        prev.flatMap((m) => {
-          if (!m.isUser || !m.attachments?.some((a) => a.fileId === fileId)) return [m];
-          const nextAtt = m.attachments.filter((a) => a.fileId !== fileId);
-          if (nextAtt.length === 0 && !m.text.trim()) return [];
-          return [{ ...m, attachments: nextAtt.length ? nextAtt : undefined }];
-        }),
-      );
-    } catch (e) {
-      window.alert(e instanceof Error ? e.message : 'Remove failed');
-    }
-  };
 
   const handleRemoveInputAttachment = async (fileId: string) => {
     try {
@@ -85,12 +75,12 @@ export default function Home() {
                 `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — phiên ${r.session_id.slice(0, 8)}…`,
             );
           window.alert(
-            'Bạn đã dùng hết 5 GB dung lượng lưu trữ cho file đã tải. Hãy xóa bớt file (× trên chip ở ô nhập hoặc trong khung chat) rồi thử lại.\n\n' +
-              (lines.length ? `Một số file gần đây:\n${lines.join('\n')}` : ''),
+            'You have used up 5 GB of storage for uploaded files. Please remove some files (in the Storage section) and try again.\n\n' +   
+            (lines.length ? `Some recent files:\n${lines.join('\n')}` : ''),
           );
         } catch {
           window.alert(
-            'Bạn đã dùng hết 5 GB dung lượng lưu trữ. Hãy xóa file (× trên chip ở ô nhập hoặc trong khung chat) rồi thử lại.',
+            'You have used up 5 GB of storage for uploaded files. Please remove some files (in the Storage section) and try again.',
           );
         }
       } else {
@@ -131,7 +121,16 @@ export default function Home() {
     try {
       const res = await sendMessage(sendPayload, sessionId, null);
       if (res.success) {
-        setMessages((prev) => [...prev, { text: res.response ?? '', isUser: false }]);
+        const raw = res.response ?? '';
+        const exp = extractExportData(raw);
+        setMessages((prev) => [
+          ...prev,
+          {
+            text: stripExcelMarkersFromText(raw).trim(),
+            isUser: false,
+            ...(exp ? { exportToExcel: exp } : {}),
+          },
+        ]);
         if (res.session_id) {
           setSessionId(res.session_id);
         }
@@ -173,6 +172,23 @@ export default function Home() {
 
   const hasMessages = messages.length > 0;
 
+  const handleExportExcel = async (aiIndex: number) => {
+    const msg = messages[aiIndex];
+    const exp = msg?.exportToExcel;
+    if (!exp?.filename) return;
+    try {
+      if (exp.sessionFileId) {
+        await downloadStoredSessionFile(exp.sessionFileId);
+        return;
+      }
+      if (exp.base64) {
+        triggerExcelDownload(exp);
+      }
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : 'Export failed');
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-white">
       {hasMessages && (
@@ -180,7 +196,7 @@ export default function Home() {
           <div className="max-w-3xl mx-auto">
             <MessageList
               messages={messages}
-              onRemoveSessionFile={(fid) => void handleRemoveSessionFile(fid)}
+              onExportFile={(idx) => void handleExportExcel(idx)}
             />
             <div ref={messagesEndRef} />
           </div>
@@ -196,18 +212,21 @@ export default function Home() {
           )}
           <div className="relative bg-white border-2 border-gray-300 rounded-3xl px-4 shadow-lg">
             {(inputAttachedFiles.length > 0 || isUploadingExcel) && (
-              <div className="flex flex-wrap gap-2 pt-3 pb-1">
-                {isUploadingExcel && <span className="text-xs text-gray-500">Đang tải file…</span>}
+              <div className="flex flex-wrap gap-2 pt-3 pb-3">
+                {isUploadingExcel && <span className="text-sm text-gray-500">File is loading…</span>}
                 {inputAttachedFiles.map((f) => (
                   <span
                     key={f.id}
-                    className="inline-flex items-center gap-2 text-xs bg-gray-100 text-gray-700 px-3 py-1 rounded-full"
+                    className="inline-flex items-center gap-2 bg-gray-100 text-gray-800 px-3 py-2.5 rounded-xl border border-gray-200 max-w-full min-w-0"
                   >
-                    <img src={fileIcon} alt="" className="w-4 h-4" />
-                    <span className="max-w-[200px] truncate">{f.filename}</span>
+                    <img src={fileIcon} alt="" className="w-4 h-4 flex-shrink-0" />
+                    <span className="text-sm sm:text-base font-semibold leading-snug truncate min-w-0 max-w-md">
+                      {f.filename}
+                    </span>
                     <button
                       type="button"
-                      className="text-gray-500 hover:text-gray-800"
+                      className="shrink-0 text-base leading-none text-gray-500 hover:text-gray-800 px-0.5"
+                      aria-label={`Gỡ ${f.filename}`}
                       onClick={() => void handleRemoveInputAttachment(f.id)}
                     >
                       ×
@@ -216,7 +235,13 @@ export default function Home() {
                 ))}
               </div>
             )}
-            <div className="flex items-center gap-3 min-h-[48px]">
+            <div
+              className={`flex items-center gap-3 min-h-[48px] ${
+                inputAttachedFiles.length > 0 || isUploadingExcel
+                  ? '-mx-4 px-4 border-t border-gray-200 pt-2'
+                  : ''
+              }`}
+            >
               <button
                 type="button"
                 className="text-gray-500 hover:text-gray-700 flex-shrink-0"

@@ -554,29 +554,56 @@ async def execute_query_no_limit(query: str) -> str:
 async def export_table_to_excel(
     table_name: str,
     columns: str = "*",
-    where_clause: str | None = None
+    where_clause: str | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
 ) -> dict:
     """Export table data to Excel file. Returns dict with base64 content and filename.
 
     Args:
         table_name: Name of the table to export
         columns: Column names to export (default: "*")
-        where_clause: Optional WHERE clause to filter data
+        where_clause: Optional WHERE clause to filter data (without the WHERE keyword)
+        limit: Optional SQLite LIMIT (row cap)
+        offset: Optional SQLite OFFSET (skip rows; use with limit for slices e.g. rows 10–20 → limit 11, offset 9)
     """
     import base64
     import io
     import json
     import logging
-    import pandas as pd
 
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
+
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return {
+            "error": (
+                "openpyxl is required for Excel export. From repo root: "
+                "`cd database && uv sync`, then restart the API server "
+                "(or ensure `database/.venv` exists so the MCP subprocess uses that Python)."
+            )
+        }
 
     try:
         # Build query
         query = f"SELECT {columns} FROM {table_name}"
         if where_clause:
             query += f" WHERE {where_clause}"
+        if limit is not None:
+            lim = int(limit)
+            if lim < 0:
+                return {"error": "limit must be non-negative"}
+            query += f" LIMIT {lim}"
+        elif offset is not None:
+            # SQLite requires LIMIT when using OFFSET; -1 means no upper bound.
+            query += " LIMIT -1"
+        if offset is not None:
+            off = int(offset)
+            if off < 0:
+                return {"error": "offset must be non-negative"}
+            query += f" OFFSET {off}"
 
         logger.info(f"[export_table_to_excel] table={table_name}, query={query}")
 
@@ -604,10 +631,29 @@ async def export_table_to_excel(
         if not data:
             return {"error": "No data found"}
 
-        # Create Excel
-        df = pd.DataFrame(data)
+        if not isinstance(data[0], dict):
+            return {"error": "Query result rows must be objects; got unexpected shape."}
+
+        # Build .xlsx with openpyxl only (avoids pandas' optional excel engine).
+        keys: list[str] = []
+        seen: set[str] = set()
+        for row in data:
+            if not isinstance(row, dict):
+                return {"error": "Query result rows must be objects; got unexpected shape."}
+            for k in row:
+                sk = str(k)
+                if sk not in seen:
+                    seen.add(sk)
+                    keys.append(sk)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(keys)
+        for row in data:
+            ws.append([row.get(k) for k in keys])
+
         output = io.BytesIO()
-        df.to_excel(output, index=False)
+        wb.save(output)
         output.seek(0)
 
         # Encode to base64

@@ -102,21 +102,6 @@ For CREATE TABLE requests:
 - Ask user to validate all data types.
 - Phase 2 (after explicit confirmation): you MAY show the final `CREATE TABLE` SQL block for transparency, then call `create_table` with `user_confirmed=true`.
 
-## Export to Excel - SIMPLE INSTRUCTIONS
-
-When user asks to export table to Excel (e.g., "export table X to Excel"):
-
-**YOUR JOB: Just say this exact sentence:**
-
-"The data from the `issuer` table has been successfully exported to an Excel file named `issuer_data.xlsx` with 17 rows."
-
-Replace table name and row count with actual values.
-
-**DO NOT:**
-- Do NOT use any tools
-- Do NOT write code
-- Do NOT try to export anything yourself
-
 ## Export to Excel - REQUIRED TOOL CALL
 
 When user asks to export table to Excel (e.g., "export table X to Excel", "tải bảng X về Excel"):
@@ -126,7 +111,8 @@ When user asks to export table to Excel (e.g., "export table X to Excel", "tải
 1. Call the `export_table_to_excel` tool with:
    - table_name: the table name to export
    - columns: "*" (or specific column names)
-   - where_clause: optional filter
+   - where_clause: optional filter (without WHERE keyword)
+   - limit / offset: optional SQLite slice (e.g. rows 10–20 → limit 11, offset 9)
 
 2. The tool returns a dict with:
    - base64: Excel file content (base64 encoded)

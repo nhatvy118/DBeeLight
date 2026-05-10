@@ -4,9 +4,10 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
 from internal.dependencies import get_file_usecase, get_user_key
-from internal.usecases.file_usecase import FileUseCase
+from internal.usecases.file_usecase import USER_STORAGE_LIMIT_BYTES, FileUseCase
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -38,11 +39,13 @@ async def get_files_quota(
 ):
     if user_key == "anonymous":
         raise HTTPException(status_code=401, detail="Login required")
-    used = await usecase.get_user_storage_usage(user_key)
-    limit = FileUseCase.USER_STORAGE_LIMIT_BYTES
+    import_used, export_used, used = await usecase.get_storage_quota_breakdown(user_key)
+    limit = USER_STORAGE_LIMIT_BYTES
     return {
         "success": True,
         "used_bytes": used,
+        "import_used_bytes": import_used,
+        "export_used_bytes": export_used,
         "limit_bytes": limit,
         "remaining_bytes": max(0, limit - used),
     }
@@ -59,6 +62,17 @@ async def list_user_files_inventory(
     return {"success": True, "files": files}
 
 
+@router.get("/api/files/export-inventory")
+async def list_export_files_inventory(
+    user_key: str = Depends(get_user_key),
+    usecase: FileUseCase = Depends(get_file_usecase),
+):
+    if user_key == "anonymous":
+        raise HTTPException(status_code=401, detail="Login required")
+    files = await usecase.list_chat_export_files_inventory(user_key)
+    return {"success": True, "files": files}
+
+
 @router.get("/api/files")
 async def list_session_files(
     session_id: str,
@@ -69,6 +83,31 @@ async def list_session_files(
         raise HTTPException(status_code=401, detail="Login required")
     files = await usecase.get_session_files(session_id.strip(), user_key)
     return {"success": True, "files": files}
+
+
+@router.get("/api/files/{file_id}/download")
+async def download_stored_session_file(
+    file_id: str,
+    user_key: str = Depends(get_user_key),
+    usecase: FileUseCase = Depends(get_file_usecase),
+):
+    """Download a session file from ``file_handle/{user}/{session}/import|export/``."""
+    if user_key == "anonymous":
+        raise HTTPException(status_code=401, detail="Login required")
+    try:
+        fid = UUID(file_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid file id") from e
+    row = await usecase.get_file_for_download(fid, user_key)
+    path = row["path"]
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    media = row.get("mime_type") or "application/octet-stream"
+    return FileResponse(
+        str(path),
+        filename=row["filename"],
+        media_type=str(media),
+    )
 
 
 @router.delete("/api/files/{file_id}")

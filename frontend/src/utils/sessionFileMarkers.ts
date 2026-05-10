@@ -1,5 +1,5 @@
 /**
- * Markers persisted with chat history for session file uploads (API-server `FileUseCase`).
+ * Markers persisted with chat history for session files stored under `file_handle/{user}/{session}/import/`.
  */
 
 export type SessionFileAttachment = { name: string; fileId?: string };

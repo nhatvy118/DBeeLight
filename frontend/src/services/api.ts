@@ -620,6 +620,8 @@ export type FileQuotaInfo = {
   used_bytes: number;
   limit_bytes: number;
   remaining_bytes: number;
+  import_used_bytes: number;
+  export_used_bytes: number;
 };
 
 export async function getFilesQuota(): Promise<FileQuotaInfo> {
@@ -633,6 +635,8 @@ export async function getFilesQuota(): Promise<FileQuotaInfo> {
     used_bytes: w.used_bytes,
     limit_bytes: w.limit_bytes,
     remaining_bytes: w.remaining_bytes,
+    import_used_bytes: w.import_used_bytes ?? w.used_bytes,
+    export_used_bytes: w.export_used_bytes ?? 0,
   };
 }
 
@@ -651,6 +655,18 @@ export async function listUserFilesInventory(): Promise<UserFileInventoryRow[]> 
     throw new Error((data as { detail?: string }).detail || 'Failed to list files');
   }
   return (data as { files?: UserFileInventoryRow[] }).files ?? [];
+}
+
+/** Assistant chat exports persisted under ``file_handle/.../export/`` (same shape as import rows). */
+export type ExportFileInventoryRow = UserFileInventoryRow;
+
+export async function listExportFilesInventory(): Promise<ExportFileInventoryRow[]> {
+  const response = await fetch(url('/api/files/export-inventory'), { credentials: 'include' });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((data as { detail?: string }).detail || 'Failed to list export files');
+  }
+  return (data as { files?: ExportFileInventoryRow[] }).files ?? [];
 }
 
 export async function uploadSessionFile(
@@ -695,6 +711,35 @@ export async function deleteSessionFile(fileId: string): Promise<void> {
     const data = await response.json().catch(() => ({}));
     throw new Error((data as { detail?: string }).detail || 'Failed to delete file');
   }
+}
+
+/** Download a session file from ``file_handle/{user}/{session}/import`` or ``…/export``. */
+export async function downloadStoredSessionFile(fileId: string): Promise<void> {
+  const response = await fetch(url(`/api/files/${encodeURIComponent(fileId)}/download`), {
+    method: 'GET',
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error((data as { detail?: string }).detail || 'Download failed');
+  }
+  const contentDisposition = response.headers.get('Content-Disposition');
+  let filename = 'export.xlsx';
+  if (contentDisposition) {
+    const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    if (match) {
+      filename = match[1].replace(/['"]/g, '');
+    }
+  }
+  const blob = await response.blob();
+  const blobUrl = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(blobUrl);
+  a.remove();
 }
 
 export async function deleteChatSession(sessionId: string): Promise<void> {

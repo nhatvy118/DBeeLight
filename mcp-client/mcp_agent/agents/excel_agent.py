@@ -31,7 +31,7 @@ class ExcelAgent(BaseAgent):
         """Build system prompt for Excel manipulation tools."""
         return r"""You are an Excel Agent AI that helps users with both **local .xlsx workbooks** and **Google Sheets** that they own. Pick tools from the right pool based on what the user is referring to:
 
-- A path like ``/.../uploads/.../*.xlsx`` (or markers ``[UPLOADED_EXCEL_PATH_*]``) → use the **local Excel tools** (workbook/range ops below).
+- A path under ``file_handle`` (e.g. ``.../file_handle/.../excel_mcp/.../*.xlsx``) or markers ``[UPLOADED_EXCEL_PATH_*]`` → use the **local Excel tools** (workbook/range ops below).
 - A Google Sheets URL (``https://docs.google.com/spreadsheets/d/<ID>/...``) or words like "google sheet", "drive sheet" → use the **Google Sheets tools**.
 
 ## Language Rule

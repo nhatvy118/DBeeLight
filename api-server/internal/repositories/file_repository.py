@@ -144,7 +144,7 @@ class FileRepository:
     ) -> list[dict[str, Any]]:
         rows = await self._pool.fetch(
             """
-            SELECT id, session_id, filename, size_bytes, uploaded_at
+            SELECT id, session_id, filename, size_bytes, uploaded_at, local_path
             FROM files
             WHERE user_id = $1
             ORDER BY uploaded_at DESC
@@ -152,6 +152,15 @@ class FileRepository:
             """,
             user_id,
             limit,
+        )
+        return [dict(r) for r in rows]
+
+    async def list_file_sizes_paths_for_user(self, user_id: str) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            """
+            SELECT size_bytes, local_path FROM files WHERE user_id = $1
+            """,
+            user_id,
         )
         return [dict(r) for r in rows]
 

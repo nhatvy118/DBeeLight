@@ -35,6 +35,8 @@ env/
 # User uploads and generated files
 **/uploads/*
 !**/uploads/.gitkeep
+**/file_handle/*
+!**/file_handle/.gitkeep
 **/static/charts/*.png
 !**/static/charts/.gitkeep
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import MessageList, { type UiMessage, type ExportData, type SchemaPreviewData } from '../components/chat/MessageList';
+import MessageList, { type UiMessage, type SchemaPreviewData } from '../components/chat/MessageList';
 import {
   getSession,
   sendMessage,
@@ -11,6 +11,7 @@ import {
   listUserFilesInventory,
   uploadSessionFile,
   deleteSessionFile,
+  downloadStoredSessionFile,
   type SessionInfo,
   type SessionShareInfo,
   type ToolEvent,
@@ -22,6 +23,11 @@ import {
   extractSessionFileAttachments,
   stripSessionFileMarkers,
 } from '../utils/sessionFileMarkers';
+import {
+  extractExportData,
+  stripExcelMarkersFromText,
+  triggerExcelDownload,
+} from '../utils/excelExportMarkers';
 import plusIcon from '../assets/icons/Plus.svg';
 import fileIcon from '../assets/icons/File.svg';
 import microphoneIcon from '../assets/icons/Microphone.svg';
@@ -355,25 +361,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     cleaned = cleaned.replace(/^\[CREATE_TABLE_SCHEMA_PREVIEW\]\s*/i, '');
     cleaned = cleaned.replace(/\n?\[SQL_ACTION_ID_START\][\s\S]*?\[SQL_ACTION_ID_END\]\n?/g, '\n');
+    cleaned = stripExcelMarkersFromText(cleaned);
 
     return cleaned.trim();
-  };
-
-  // Extract Excel export info (base64 or simple text sentence)
-  const extractExportData = (text: string): ExportData | null => {
-    // 1. Preferred: new format with base64 data from database_agent
-    const base64Match = text.match(/\[EXCEL_BASE64_START\]([\s\S]*?)\[EXCEL_BASE64_END\]/);
-    const filenameMatch = text.match(/\[FILENAME_START\]([\s\S]*?)\[FILENAME_END\]/);
-    const rowCountMatch = text.match(/\[ROW_COUNT_START\](\d+)\[ROW_COUNT_END\]/);
-
-    if (base64Match && filenameMatch) {
-      return {
-        base64: base64Match[1].trim(),
-        filename: filenameMatch[1].trim(),
-        rowCount: rowCountMatch ? parseInt(rowCountMatch[1], 10) : 0,
-      };
-    }
-    return null;
   };
 
   const isStopVisible = isLoading || isAssistantTyping;
@@ -388,22 +378,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (isViewOnlyShare) return false;
     return !isStopVisible && !isUploadingExcel && hasText;
   }, [isStopVisible, isUploadingExcel, query, isViewOnlyShare]);
-
-  const handleRemoveSessionFile = async (fileId: string) => {
-    try {
-      await deleteSessionFile(fileId);
-      setMessages((prev) =>
-        prev.flatMap((m) => {
-          if (!m.isUser || !m.attachments?.some((a) => a.fileId === fileId)) return [m];
-          const nextAtt = m.attachments.filter((a) => a.fileId !== fileId);
-          if (nextAtt.length === 0 && !m.text.trim()) return [];
-          return [{ ...m, attachments: nextAtt.length ? nextAtt : undefined }];
-        }),
-      );
-    } catch (e) {
-      window.alert(e instanceof Error ? e.message : 'Remove failed');
-    }
-  };
 
   const handleRemoveInputAttachment = async (fileId: string) => {
     try {
@@ -450,12 +424,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — phiên ${r.session_id.slice(0, 8)}…`,
             );
           window.alert(
-            'Bạn đã dùng hết 5 GB dung lượng lưu trữ cho file đã tải. Hãy xóa bớt file (× trên chip ở ô nhập hoặc trong khung chat) rồi thử lại.\n\n' +
+            'Bạn đã dùng hết 5 GB dung lượng lưu trữ cho file đã tải. Hãy xóa bớt file (dấu × trên chip ở ô nhập hoặc trong mục Lưu trữ) rồi thử lại.\n\n' +
               (lines.length ? `Một số file gần đây:\n${lines.join('\n')}` : ''),
           );
         } catch {
           window.alert(
-            'Bạn đã dùng hết 5 GB dung lượng lưu trữ. Hãy xóa file (× trên chip ở ô nhập hoặc trong khung chat) rồi thử lại.',
+            'Bạn đã dùng hết 5 GB dung lượng lưu trữ. Hãy xóa file (dấu × trên chip ở ô nhập hoặc trong mục Lưu trữ) rồi thử lại.',
           );
         }
       } else {
@@ -996,47 +970,21 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
   };
 
-  const handleExportExcel = async (aiIndex: number) => {
+  const handleExportExcel = async (aiIndex: number): Promise<void> => {
     const msg = messages[aiIndex];
-    if (!msg || !msg.exportToExcel || isLoading) return;
-
-    setIsLoading(true);
+    const exp = msg?.exportToExcel;
+    if (!exp?.filename) return;
     try {
-      const exportDataObj = msg.exportToExcel;
-
-      if (exportDataObj.base64) {
-        // New flow: download directly from base64
-        const byteCharacters = atob(exportDataObj.base64);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = exportDataObj.filename || 'export.xlsx';
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        a.remove();
+      if (exp.sessionFileId) {
+        await downloadStoredSessionFile(exp.sessionFileId);
+        return;
       }
-
-      setMessages((prev) => {
-        const updated = [...prev];
-        const current = updated[aiIndex];
-        if (current) {
-          // Clear exportToExcel so button disappears after download
-          updated[aiIndex] = { ...current, exportToExcel: null };
-        }
-        return updated;
-      });
+      if (exp.base64) {
+        triggerExcelDownload(exp);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to export';
       setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -1244,11 +1192,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           <div className="max-w-5xl mx-auto w-full">
             <MessageList
               messages={messages}
-              onRemoveSessionFile={(fid) => void handleRemoveSessionFile(fid)}
               onRefreshResponse={(idx) => void handleRefreshResponse(idx)}
               onExecuteSql={(idx) => void handleExecuteSql(idx)}
               onCancelSql={(idx) => void handleCancelSql(idx)}
-              onExportExcel={(idx) => void handleExportExcel(idx)}
+              onExportFile={(idx) => void handleExportExcel(idx)}
               onSchemaTypeChange={handleSchemaTypeChange}
               onToggleSchemaOptions={handleToggleSchemaOptions}
               onSchemaOptionChange={handleSchemaOptionChange}
@@ -1279,20 +1226,24 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           <div className="relative bg-white dark:bg-slate-800 border-2 border-gray-300 dark:border-slate-700 rounded-3xl px-4 shadow-lg dark:shadow-none">
             <div className="flex flex-col">
               {(inputAttachedFiles.length > 0 || isUploadingExcel) && (
-                <div className="flex flex-wrap items-center gap-2 pt-3 pb-1">
+                <div className="flex flex-wrap items-center gap-2 pt-3 pb-3">
                   {isUploadingExcel && (
-                    <span className="text-xs text-gray-500 dark:text-slate-400">Đang tải file…</span>
+                    <span className="text-sm text-gray-500 dark:text-slate-400">File is loading…</span>
                   )}
                   {inputAttachedFiles.map((f) => (
                     <span
                       key={f.id}
-                      className="inline-flex items-center gap-2 text-xs bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-slate-200 px-3 py-1 rounded-full"
+                      className="inline-flex items-center gap-2 bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-slate-100 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 max-w-full min-w-0"
                     >
-                      <img src={fileIcon} alt="" className="w-4 h-4" />
-                      <span className="max-w-[200px] truncate">{f.filename}</span>
+                      <img src={fileIcon} alt="" className="w-4 h-4 flex-shrink-0" />
+                      <span className="text-sm sm:text-base font-semibold leading-snug truncate min-w-0 max-w-md">
+                        {f.filename}
+                      </span>
                       <button
                         type="button"
-                        className="text-gray-500 hover:text-gray-800 dark:hover:text-slate-100"
+                        disabled={isViewOnlyShare}
+                        className="shrink-0 text-base leading-none text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-100 px-0.5 disabled:opacity-40 disabled:pointer-events-none"
+                        aria-label={`Remove ${f.filename}`}
                         onClick={() => void handleRemoveInputAttachment(f.id)}
                       >
                         ×
@@ -1302,7 +1253,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 </div>
               )}
 
-              <div className="flex items-center gap-3 min-h-[48px]">
+              <div
+                className={`flex items-center gap-3 min-h-[48px] ${
+                  inputAttachedFiles.length > 0 || isUploadingExcel
+                    ? '-mx-4 px-4 border-t border-gray-300 dark:border-slate-600 pt-3'
+                    : ''
+                }`}
+              >
                 <div className="relative flex-shrink-0">
                   <button
                     type="button"

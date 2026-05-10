@@ -159,8 +159,8 @@ Branches:
 
 1) "db_readonly" — Read-only: SELECT, list/describe tables, schema exploration, aggregates without modifying data; **connect/disconnect**; host/port/credentials; SQLite path; `connect_db` / `connect_sqlite`.
 2) "db_create_table" — CREATE TABLE / define new table structure.
-3) "db_mutation" — INSERT, UPDATE, DELETE, ALTER, DROP, data export/mutation workflows, etc.
-4) "database" — ONLY when the request is about databases but does **not** fit 1–3 (vague help, troubleshooting, conversational DB Q&A with no clear readonly/create/mutation shape).
+3) "db_mutation" — **Only** writes / schema changes: INSERT, UPDATE, DELETE, ALTER TABLE, DROP, TRUNCATE, MERGE that modifies data. **Never** use this route for "export/download/save table to Excel or CSV" — that only **reads** data; use **database** (general DB agent with export tools) or **db_readonly** instead.
+4) "database" — DB requests that need the **general tool loop**: export table/query to Excel/CSV file, `export_table_to_excel`, troubleshooting, or anything that does not fit 1–3 cleanly. **Prefer this** when the user asks to export or download a dataset as a file.
 5) "excel" — Spreadsheets, CSV/XLSX, rows/columns, analyze/transform Excel files.
 6) "chart" — Visualizing data from the project DB as interactive Vega-Lite charts (line/bar/pie/scatter/heatmap/histogram/area/boxplot). Pick this when the user asks for a chart, plot, graph, biểu đồ, đồ thị on data that lives in the connected database.
 
@@ -173,7 +173,7 @@ Return strict JSON with:
 - "route": REQUIRED when needs_clarification=false — exactly one of: "db_readonly" | "db_create_table" | "db_mutation" | "database" | "excel" | "chart"
 - "nl_query": normalized natural-language query
 - "chart_type": chart hint if visualization requested, else null
-- "requires_export": true if user asks export/download file, else false
+- "requires_export": true if user asks to export/download/save query or table results as a file (Excel/CSV/etc.), else false. If true and they are **not** asking for INSERT/UPDATE/DELETE/DROP/ALTER, route must NOT be db_mutation.
 - "table_hint": table/entity hint if mentioned, else null
 - "file_format": output/input file format if present (csv, xlsx, json, etc.), else null
 - "semantic_retrieval": true only when semantic document grounding is needed; false for SQL/filter/aggregate/ranking over structured uploaded tables

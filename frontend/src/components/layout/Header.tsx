@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import ShareSessionModal from '../modals/ShareSessionModal';
+import StorageModal from '../modals/StorageModal';
 import settingsIcon from '../../assets/icons/Settings.svg';
 import logoutIcon from '../../assets/icons/Logout.svg';
 import userIcon from '../../assets/icons/User.svg';
@@ -22,6 +23,7 @@ export default function Header() {
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [shareSessionId, setShareSessionId] = useState<string | null>(null);
+  const [storageModalOpen, setStorageModalOpen] = useState(false);
   const avatarMenuRef = useRef<HTMLDivElement>(null);
 
   // Close avatar menu when clicking outside
@@ -344,6 +346,30 @@ export default function Header() {
                     )}
                     <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
                   </button>
+                  {/* Storage */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAvatarMenuOpen(false);
+                      setStorageModalOpen(true);
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-2.5 text-gray-700 hover:bg-gray-50 transition-colors text-left dark:text-gray-200 dark:hover:bg-slate-800"
+                    role="menuitem"
+                  >
+                    <svg
+                      className="w-5 h-5 text-gray-500 dark:text-gray-400 shrink-0"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      viewBox="0 0 24 24"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden
+                    >
+                      <path d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+                    </svg>
+                    <span>Storage</span>
+                  </button>
                   {/* Log out */}
                   <button
                     type="button"
@@ -404,6 +430,7 @@ export default function Header() {
           onClose={() => setShareModalOpen(false)}
         />
       )}
+      <StorageModal open={storageModalOpen} onClose={() => setStorageModalOpen(false)} />
     </div>
   );
 }

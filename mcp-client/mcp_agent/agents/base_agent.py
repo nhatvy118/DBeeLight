@@ -1,6 +1,5 @@
 """Base MCP Agent for multi-agent architecture."""
 
-import asyncio
 import json
 import os
 import sys
@@ -11,6 +10,7 @@ from contextlib import AsyncExitStack
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.types import CallToolResult
 from openai import OpenAI
 
 from mcp_agent.session.session_manager import SessionManager
@@ -31,6 +31,65 @@ def _cap_tool_json_payload(raw: str, max_tokens: int) -> str:
     # ~4 chars per token heuristic
     limit_chars = max(500, max_tokens * 4)
     return raw[:limit_chars] + '\n...[tool output truncated]'
+
+
+def _extract_tool_payload_dict(result: CallToolResult) -> dict[str, Any] | None:
+    """Prefer MCP structuredContent (FastMCP dict returns); else JSON in text blocks."""
+    sc = getattr(result, "structuredContent", None)
+    if isinstance(sc, dict):
+        return sc
+    parts: List[str] = []
+    for blk in getattr(result, "content", None) or []:
+        txt = getattr(blk, "text", None)
+        if txt:
+            parts.append(txt)
+    blob = "".join(parts).strip()
+    if not blob:
+        return None
+    try:
+        parsed = json.loads(blob)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _tool_result_json_for_llm(result: CallToolResult) -> str:
+    """Serialize tool output for OpenAI ``tool`` role (must stay under TOOL_RESULT_MAX_TOKENS)."""
+    d = _extract_tool_payload_dict(result)
+    if isinstance(d, dict):
+        raw = json.dumps(d)
+    else:
+        parts: List[str] = []
+        for blk in getattr(result, "content", None) or []:
+            txt = getattr(blk, "text", None)
+            if txt:
+                parts.append(txt)
+        raw = json.dumps("".join(parts)) if parts else json.dumps([])
+    return _cap_tool_json_payload(raw, TOOL_RESULT_MAX_TOKENS)
+
+
+def _compose_excel_export_assistant_reply(payload: dict[str, Any]) -> str:
+    """Same markers as frontend ``excelExportMarkers.ts`` (+ brief line for readability)."""
+    fn = str(payload.get("filename") or "export.xlsx").strip() or "export.xlsx"
+    b64 = str(payload.get("base64") or "").strip()
+    raw_rc = payload.get("row_count")
+    rc_for_markers = 0
+    if raw_rc is not None:
+        try:
+            rc_for_markers = int(raw_rc)
+        except (TypeError, ValueError):
+            rc_for_markers = 0
+    if raw_rc is not None:
+        lead = f"Exported **`{fn}`** ({rc_for_markers} rows)."
+    else:
+        lead = f"Exported **`{fn}`**."
+    body = (
+        f"{lead}\n\n"
+        f"[EXCEL_BASE64_START]\n{b64}\n[EXCEL_BASE64_END]\n"
+        f"[FILENAME_START]\n{fn}\n[FILENAME_END]\n"
+        f"[ROW_COUNT_START]\n{rc_for_markers}\n[ROW_COUNT_END]\n"
+    )
+    return body
 
 
 class BaseAgent(ABC):
@@ -224,6 +283,7 @@ class BaseAgent(ABC):
                 # Do NOT save intermediate assistant messages with tool_calls
                 # Only save final answer when loop ends (no tool_calls)
 
+                excel_fast_answer: Optional[str] = None
                 for tc in tool_calls:
                     tool_name = tc.function.name
                     try:
@@ -246,11 +306,23 @@ class BaseAgent(ABC):
                         print(f"[{self.agent_id}] [{target_server}] {tool_name} {tool_args}")
                     try:
                         result = await self.sessions[target_server].call_tool(tool_name, tool_args)
-                        result_content = result.content
-                        if not isinstance(result_content, str):
-                            result_content = str(result_content)
-                        packed = json.dumps(result_content)
-                        packed = _cap_tool_json_payload(packed, TOOL_RESULT_MAX_TOKENS)
+                        single_export_fast = (
+                            len(tool_calls) == 1
+                            and tool_name == "export_table_to_excel"
+                            and not result.isError
+                        )
+                        payload = _extract_tool_payload_dict(result) if single_export_fast else None
+                        if (
+                            isinstance(payload, dict)
+                            and single_export_fast
+                            and payload.get("base64")
+                            and payload.get("filename")
+                            and not payload.get("error")
+                        ):
+                            excel_fast_answer = _compose_excel_export_assistant_reply(payload)
+                            break
+
+                        packed = _tool_result_json_for_llm(result)
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
@@ -263,6 +335,13 @@ class BaseAgent(ABC):
                         messages.append({
                             "role": "tool", "tool_call_id": tc.id, "name": tool_name, "content": err,
                         })
+
+                if excel_fast_answer is not None:
+                    if persist_history:
+                        await self.session_manager.add_message("assistant", excel_fast_answer)
+                    hit_iteration_limit = False
+                    return excel_fast_answer.strip()
+
             except Exception as e:
                 final_chunks.append(f"Error: {e}")
                 # Save error message as final answer

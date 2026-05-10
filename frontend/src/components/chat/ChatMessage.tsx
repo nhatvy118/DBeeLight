@@ -51,8 +51,6 @@ type ChatMessageProps = {
   message: string;
   isUser: boolean;
   attachments?: ChatMessageAttachment[];
-  /** × on a session file chip removes the uploaded file from storage. */
-  onRemoveSessionFile?: (fileId: string) => void;
   enableTyping?: boolean;
   onTypingStateChange?: (isTyping: boolean) => void;
   typingStopSignal?: number;
@@ -121,7 +119,6 @@ export default function ChatMessage({
   message,
   isUser,
   attachments,
-  onRemoveSessionFile,
   enableTyping = true,
   onTypingStateChange,
   typingStopSignal = 0,
@@ -204,30 +201,29 @@ export default function ChatMessage({
     // not by colour.
     return (
       <div className="flex justify-end">
-        <div className="max-w-[75%] flex flex-col items-end gap-1.5">
+        <div className="w-full max-w-3xl flex flex-col items-end gap-1.5 min-w-0">
           {attachments && attachments.length > 0 && (
-            <div className="flex flex-col items-end gap-1">
+            <div className="flex flex-col items-end gap-1.5 w-full min-w-0">
               {attachments.map((att, i) => (
                 <span
                   key={att.fileId ?? `${i}-${att.name}`}
-                  className="inline-flex items-center gap-1.5 text-xs bg-gray-100 text-gray-700 px-3 py-1.5 rounded-full border border-gray-200 max-w-[16rem]"
+                  className="inline-flex items-center gap-2 bg-gray-100 dark:bg-slate-800 text-gray-800 dark:text-gray-100 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 max-w-full min-w-0"
                   title={att.name}
                 >
-                  <svg className="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg
+                    className="w-4 h-4 flex-shrink-0 text-gray-600 dark:text-gray-300"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
                     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                     <polyline points="14 2 14 8 20 8" />
                   </svg>
-                  <span className="truncate">{att.name}</span>
-                  {att.fileId && onRemoveSessionFile ? (
-                    <button
-                      type="button"
-                      className="text-gray-500 hover:text-gray-800 ml-0.5"
-                      aria-label={`Remove ${att.name}`}
-                      onClick={() => onRemoveSessionFile(att.fileId!)}
-                    >
-                      ×
-                    </button>
-                  ) : null}
+                  <span className="text-sm sm:text-base font-semibold leading-snug truncate min-w-0">{att.name}</span>
                 </span>
               ))}
             </div>

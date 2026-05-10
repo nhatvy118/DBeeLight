@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from internal.controllers.schemas import UploadExcelOk
 from internal.dependencies import get_user_key
+from internal.usecases.file_usecase import excel_mcp_staging_dir
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -66,6 +67,10 @@ async def upload_excel(
     """
     Upload an Excel/CSV file so the MCP Excel tools can read it by path.
 
+    Files are stored under ``file_handle/{user}/excel_mcp/`` or
+    ``file_handle/{user}/{session}/excel_mcp/``. This staging area is not
+    counted toward the 5 GB indexed-session storage cap.
+
     CSV uploads are converted to .xlsx server-side because the agent's
     Excel MCP server (openpyxl-based) only reads .xlsx-family formats.
     The original filename is still reported back so the chat UI can show
@@ -77,15 +82,13 @@ async def upload_excel(
         raise HTTPException(status_code=400, detail="Only .xlsx, .xls, .csv files are supported")
 
     try:
-        # api-server/ as the root for uploads
-        api_server_root = Path(__file__).resolve().parents[2]
-        uploads_dir = api_server_root / "uploads" / (user_key or "anonymous")
-        uploads_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = excel_mcp_staging_dir(user_key or "anonymous", session_id)
+        staging_dir.mkdir(parents=True, exist_ok=True)
 
         stored_basename = uuid.uuid4().hex
         # Preserve the user's filename for raw-disk debugging / cleanup, but
         # the path the agent receives always ends in .xlsx.
-        raw_dest = uploads_dir / f"{stored_basename}_{original_name}"
+        raw_dest = staging_dir / f"{stored_basename}_{original_name}"
         size_bytes = 0
         with raw_dest.open("wb") as f:
             while True:
@@ -101,7 +104,7 @@ async def upload_excel(
             stored_name = raw_dest.name
         elif ext == "csv":
             xlsx_name = f"{stored_basename}_{Path(original_name).stem}.xlsx"
-            agent_path = uploads_dir / xlsx_name
+            agent_path = staging_dir / xlsx_name
             try:
                 _csv_to_xlsx(raw_dest, agent_path)
             except Exception as e:

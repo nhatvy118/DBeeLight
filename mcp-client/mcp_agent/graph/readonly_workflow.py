@@ -76,6 +76,28 @@ def _prioritize_tables_from_user_message(
     return stripped_candidates
 
 
+def _parse_export_row_range(text: str) -> tuple[int, int] | None:
+    """If the user asks for a 1-based inclusive row slice, return (limit, offset).
+
+    Example: "rows 10 to 20" → limit 11, offset 9.
+    """
+    if not (text or "").strip():
+        return None
+    s = text.lower()
+    patterns = (
+        r"rows?\s+(\d+)\s*(?:to|-|through|until|tới|đến)\s*(\d+)",
+        r"d[oò]ng\s+(\d+)\s*(?:đến|tới|-|to)\s*(\d+)",
+        r"line\s+(\d+)\s*(?:to|-|through)\s*(\d+)",
+    )
+    for pat in patterns:
+        m = re.search(pat, s, re.I)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            if 1 <= a <= b:
+                return (b - a + 1, a - 1)
+    return None
+
+
 def _looks_schema_or_columns_question(text: str) -> bool:
     """True when the user asks for columns, fields, or table structure (not row data)."""
     q = (text or "").lower()
@@ -120,6 +142,7 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
                 "role": "system",
                 "content": """Analyze the database request and extract:
 - operation: SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, EXPORT, LIST_TABLES, DESCRIBE_TABLE, CONNECT, DISCONNECT, UNKNOWN
+  Use **EXPORT** (not SELECT) when the user wants an Excel/.xlsx file, download, or "export rows" to a spreadsheet — even if they mention row numbers.
 - tables: list of every table name referenced (required for ALTER/INSERT/UPDATE/DELETE/DROP/SELECT), e.g. "add column to table bicycle" -> ["bicycle"]
 - filters: WHERE conditions
 - exports: if user wants to export to Excel
@@ -435,6 +458,78 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                 "data": response,
                 "message": response,
             },
+        }
+
+    # Export to Excel — must call MCP tool (do not fall through to SELECT + markdown table).
+    if operation == "EXPORT":
+        if not agent:
+            return {
+                **state,
+                "output": {
+                    "type": "error",
+                    "message": "No agent available for Excel export.",
+                },
+            }
+        tables = state.get("tables", []) or intent.get("tables", []) or []
+        if not tables:
+            return {
+                **state,
+                "output": {
+                    "type": "error",
+                    "message": "No table identified for export. Name the table or upload session data first.",
+                },
+            }
+        table_name = str(tables[0]).strip()
+        slice_q = f"{effective_message} {user_message}"
+        row_slice = _parse_export_row_range(slice_q)
+        tool_args: Dict[str, Any] = {
+            "table_name": table_name,
+            "columns": "*",
+            "where_clause": None,
+        }
+        if row_slice:
+            tool_args["limit"], tool_args["offset"] = row_slice
+        try:
+            raw = await _call_tool(agent, "export_table_to_excel", tool_args)
+        except Exception as e:
+            logger.warning("[ReadOnly] export_table_to_excel failed: %s", e)
+            return {
+                **state,
+                "output": {"type": "error", "message": f"Excel export failed: {e}"},
+            }
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            payload = {"error": f"Invalid export response: {str(raw)[:500]}"}
+        if not isinstance(payload, dict):
+            return {
+                **state,
+                "output": {"type": "error", "message": "Export returned an unexpected shape."},
+            }
+        if payload.get("error"):
+            return {
+                **state,
+                "output": {"type": "error", "message": str(payload["error"])},
+            }
+        b64 = payload.get("base64")
+        fn = str(payload.get("filename") or f"{table_name}.xlsx")
+        rc = payload.get("row_count", 0)
+        if not b64:
+            return {
+                **state,
+                "output": {"type": "error", "message": "Export returned no file data."},
+            }
+        msg = (
+            f"Exported **{fn}** ({rc} rows).\n\n"
+            f"[EXCEL_BASE64_START]\n{b64}\n[EXCEL_BASE64_END]\n"
+            f"[FILENAME_START]\n{fn}\n[FILENAME_END]\n"
+            f"[ROW_COUNT_START]\n{rc}\n[ROW_COUNT_END]"
+        )
+        return {
+            **state,
+            "sql": None,
+            "query_result": msg,
+            "output": {"type": "query_result", "data": msg, "message": msg},
         }
 
     # Schema/info requests should return table description.

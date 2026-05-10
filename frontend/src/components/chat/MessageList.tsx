@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import ChatMessage from './ChatMessage';
 
 const SQL_TYPE_OPTIONS = [
@@ -24,6 +25,8 @@ export type ExportData = {
   filename?: string;
   rowCount?: number;
   tableName?: string; // For backward compatibility
+  /** Server-persisted export (same storage tree as session imports). */
+  sessionFileId?: string;
 };
 
 export type SchemaPreviewColumn = {
@@ -45,7 +48,7 @@ export type SchemaPreviewData = {
 export type UiAttachment = {
   /** Display name shown to the user (original filename). */
   name: string;
-  /** Present for session-indexed uploads so the user can remove storage-backed files. */
+  /** Session file id when the upload is stored server-side (e.g. for RAG). */
   fileId?: string;
 };
 
@@ -67,12 +70,10 @@ export type UiMessage = {
 
 type MessageListProps = {
   messages: UiMessage[];
-  /** Remove an indexed session file (× on upload chip); deletes server-side and updates UI. */
-  onRemoveSessionFile?: (fileId: string) => void;
   onRefreshResponse?: (aiIndex: number) => void;
   onExecuteSql?: (aiIndex: number) => void;
   onCancelSql?: (aiIndex: number) => void;
-  onExportExcel?: (aiIndex: number) => void;
+  onExportFile?: (aiIndex: number) => void | Promise<void>;
   onSchemaTypeChange?: (aiIndex: number, variable: string, nextType: string) => void;
   onToggleSchemaOptions?: (aiIndex: number, variable: string) => void;
   onSchemaOptionChange?: (
@@ -88,11 +89,10 @@ type MessageListProps = {
 
 export default function MessageList({
   messages,
-  onRemoveSessionFile,
   onRefreshResponse,
   onExecuteSql,
   onCancelSql,
-  onExportExcel,
+  onExportFile,
   onSchemaTypeChange,
   onToggleSchemaOptions,
   onSchemaOptionChange,
@@ -100,17 +100,74 @@ export default function MessageList({
   onAssistantTypingChange,
   typingStopSignal = 0,
 }: MessageListProps) {
+  const [exportingIndex, setExportingIndex] = useState<number | null>(null);
+
+  const runFileDownload = async (idx: number) => {
+    if (!onExportFile || exportingIndex !== null) return;
+    setExportingIndex(idx);
+    try {
+      await Promise.resolve(onExportFile(idx));
+    } finally {
+      setExportingIndex(null);
+    }
+  };
+
   if (messages.length === 0) return null;
 
   return (
     <div className="space-y-6">
       {messages.map((msg, index) => (
         <div key={index} className="w-full">
+          {!msg.isUser &&
+          msg.exportToExcel?.filename &&
+          (msg.exportToExcel.base64 || msg.exportToExcel.sessionFileId) ? (
+            <div className="flex justify-start w-full mb-2">
+              <div className="w-full max-w-xs flex flex-col items-stretch gap-1 min-w-0">
+                <div
+                  className="flex flex-col gap-2 bg-gray-100 dark:bg-slate-800 text-gray-800 dark:text-gray-100 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 max-w-full min-w-0"
+                  title={msg.exportToExcel.filename}
+                >
+                  <div className="flex items-start gap-2 min-w-0">
+                    <svg
+                      className="w-4 h-4 flex-shrink-0 mt-0.5 text-gray-600 dark:text-gray-300"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden
+                    >
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                    </svg>
+                    <span className="text-sm sm:text-base font-semibold leading-snug truncate min-w-0">
+                      {msg.exportToExcel.filename}
+                    </span>
+                  </div>
+                  <div className="flex justify-end w-full border-t border-gray-300 dark:border-slate-600 pt-2 mt-1">
+                    <button
+                      type="button"
+                      disabled={!onExportFile || exportingIndex === index}
+                      onClick={() => void runFileDownload(index)}
+                      className="text-sm font-medium text-gray-800 hover:text-gray-950 disabled:opacity-50 dark:text-gray-200 dark:hover:text-white"
+                    >
+                      {exportingIndex === index ? '…' : 'Download'}
+                    </button>
+                  </div>
+                </div>
+                {typeof msg.exportToExcel.rowCount === 'number' && msg.exportToExcel.rowCount > 0 ? (
+                  <span className="text-[11px] text-gray-500 dark:text-gray-400 pl-1">
+                    {msg.exportToExcel.rowCount.toLocaleString()} rows
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
           <ChatMessage
             message={msg.text}
             isUser={msg.isUser}
             attachments={msg.attachments}
-            onRemoveSessionFile={msg.isUser ? onRemoveSessionFile : undefined}
             onTypingStateChange={
               !msg.isUser && index === messages.length - 1 ? onAssistantTypingChange : undefined
             }
@@ -257,23 +314,6 @@ export default function MessageList({
                     />
                   </svg>
                   <span>Refresh response</span>
-                </button>
-              )}
-              {msg.exportToExcel && onExportExcel && (
-                <button
-                  type="button"
-                  onClick={() => void onExportExcel(index)}
-                  className="flex items-center gap-1 text-blue-600 hover:text-blue-700 transition-colors"
-                >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-                    />
-                  </svg>
-                  <span>Export Excel</span>
                 </button>
               )}
               {msg.sqlToExecute && onExecuteSql && (
