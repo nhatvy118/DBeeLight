@@ -329,7 +329,7 @@ class BaseAgent(ABC):
                             "name": tool_name,
                             "content": packed,
                         })
-                        # ❌ Do NOT save tool messages - only keep in memory for current conversation
+                        # Do NOT save tool messages - only keep in memory for current conversation
                     except Exception as e:
                         err = json.dumps({"error": str(e)})
                         messages.append({

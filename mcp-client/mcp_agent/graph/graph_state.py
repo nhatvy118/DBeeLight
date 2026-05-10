@@ -1,6 +1,6 @@
 """LangGraph state definition for per-agent workflows."""
 
-from typing import TypedDict, Optional, Any, Dict
+from typing import TypedDict, Optional, Any, Dict, NotRequired
 
 
 class AgentState(TypedDict):
@@ -28,6 +28,8 @@ class AgentState(TypedDict):
     intent: Dict[str, Any]
     execution_plan: Dict[str, Any]
     detected_language: str
+    # Set by ReadOnlyWorkflow when the orchestrator passes top-level intent (e.g. nl_query).
+    orchestrator_intent: NotRequired[Optional[Dict[str, Any]]]
 
     # Database-specific state
     tables: list

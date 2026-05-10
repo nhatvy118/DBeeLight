@@ -83,11 +83,20 @@ def _parse_export_row_range(text: str) -> tuple[int, int] | None:
     """
     if not (text or "").strip():
         return None
-    s = text.lower()
+    s = (
+        text.replace("–", "-")
+        .replace("—", "-")
+        .replace("−", "-")
+        .lower()
+    )
     patterns = (
-        r"rows?\s+(\d+)\s*(?:to|-|through|until|tới|đến)\s*(\d+)",
-        r"d[oò]ng\s+(\d+)\s*(?:đến|tới|-|to)\s*(\d+)",
-        r"line\s+(\d+)\s*(?:to|-|through)\s*(\d+)",
+        r"rows?\s+(\d+)\s*(?:to|through|until|tới|đến|-|–)\s*(\d+)",
+        r"(?:row|rows)\s*(?:#|n[oọ]?\s*)?(\d+)\s*(?:to|through|đến|tới|-|–)\s*(\d+)",
+        r"d[oò]ng\s+(\d+)\s*(?:đến|tới|to|-|–)\s*(\d+)",
+        r"line\s+(\d+)\s*(?:to|through|-|–)\s*(\d+)",
+        # "between row 10 and 20"
+        r"between\s+row\s+(\d+)\s+and\s+(\d+)",
+        r"from\s+row\s+(\d+)\s+to\s+(\d+)",
     )
     for pat in patterns:
         m = re.search(pat, s, re.I)
@@ -96,6 +105,15 @@ def _parse_export_row_range(text: str) -> tuple[int, int] | None:
             if 1 <= a <= b:
                 return (b - a + 1, a - 1)
     return None
+
+
+def _export_slice_text_for_parsing(state: AgentState, effective_message: str, user_message: str) -> str:
+    """Prefer USER MESSAGE tail and orchestrator ``nl_query`` so row numbers are not lost in RAG."""
+    oi = state.get("orchestrator_intent") if isinstance(state.get("orchestrator_intent"), dict) else {}
+    nl = str((oi or {}).get("nl_query") or "").strip()
+    tail = _user_message_tail(user_message)
+    parts = [tail, nl, effective_message, user_message]
+    return " ".join(p for p in parts if p)
 
 
 def _looks_schema_or_columns_question(text: str) -> bool:
@@ -147,7 +165,8 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
 - filters: WHERE conditions
 - exports: if user wants to export to Excel
 - detected_language: "en" by default. Use "vi" ONLY if the LATEST user message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "truy vấn", "kết nối", "danh sách"). Ignore conversation history. Short English-keyword queries like "list tables" → "en".
-- resolved_query: rewrite latest user message into a self-contained request by resolving context references
+- resolved_query: rewrite latest user message into a self-contained request by resolving context references.
+  **Preserve** row numbers and ranges for exports (e.g. "rows 10 to 20", "10-20") verbatim — do not drop them.
 - connection: object for CONNECT with keys host, port, database, username, password (use null if unknown)
 - IMPORTANT: if operation is CONNECT, ALWAYS include `connection` with all five keys.
 
@@ -480,8 +499,12 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                 },
             }
         table_name = str(tables[0]).strip()
-        slice_q = f"{effective_message} {user_message}"
+        slice_q = _export_slice_text_for_parsing(state, effective_message, user_message)
         row_slice = _parse_export_row_range(slice_q)
+        if row_slice:
+            logger.info("[ReadOnly] EXPORT row slice limit=%s offset=%s", row_slice[0], row_slice[1])
+        else:
+            logger.info("[ReadOnly] EXPORT no row slice parsed from: %s", slice_q[:200])
         tool_args: Dict[str, Any] = {
             "table_name": table_name,
             "columns": "*",
@@ -727,9 +750,21 @@ class ReadOnlyWorkflow:
 
         return workflow.compile()
 
-    async def run(self, session_id: str, user_message: str) -> AgentState:
-        """Run the read-only workflow."""
-        state = create_initial_state(session_id, user_message, "database")
+    async def run(
+        self,
+        session_id: str,
+        user_message: str,
+        *,
+        orchestrator_intent: Dict[str, Any] | None = None,
+    ) -> AgentState:
+        """Run the read-only workflow.
+
+        ``orchestrator_intent``: ``IntentResult``-style dict (e.g. ``nl_query``) from the top-level
+        router — used so EXPORT row ranges are not dropped by inner ``resolved_query`` rewriting.
+        """
+        state: AgentState = create_initial_state(session_id, user_message, "database")
+        if orchestrator_intent:
+            state = {**state, "orchestrator_intent": orchestrator_intent}
         graph = self._build_graph()
         result = await graph.ainvoke(state)
         return result

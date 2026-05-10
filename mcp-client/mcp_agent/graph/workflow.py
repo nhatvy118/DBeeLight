@@ -100,6 +100,7 @@ class AgentWorkflow:
         resume=None,
         thread_id: Optional[str] = None,
         database_route: DatabaseRoute = None,
+        orchestrator_intent: Optional[Dict[str, Any]] = None,
     ) -> AgentState:
         """Run workflow for specific agent type, routing to correct sub-workflow for database."""
         if agent_type != "database":
@@ -113,7 +114,12 @@ class AgentWorkflow:
 
         # For database, use orchestrator route or classify locally
         return await self._run_database(
-            session_id, user_message, resume, thread_id, database_route
+            session_id,
+            user_message,
+            resume,
+            thread_id,
+            database_route,
+            orchestrator_intent,
         )
 
     async def _run_database(
@@ -123,6 +129,7 @@ class AgentWorkflow:
         resume=None,
         thread_id: Optional[str] = None,
         database_route: DatabaseRoute = None,
+        orchestrator_intent: Optional[Dict[str, Any]] = None,
     ) -> AgentState:
         """Route database request: explicit ``database_route`` from Orchestrator, else local classify.
 
@@ -145,7 +152,11 @@ class AgentWorkflow:
         if database_route == "readonly":
             self._session_workflow_map[session_id] = "readonly"
             logger.info("[Workflow] database_route=readonly → ReadOnlyWorkflow")
-            return await self.workflows["readonly"].run(session_id, user_message)
+            return await self.workflows["readonly"].run(
+                session_id,
+                user_message,
+                orchestrator_intent=orchestrator_intent,
+            )
 
         if database_route == "create_table":
             workflow = cast(Any, self.workflows["create_table"])
@@ -170,7 +181,11 @@ class AgentWorkflow:
         if operation in _SAFE_DB_OPERATIONS or operation == "SELECT":
             workflow = self.workflows["readonly"]
             self._session_workflow_map[session_id] = "readonly"
-            return await workflow.run(session_id, user_message)
+            return await workflow.run(
+                session_id,
+                user_message,
+                orchestrator_intent=orchestrator_intent,
+            )
 
         if operation == "CREATE":
             workflow = cast(Any, self.workflows["create_table"])

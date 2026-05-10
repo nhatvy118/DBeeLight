@@ -254,6 +254,7 @@ class Orchestrator:
                 agent_type="database",
                 thread_id=session_id,
                 database_route=database_route,
+                orchestrator_intent=intent_result,
             )
         except Exception as e:
             logger.exception("[Orchestrator] database workflow error: %s", e)
