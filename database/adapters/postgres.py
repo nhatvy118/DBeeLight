@@ -394,6 +394,20 @@ class PostgresAdapter(DatabaseAdapter):
         except Exception as e:
             return f"Error executing query: {str(e)}"
 
+    async def stream_query(self, query: str, chunk_size: int = 5000):
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                cur = await conn.cursor(query, prefetch=chunk_size)
+                columns: Optional[List[str]] = None
+                while True:
+                    rows = await cur.fetch(chunk_size)
+                    if not rows:
+                        break
+                    if columns is None:
+                        columns = list(rows[0].keys())
+                    yield columns, rows
+
     def _add_limit(self, query: str) -> str:
         """Auto-add LIMIT to prevent large result sets."""
         query_upper = query.strip().upper()

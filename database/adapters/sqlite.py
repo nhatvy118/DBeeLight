@@ -379,6 +379,19 @@ class SQLiteAdapter(DatabaseAdapter):
         except Exception as e:
             return f"Error executing query: {str(e)}"
 
+    async def stream_query(self, query: str, chunk_size: int = 5000):
+        if not self._db_path:
+            raise RuntimeError("Database not connected.")
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(query) as cursor:
+                columns = [d[0] for d in (cursor.description or [])]
+                while True:
+                    rows = await cursor.fetchmany(chunk_size)
+                    if not rows:
+                        break
+                    yield columns, rows
+
     def _add_limit(self, query: str) -> str:
         """Auto-add LIMIT to prevent large result sets."""
         query_upper = query.strip().upper()

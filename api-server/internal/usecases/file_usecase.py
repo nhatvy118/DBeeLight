@@ -112,7 +112,8 @@ _ASSIST_FILENAME_RE = re.compile(
     r"\[FILENAME_START\](?P<fn>[\s\S]*?)\[FILENAME_END\]",
 )
 _ASSIST_ROW_COUNT_RE = re.compile(
-    r"\[ROW_COUNT_START\](?P<rc>\d+)\[ROW_COUNT_END\]",
+    # Whitespace-tolerant: the LLM may format the number on its own line.
+    r"\[ROW_COUNT_START\]\s*(?P<rc>\d+)\s*\[ROW_COUNT_END\]",
 )
 
 

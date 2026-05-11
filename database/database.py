@@ -540,17 +540,6 @@ async def execute_query(query: str) -> str:
 
 
 @mcp.tool()
-async def execute_query_no_limit(query: str) -> str:
-    """Execute a SELECT query WITHOUT auto-LIMIT (for exports).
-
-    Args:
-        query: SQL SELECT query to execute (no limit will be added)
-    """
-    adapter = get_adapter()
-    return await adapter.execute_query(query)
-
-
-@mcp.tool()
 async def export_table_to_excel(
     table_name: str,
     columns: str = "*",
@@ -560,6 +549,11 @@ async def export_table_to_excel(
 ) -> dict:
     """Export table data to Excel file. Returns dict with base64 content and filename.
 
+    Streams rows from the DB in chunks via ``adapter.stream_query`` and writes
+    them through xlsxwriter's ``constant_memory`` mode to a temp .xlsx on
+    disk — each row is flushed as the next one is written, so the full
+    result set is never materialized in RAM.
+
     Args:
         table_name: Name of the table to export
         columns: Column names to export (default: "*")
@@ -568,108 +562,131 @@ async def export_table_to_excel(
         offset: Optional SQLite OFFSET (skip rows; use with limit for slices e.g. rows 10–20 → limit 11, offset 9)
     """
     import base64
-    import io
-    import json
     import logging
+    import os
+    import tempfile
+    from datetime import date, datetime
+    from decimal import Decimal
+    from uuid import UUID
 
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
     try:
-        from openpyxl import Workbook
+        import xlsxwriter
     except ImportError:
         return {
             "error": (
-                "openpyxl is required for Excel export. From repo root: "
-                "`cd database && uv sync`, then restart the API server "
-                "(or ensure `database/.venv` exists so the MCP subprocess uses that Python)."
+                "xlsxwriter is required for Excel export. From repo root: "
+                "`cd database && uv sync`, then restart the API server."
             )
         }
 
+    def _xlsx_safe(v):
+        # xlsxwriter accepts None/bool/int/float/str/datetime/date natively.
+        # Coerce other DB types so write_row doesn't fall back to slow conversion.
+        if v is None or isinstance(v, (bool, int, float, str, datetime, date)):
+            return v
+        if isinstance(v, Decimal):
+            return float(v)
+        if isinstance(v, UUID):
+            return str(v)
+        if isinstance(v, (bytes, bytearray)):
+            return v.hex()
+        return str(v)
+
+    # Build query
+    query = f"SELECT {columns} FROM {table_name}"
+    if where_clause:
+        query += f" WHERE {where_clause}"
+    if limit is not None:
+        lim = int(limit)
+        if lim < 0:
+            return {"error": "limit must be non-negative"}
+        query += f" LIMIT {lim}"
+    elif offset is not None:
+        # SQLite requires LIMIT when using OFFSET; -1 means no upper bound.
+        query += " LIMIT -1"
+    if offset is not None:
+        off = int(offset)
+        if off < 0:
+            return {"error": "offset must be non-negative"}
+        query += f" OFFSET {off}"
+
+    logger.info(f"[export_table_to_excel] table={table_name}, query={query}")
+
+    adapter = get_adapter()
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+
     try:
-        # Build query
-        query = f"SELECT {columns} FROM {table_name}"
-        if where_clause:
-            query += f" WHERE {where_clause}"
-        if limit is not None:
-            lim = int(limit)
-            if lim < 0:
-                return {"error": "limit must be non-negative"}
-            query += f" LIMIT {lim}"
-        elif offset is not None:
-            # SQLite requires LIMIT when using OFFSET; -1 means no upper bound.
-            query += " LIMIT -1"
-        if offset is not None:
-            off = int(offset)
-            if off < 0:
-                return {"error": "offset must be non-negative"}
-            query += f" OFFSET {off}"
-
-        logger.info(f"[export_table_to_excel] table={table_name}, query={query}")
-
-        # Execute query without limit
-        adapter = get_adapter()
-        result = await adapter.execute_query_no_limit(query)
-        logger.info(f"[export_table_to_excel] query result length: {len(result)}")
-
-        # Parse JSON result
+        # constant_memory=True: each row is flushed as the next is written; can't
+        #   seek back to modify earlier cells.
+        # strings_to_urls=False: skip the regex that turns "http://..." strings
+        #   into hyperlinks — significantly faster on text-heavy exports.
+        wb = xlsxwriter.Workbook(
+            tmp_path,
+            {
+                "constant_memory": True,
+                "strings_to_urls": False,
+                "default_date_format": "yyyy-mm-dd hh:mm:ss",
+            },
+        )
+        col_names: list[str] | None = None
+        row_count = 0
         try:
-            data = json.loads(result)
-            if not isinstance(data, list):
-                data = [data]
-        except json.JSONDecodeError:
-            import re
-            match = re.search(r'\[.*\]', result, re.DOTALL)
-            if match:
-                data = json.loads(match.group(0))
-            else:
-                logger.error(f"[export_table_to_excel] parse error: {result[:200]}")
-                return {"error": f"Could not parse query result: {result[:200]}"}
+            ws = wb.add_worksheet()
+            row_idx = 0
+            try:
+                async for cols, rows in adapter.stream_query(query, chunk_size=5000):
+                    if col_names is None:
+                        col_names = list(cols)
+                        ws.write_row(0, 0, col_names)
+                        row_idx = 1
+                    for row in rows:
+                        ws.write_row(row_idx, 0, [_xlsx_safe(row[c]) for c in col_names])
+                        row_idx += 1
+                    row_count += len(rows)
+            except Exception as e:
+                logger.error(f"[export_table_to_excel] query stream error: {e}")
+                return {"error": str(e)}
+        finally:
+            wb.close()
 
-        logger.info(f"[export_table_to_excel] parsed {len(data)} rows")
-
-        if not data:
+        if col_names is None:
             return {"error": "No data found"}
 
-        if not isinstance(data[0], dict):
-            return {"error": "Query result rows must be objects; got unexpected shape."}
+        file_size = os.path.getsize(tmp_path)
 
-        # Build .xlsx with openpyxl only (avoids pandas' optional excel engine).
-        keys: list[str] = []
-        seen: set[str] = set()
-        for row in data:
-            if not isinstance(row, dict):
-                return {"error": "Query result rows must be objects; got unexpected shape."}
-            for k in row:
-                sk = str(k)
-                if sk not in seen:
-                    seen.add(sk)
-                    keys.append(sk)
+        # Stream the xlsx file through base64 so we don't hold both the raw
+        # bytes and the encoded string in RAM at once. Reads in multiples of 3
+        # so each chunk encodes without intermediate padding.
+        b64_buf = bytearray()
+        with open(tmp_path, "rb") as f:
+            while True:
+                chunk = f.read(3 * 64 * 1024)
+                if not chunk:
+                    break
+                b64_buf += base64.b64encode(chunk)
+        b64 = b64_buf.decode("ascii")
+        del b64_buf
 
-        wb = Workbook()
-        ws = wb.active
-        ws.append(keys)
-        for row in data:
-            ws.append([row.get(k) for k in keys])
-
-        output = io.BytesIO()
-        wb.save(output)
-        output.seek(0)
-
-        # Encode to base64
-        b64 = base64.b64encode(output.read()).decode('utf-8')
         filename = f"{table_name}.xlsx"
-
-        logger.info(f"[export_table_to_excel] success: {len(data)} rows, base64 length: {len(b64)}")
-
-        return {
-            "base64": b64,
-            "filename": filename,
-            "row_count": len(data)
-        }
+        logger.info(
+            f"[export_table_to_excel] success: {row_count} rows, "
+            f"file={file_size} bytes, base64 length: {len(b64)}"
+        )
+        return {"base64": b64, "filename": filename, "row_count": row_count}
     except Exception as e:
-        logger.error(f"[export_table_to_excel] ERROR: {str(e)}")
+        logger.exception("[export_table_to_excel] ERROR")
         return {"error": str(e)}
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 @mcp.tool()

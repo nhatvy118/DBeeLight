@@ -1,7 +1,7 @@
 """Abstract base class for database adapters."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 
 class DatabaseAdapter(ABC):
@@ -116,6 +116,19 @@ class DatabaseAdapter(ABC):
     async def execute_query(self, query: str) -> str:
         """Execute a custom SQL query."""
         pass
+
+    @abstractmethod
+    def stream_query(
+        self, query: str, chunk_size: int = 5000
+    ) -> AsyncIterator[Tuple[List[str], List[Any]]]:
+        """Stream a SELECT query in chunks to avoid loading the full result into RAM.
+
+        Yields ``(columns, rows)`` where ``columns`` is the canonical column list
+        (same on every yield) and ``rows`` is a list of up to ``chunk_size`` items
+        whose elements support key-based indexing (e.g. ``row["col"]``).
+        Empty results yield nothing.
+        """
+        ...
 
     @abstractmethod
     async def run_mutation(self, sql: str) -> str:

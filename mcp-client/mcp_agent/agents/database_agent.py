@@ -71,7 +71,7 @@ If the user message contains **[ATTACHED FILES CONTEXT]** at the top, indexed ex
 | Connection | connect_db, connect_sqlite, disconnect_database |
 | DDL | show_create_table_schema, create_table (requires user_confirmed=true after review), alter_table, create_db_from_spec, manage_constraint, manage_trigger |
 | DML | insert_data, update_data, delete_data |
-| Query | execute_query, execute_query_no_limit, run_mutation |
+| Query | execute_query, run_mutation |
 | Export | import_excel_to_db, import_csv_to_db, export_table_to_excel |
 
 ## Response Rules
