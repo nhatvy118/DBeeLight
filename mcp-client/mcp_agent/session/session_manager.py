@@ -3,14 +3,13 @@
 Authenticated users: new messages are pushed onto a Redis list (stack) and flushed to
 Postgres JSON when the stack reaches ``_batch_size`` (default 20), or on explicit flush.
 
-Short-term memory for the LLM: older turns are incrementally folded into
-``conversation_summary`` (see ``messages_summarized``). **All** user/assistant
-messages remain in ``messages`` for API/UI. Use ``get_llm_context_messages()`` for
-the model (summary + last N turns); ``get_current_messages()`` returns the full
-transcript for the UI."""
+Long-conversation compression is handled by the LangGraph chat checkpoint
+(langmem ``SummarizationNode``); this manager only stores the full transcript for
+API/UI. ``get_llm_context_messages()`` returns the full filtered history (used as
+a fallback when no chat-graph override is set), ``get_current_messages()`` is the
+UI source."""
 
 import json
-import os
 from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -39,13 +38,6 @@ except ImportError:
 # If not available, fallback to direct DB writes
 REDIS_STACK_AVAILABLE = False
 try:
-    import sys
-    import os
-    # Try to add api-server to path if not already there
-    # api_server_path = os.path.join(os.path.dirname(__file__), "..", "..", "api-server")
-    # if os.path.exists(api_server_path) and api_server_path not in sys.path:
-    #     sys.path.insert(0, api_server_path)
-    
     from internal.utils.redis_client import (
         redis_stack_push,
         redis_stack_get_all,
@@ -83,13 +75,6 @@ class SessionManager:
         self._openai: Optional[Any] = None
         if summarize_model and AsyncOpenAI is not None:
             self._openai = AsyncOpenAI()
-        # Rolling conversation summary (short-term memory): fold older turns into text
-        self._summary_trigger_at = max(
-            8, int(os.getenv("CONVERSATION_SUMMARY_TRIGGER_MESSAGES", "24"))
-        )
-        self._summary_keep_last = max(
-            2, int(os.getenv("CONVERSATION_SUMMARY_KEEP_MESSAGES", "8"))
-        )
         if self._user_id == "anonymous":
             self._pool = None  # guest: session in-memory, reload = new session
         else:
@@ -151,109 +136,6 @@ class SessionManager:
                 pass
         return self._message_summary(text)
 
-    async def _extend_conversation_summary(
-        self,
-        previous_summary: str,
-        messages_to_fold: List[Dict[str, Any]],
-    ) -> str:
-        """Merge new message turns into a running text summary (short-term memory)."""
-        if not messages_to_fold:
-            return (previous_summary or "").strip()
-        if not self._openai or not self._summarize_model:
-            return (previous_summary or "").strip()
-
-        lines: List[str] = []
-        for m in messages_to_fold:
-            if not isinstance(m, dict):
-                continue
-            role = m.get("role")
-            if role not in ("user", "assistant"):
-                continue
-            text = (m.get("content") or "").strip()
-            if not text:
-                continue
-            if len(text) > 8000:
-                text = text[:8000] + "…"
-            lines.append(f"{role}: {text}")
-        chunk = "\n".join(lines)
-        if not chunk.strip():
-            return (previous_summary or "").strip()
-
-        prev = (previous_summary or "").strip()
-        if prev:
-            user_prompt = (
-                f"Previous summary of the conversation:\n{prev}\n\n"
-                f"New messages to merge into the summary:\n{chunk}\n\n"
-                "Write an updated concise summary. Include names, facts, decisions, and constraints. "
-                "Merge with the previous summary; do not repeat verbatim. Output only the summary text."
-            )
-        else:
-            user_prompt = (
-                f"Summarize the following conversation turns for later context:\n{chunk}\n\n"
-                "Be concise. Output only the summary text."
-            )
-
-        try:
-            response = await self._openai.chat.completions.create(
-                model=self._summarize_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You compress chat history into a dense factual summary for the assistant.",
-                    },
-                    {"role": "user", "content": user_prompt[:120000]},
-                ],
-                max_tokens=512,
-                temperature=0.2,
-            )
-            out = (response.choices[0].message.content or "").strip()
-            return out[:16000] if out else prev
-        except Exception:
-            return prev
-
-    async def _maybe_compact_conversation(self) -> None:
-        """Fold newly eligible turns into conversation_summary. Does not remove messages (UI keeps full history)."""
-        if not self.current_session_id:
-            return
-        if not self._openai or not self._summarize_model:
-            return
-        if self._summary_keep_last >= self._summary_trigger_at:
-            return
-
-        await self.flush_current_session()
-        data = await self._get_session(self.current_session_id)
-        if not data:
-            return
-
-        msgs = [
-            m
-            for m in data.get("messages", [])
-            if isinstance(m, dict) and m.get("role") in ("user", "assistant")
-        ]
-        if len(msgs) <= self._summary_trigger_at:
-            return
-
-        keep = self._summary_keep_last
-        upper = len(msgs) - keep
-        if upper <= 0:
-            return
-
-        prev_covered = int(data.get("messages_summarized") or 0)
-        if upper <= prev_covered:
-            return
-
-        to_fold = msgs[prev_covered:upper]
-        if not to_fold:
-            return
-
-        prev = (data.get("conversation_summary") or "").strip()
-        new_summary = await self._extend_conversation_summary(prev, to_fold)
-        data["conversation_summary"] = new_summary
-        data["messages_summarized"] = upper
-        data["updated_at"] = datetime.now().isoformat()
-        session_name = data.pop("session_name", None)
-        await self._save_session(self.current_session_id, data, session_name=session_name)
-
     async def update_session_name(self, session_id: str, session_name: str) -> None:
         """Update only the session_name column (and in-memory for guest)."""
         if self._pool is None:
@@ -275,8 +157,6 @@ class SessionManager:
             "session_id": session_id,
             "created_at": datetime.now().isoformat(),
             "messages": [],
-            "conversation_summary": "",
-            "messages_summarized": 0,
             "project_id": project_id,
         }
         await self._save_session(session_id, session_data, project_id=project_id, session_name=name)
@@ -392,7 +272,9 @@ class SessionManager:
         self._llm_context_override = None
 
     async def get_llm_context_messages(self) -> List[Dict[str, Any]]:
-        """History for the model: optional rolling summary plus only the last N stored turns (full history stays in DB)."""
+        """History for the model. In chat-graph flow the orchestrator sets an override
+        (raw checkpoint messages); this DB-backed fallback returns the full filtered
+        transcript for non-graph call sites."""
         if self._llm_context_override is not None:
             return list(self._llm_context_override)
 
@@ -401,7 +283,6 @@ class SessionManager:
             return []
 
         data = await self._get_session(self.current_session_id)
-        summary = (data.get("conversation_summary") or "").strip() if data else ""
 
         all_messages: List[Dict[str, Any]] = []
         if data:
@@ -411,59 +292,7 @@ class SessionManager:
             stack_messages = await redis_stack_get_all(stack_key)
             all_messages.extend(stack_messages)
 
-        filtered = [m for m in all_messages if m.get("role") in ("user", "assistant")]
-        keep = self._summary_keep_last
-
-        if len(filtered) <= keep:
-            return filtered
-
-        out: List[Dict[str, Any]] = []
-        if summary:
-            out.append({
-                "role": "user",
-                "content": "[Earlier conversation summary]\n" + summary,
-                "timestamp": "",
-            })
-        out.extend(filtered[-keep:])
-        return out
-
-    async def replace_messages_from_graph_export(self, messages: List[Dict[str, Any]]) -> None:
-        """Replace stored session messages with rows synced from the chat graph checkpoint (UI/API)."""
-        if not self.current_session_id:
-            return
-
-        await self.flush_current_session()
-        if self._pool is not None and REDIS_STACK_AVAILABLE:
-            stack_key = self._get_stack_key(self.current_session_id)
-            await redis_stack_clear(stack_key)
-
-        if self._pool is None:
-            if self.current_session_id not in self._memory:
-                self._memory[self.current_session_id] = {
-                    "session_id": self.current_session_id,
-                    "created_at": datetime.now().isoformat(),
-                    "messages": [],
-                    "conversation_summary": "",
-                    "messages_summarized": 0,
-                    "session_name": "",
-                }
-            self._memory[self.current_session_id]["messages"] = list(messages)
-            self._memory[self.current_session_id]["updated_at"] = datetime.now().isoformat()
-            await self._maybe_compact_conversation()
-            return
-
-        data = await self._get_session(self.current_session_id)
-        if not data:
-            data = {
-                "session_id": self.current_session_id,
-                "created_at": datetime.now().isoformat(),
-                "messages": [],
-            }
-        data["messages"] = list(messages)
-        data["updated_at"] = datetime.now().isoformat()
-        session_name = data.pop("session_name", None)
-        await self._save_session(self.current_session_id, data, session_name=session_name)
-        await self._maybe_compact_conversation()
+        return [m for m in all_messages if m.get("role") in ("user", "assistant")]
 
     async def add_message(self, role: str, content: str, tool_calls: Optional[List] = None):
         """
@@ -504,8 +333,6 @@ class SessionManager:
                     "session_id": self.current_session_id,
                     "created_at": datetime.now().isoformat(),
                     "messages": [],
-                    "conversation_summary": "",
-                    "messages_summarized": 0,
                     "session_name": "",
                 }
             self._memory[self.current_session_id]["messages"].append(message)
@@ -513,13 +340,11 @@ class SessionManager:
             if is_first_user_message:
                 summary = await self._summarize_for_session_name(content)
                 await self.update_session_name(self.current_session_id, summary)
-            if role == "assistant":
-                await self._maybe_compact_conversation()
             return
-        
+
         # For authenticated users: push to Redis stack
         stack_key = self._get_stack_key(self.current_session_id)
-        
+
         if REDIS_STACK_AVAILABLE:
             # Push message to Redis stack
             await redis_stack_push(stack_key, message)
@@ -530,8 +355,6 @@ class SessionManager:
             stack_length = await redis_stack_length(stack_key)
             if stack_length >= self._batch_size:
                 await self._flush_stack_to_db(self.current_session_id)
-            if role == "assistant":
-                await self._maybe_compact_conversation()
         else:
             # Fallback: direct write to DB (old behavior)
             data = await self._get_session(self.current_session_id)
@@ -549,8 +372,6 @@ class SessionManager:
             await self._save_session(
                 self.current_session_id, data, session_name=session_name
             )
-            if role == "assistant":
-                await self._maybe_compact_conversation()
 
     async def get_session_info(self) -> Dict[str, Any]:
         """Get current session information."""
@@ -565,8 +386,6 @@ class SessionManager:
             "created_at": data.get("created_at", ""),
             "message_count": len(data.get("messages", [])),
             "project_id": data.get("project_id"),
-            "conversation_summary": (data.get("conversation_summary") or "").strip(),
-            "messages_summarized": int(data.get("messages_summarized") or 0),
         }
 
     async def replace_latest_assistant_message(self, old_content: str, new_content: str) -> bool:
