@@ -7,13 +7,13 @@ import secrets
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from internal.repositories.google_oauth_repository import GoogleOAuthRepository
-from internal.repositories.user_repository import UserRepository
+from internal.features.auth.google_oauth import GoogleOAuthRepository
+from internal.features.auth.repository import UserRepository
 
 logger = logging.getLogger(__name__)
 
 
-class AuthUseCase:
+class AuthService:
     def __init__(
         self,
         google_repo: GoogleOAuthRepository,

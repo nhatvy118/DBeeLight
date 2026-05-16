@@ -19,18 +19,18 @@ class ProjectRepository:
         Database will automatically generate the project_id (UUID).
         """
         logger.info(f"Repository: Creating project with user_id={user_id}, name={name}, description={description}, db_url={db_url}")
-        
+
         name = (name or "").strip()
         if not name:
             logger.error("Repository: name is required but was empty")
             raise ValueError("name is required")
-        
+
         # Use default placeholder if db_url is not provided (database requires NOT NULL)
         db_url = (db_url or "").strip()
         if not db_url:
             db_url = "placeholder://not-configured"
             logger.info(f"Repository: Using placeholder db_url: {db_url}")
-        
+
         query = """
         INSERT INTO projects (name, description, user_id, db_url)
         VALUES ($1, $2, $3, $4)
@@ -89,7 +89,7 @@ class ProjectRepository:
         user_id is Google sub (TEXT) for consistency with sessions.
         """
         logger.info(f"Repository: Updating db_url for project_id={project_id}, user_id={user_id}, db_url={db_url}")
-        
+
         query = """
         UPDATE projects
         SET db_url = $1

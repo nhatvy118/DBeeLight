@@ -4,13 +4,17 @@ import logging
 
 from fastapi import HTTPException, Request
 
-from internal.repositories.project_repository import ProjectRepository
-from internal.utils.sqlite_helper import generate_sqlite_db_path, get_sqlite_db_url_from_path, init_sqlite_database
+from internal.features.project.repository import ProjectRepository
+from internal.utils.sqlite_helper import (
+    generate_sqlite_db_path,
+    get_sqlite_db_url_from_path,
+    init_sqlite_database,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class ProjectUseCase:
+class ProjectService:
     def __init__(self, project_repo: ProjectRepository):
         self._project_repo = project_repo
 
@@ -22,12 +26,12 @@ class ProjectUseCase:
         if not isinstance(user, dict):
             logger.warning("User not authenticated. No user in session")
             raise HTTPException(status_code=401, detail="User not authenticated")
-        
+
         google_sub = user.get("sub")
         if not isinstance(google_sub, str) or not google_sub.strip():
             logger.warning(f"User not authenticated. Missing Google sub: {google_sub}")
             raise HTTPException(status_code=401, detail="User not authenticated")
-        
+
         logger.info(f"Getting user_key (Google sub) from session: {google_sub}")
         return google_sub.strip()
 
@@ -38,13 +42,11 @@ class ProjectUseCase:
         """
         user_key = self._get_user_key(request)
         logger.info(f"Creating project: name={name}, description={description}, db_url={db_url}, user_key={user_key}")
-        
+
         try:
-            # If db_url is not provided, generate SQLite file with random name and get SQLite URL
             final_db_url = db_url
-            
-            if not db_url or db_url.strip() == "" or db_url == "placeholder://not-configured":                
-                # Generate SQLite database file with random name
+
+            if not db_url or db_url.strip() == "" or db_url == "placeholder://not-configured":
                 sqlite_path = generate_sqlite_db_path()
                 if init_sqlite_database(sqlite_path):
                     final_db_url = get_sqlite_db_url_from_path(sqlite_path)
@@ -52,18 +54,17 @@ class ProjectUseCase:
                 else:
                     logger.warning(f"Failed to create SQLite database file, using placeholder")
                     final_db_url = "placeholder://not-configured"
-            
-            # Create project in database with SQLite URL (database will generate project_id)
+
             project = await self._project_repo.create_project(
                 user_id=user_key,
                 name=name,
                 description=description,
-                db_url=final_db_url
+                db_url=final_db_url,
             )
-            
+
             project_id = str(project["id"])
             logger.info(f"Project created successfully: id={project_id}, db_url={final_db_url}")
-            
+
             return {
                 "success": True,
                 "project": {
@@ -71,7 +72,7 @@ class ProjectUseCase:
                     "name": project["name"],
                     "description": project.get("description"),
                     "created_at": project["created_at"].isoformat() if project.get("created_at") else None,
-                }
+                },
             }
         except ValueError as e:
             logger.error(f"Validation error creating project: {e}")
@@ -90,7 +91,7 @@ class ProjectUseCase:
         List all projects for the authenticated user.
         """
         user_key = self._get_user_key(request)
-        
+
         try:
             projects = await self._project_repo.get_projects_by_user(user_key)
             return {
@@ -103,7 +104,7 @@ class ProjectUseCase:
                         "created_at": project["created_at"].isoformat() if project.get("created_at") else None,
                     }
                     for project in projects
-                ]
+                ],
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to list projects: {str(e)}") from e

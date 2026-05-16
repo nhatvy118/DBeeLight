@@ -20,16 +20,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from internal.controllers import (
-    auth_controller,
     chat_controller,
     excel_controller,
     file_controller,
-    health_controller,
-    project_controller,
-    sessions_controller,
     share_controller,
 )
 from internal.db import close_db, init_db
+from internal.features.auth import router as auth_router
+from internal.features.health import router as health_router
+from internal.features.project import router as project_router
+from internal.features.sessions import router as sessions_router
 from internal.utils.redis_client import close_redis_client, init_redis_client
 
 load_dotenv()
@@ -79,13 +79,13 @@ def create_app() -> FastAPI:
     )
 
     # Routers (dependencies are provided via internal/dependencies.py)
-    app.include_router(health_controller.router)
-    app.include_router(auth_controller.router)
+    app.include_router(health_router)
+    app.include_router(auth_router)
     app.include_router(chat_controller.router)
     app.include_router(excel_controller.router)
     app.include_router(file_controller.router)
-    app.include_router(sessions_controller.router)
-    app.include_router(project_controller.router)
+    app.include_router(sessions_router)
+    app.include_router(project_router)
     app.include_router(share_controller.router)
 
     return app

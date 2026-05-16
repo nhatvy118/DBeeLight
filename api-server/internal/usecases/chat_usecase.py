@@ -12,9 +12,9 @@ from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException
 
+from internal.features.project.repository import ProjectRepository
 from internal.repositories.agent_repository import AgentRepository
 from internal.repositories.chat_share_repository import ChatShareRepository
-from internal.repositories.project_repository import ProjectRepository
 from internal.usecases.file_usecase import FileUseCase
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage

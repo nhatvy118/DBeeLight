@@ -18,8 +18,8 @@ from uuid import UUID
 import asyncpg
 from fastapi import HTTPException, UploadFile
 
+from internal.features.project.repository import ProjectRepository
 from internal.repositories.file_repository import FileRepository
-from internal.repositories.project_repository import ProjectRepository
 from internal.services.chunking_service import (
     chunk_parsed_file,
     suggested_sqlite_table_names,

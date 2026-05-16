@@ -20,11 +20,6 @@ class WorkflowResumeRequest(BaseModel):
     user_visible_message: Optional[str] = None
 
 
-class NewSessionRequest(BaseModel):
-    name: Optional[str] = None
-    project_id: Optional[str] = None
-
-
 class ChatOk(BaseModel):
     success: bool = True
     response: str
@@ -37,17 +32,6 @@ class ChatOk(BaseModel):
 class ErrorResp(BaseModel):
     success: bool = False
     error: str
-
-
-class HealthOk(BaseModel):
-    status: str
-    agent_initialized: bool
-
-
-class CreateProjectRequest(BaseModel):
-    name: str
-    description: Optional[str] = None
-    db_url: Optional[str] = None
 
 
 class GenerateShareLinkRequest(BaseModel):
