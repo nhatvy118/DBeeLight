@@ -1,22 +1,28 @@
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 
 from fastapi import Request
 
+from internal.features.auth.dependencies import (
+    get_auth_service as get_auth_service,
+    get_google_oauth_repository as get_google_oauth_repository,
+    get_user_repository as get_user_repository,
+)
+from internal.features.project.dependencies import (
+    get_project_repository as get_project_repository,
+    get_project_service as get_project_service,
+)
+from internal.features.project.repository import ProjectRepository
+from internal.features.sessions.dependencies import (
+    get_sessions_service as get_sessions_service,
+)
 from internal.repositories.agent_repository import AgentRepository
 from internal.repositories.chat_share_repository import ChatShareRepository
-from internal.repositories.google_oauth_repository import GoogleOAuthRepository
-from internal.repositories.project_repository import ProjectRepository
-from internal.repositories.user_repository import UserRepository
 from internal.services.email_service import EmailService
-from internal.usecases.auth_usecase import AuthUseCase
 from internal.usecases.chat_share_usecase import ChatShareUseCase
 from internal.usecases.chat_usecase import ChatUseCase
-from internal.usecases.project_usecase import ProjectUseCase
 from internal.usecases.file_usecase import FileUseCase
-from internal.usecases.sessions_usecase import SessionsUseCase
 from internal.utils.redis_client import get_redis_client
 
 
@@ -31,10 +37,6 @@ def get_agent_repository(request: Request) -> AgentRepository:
     repo.set_db_pool(getattr(request.app.state, "db_pool", None))
     return repo
 
-
-@lru_cache
-def get_google_oauth_repository() -> GoogleOAuthRepository:
-    return GoogleOAuthRepository()
 
 def get_user_key(request: Request) -> str:
     """
@@ -85,31 +87,6 @@ def get_chat_share_usecase(request: Request) -> ChatShareUseCase:
         email_service=_email_service_singleton(),
     )
 
-
-def get_sessions_usecase(request: Request) -> SessionsUseCase:
-    return SessionsUseCase(get_agent_repository(request))
-
-
-def get_user_repository(request: Request) -> UserRepository | None:
-    pool = getattr(request.app.state, "db_pool", None)
-    if pool is None:
-        return None
-    return UserRepository(pool)
-
-
-def get_auth_usecase(request: Request) -> AuthUseCase:
-    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
-    return AuthUseCase(get_google_oauth_repository(), get_user_repository(request), frontend_url=frontend_url)
-
-def get_project_repository(request: Request) -> ProjectRepository:
-    pool = getattr(request.app.state, "db_pool", None)
-    if pool is None:
-        raise RuntimeError("Database pool not initialized")
-    return ProjectRepository(pool)
-
-
-def get_project_usecase(request: Request) -> ProjectUseCase:
-    return ProjectUseCase(get_project_repository(request))
 
 async def get_redis_client_dependency() -> object:
     """
