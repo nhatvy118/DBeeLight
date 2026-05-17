@@ -7,7 +7,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-_rs_path = Path(__file__).resolve().parents[1] / "internal/services/retrieval_service.py"
+_rs_path = Path(__file__).resolve().parents[1] / "internal/features/file/services/retrieval_service.py"
 _spec = importlib.util.spec_from_file_location("retrieval_service_standalone", _rs_path)
 _rs = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None

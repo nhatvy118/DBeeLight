@@ -38,7 +38,7 @@ except ImportError:
 # If not available, fallback to direct DB writes
 REDIS_STACK_AVAILABLE = False
 try:
-    from internal.utils.redis_client import (
+    from internal.infra.redis import (
         redis_stack_push,
         redis_stack_get_all,
         redis_stack_length,

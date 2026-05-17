@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from internal.dependencies import get_agent_repository
+from internal.features.chat.dependencies import get_agent_repository
+from internal.features.chat.repository import AgentRepository
 from internal.features.health.schema import HealthOk
-from internal.repositories.agent_repository import AgentRepository
 
 router = APIRouter()
 

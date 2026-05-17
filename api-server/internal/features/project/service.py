@@ -5,7 +5,7 @@ import logging
 from fastapi import HTTPException, Request
 
 from internal.features.project.repository import ProjectRepository
-from internal.utils.sqlite_helper import (
+from internal.features.project.sqlite_helper import (
     generate_sqlite_db_path,
     get_sqlite_db_url_from_path,
     init_sqlite_database,

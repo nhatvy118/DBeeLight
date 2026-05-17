@@ -20,39 +20,6 @@ class WorkflowResumeRequest(BaseModel):
     user_visible_message: Optional[str] = None
 
 
-class ChatOk(BaseModel):
-    success: bool = True
-    response: str
-    session_id: Optional[str] = None
-    warnings: list[dict[str, Any]] = Field(default_factory=list)
-    tool_events: list[dict[str, Any]] = Field(default_factory=list)
-    pending_workflow_resume: bool = False
-
-
-class ErrorResp(BaseModel):
-    success: bool = False
-    error: str
-
-
-class GenerateShareLinkRequest(BaseModel):
-    session_id: Optional[str] = None
-    project_id: Optional[str] = None
-
-
-class ShareRecipientInput(BaseModel):
-    email: str
-    # one of: "view_only", "read_data", "edit_data"
-    permission: str
-
-
-class CreateShareRequest(BaseModel):
-    session_id: str
-    recipients: list[ShareRecipientInput]
-    # Send a Resend email to each recipient with the accept link. Defaults
-    # on for good UX; user can opt out from the share modal.
-    notify_via_email: bool = True
-
-
 class ExecuteSqlRequest(BaseModel):
     sql: str
     action_id: Optional[str] = None
@@ -72,7 +39,15 @@ class ExportRequest(BaseModel):
     format: Optional[str] = "csv"  # "csv" or "excel"
 
 
-class UploadExcelOk(BaseModel):
+class ChatOk(BaseModel):
     success: bool = True
-    file: dict[str, Any]
+    response: str
+    session_id: Optional[str] = None
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
+    tool_events: list[dict[str, Any]] = Field(default_factory=list)
+    pending_workflow_resume: bool = False
 
+
+class ErrorResp(BaseModel):
+    success: bool = False
+    error: str

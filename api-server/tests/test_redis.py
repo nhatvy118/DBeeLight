@@ -1,7 +1,7 @@
 """Unit tests for Redis client functions."""
 
 import pytest
-from internal.utils.redis_client import (
+from internal.infra.redis import (
     init_redis_client,
     redis_get,
     redis_set,

@@ -5,12 +5,13 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from internal.controllers.schemas import CreateShareRequest
-from internal.dependencies import get_chat_share_usecase, get_user_key
-from internal.usecases.chat_share_usecase import ChatShareUseCase
+from internal.dependencies import get_user_key
+from internal.features.share.dependencies import get_chat_share_service
+from internal.features.share.schema import CreateShareRequest
+from internal.features.share.service import ChatShareService
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(tags=["share"])
 
 
 def _user_email(request: Request) -> str | None:
@@ -47,12 +48,11 @@ async def create_share(
     body: CreateShareRequest,
     request: Request,
     user_key: str = Depends(get_user_key),
-    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+    service: ChatShareService = Depends(get_chat_share_service),
 ):
     """Owner shares a chat session with one or more recipients."""
-    # Allow body.session_id to be empty; URL path is authoritative.
     sid = (session_id or body.session_id or "").strip()
-    result = await usecase.create_share(
+    result = await service.create_share(
         owner_google_sub=user_key,
         owner_name=_user_name(request),
         session_id=sid,
@@ -67,9 +67,9 @@ async def create_share(
 @router.get("/api/shares/sent")
 async def list_sent(
     user_key: str = Depends(get_user_key),
-    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+    service: ChatShareService = Depends(get_chat_share_service),
 ):
-    shares = await usecase.list_sent(owner_google_sub=user_key)
+    shares = await service.list_sent(owner_google_sub=user_key)
     return {"success": True, "shares": shares}
 
 
@@ -77,9 +77,9 @@ async def list_sent(
 async def list_received(
     request: Request,
     user_key: str = Depends(get_user_key),
-    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+    service: ChatShareService = Depends(get_chat_share_service),
 ):
-    shares = await usecase.list_received(
+    shares = await service.list_received(
         recipient_email=_user_email(request),
         recipient_google_sub=user_key,
     )
@@ -91,10 +91,10 @@ async def preview_share(
     accept_token: str,
     request: Request,
     user_key: str = Depends(get_user_key),
-    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+    service: ChatShareService = Depends(get_chat_share_service),
 ):
     """Lightweight preview for the accept page (does not fork)."""
-    rec = await usecase._repo.get_recipient_by_token(accept_token)
+    rec = await service._repo.get_recipient_by_token(accept_token)
     if rec is None:
         raise HTTPException(status_code=404, detail="Share link not found")
     if rec["revoked_at"] is not None or rec["share_revoked_at"] is not None:
@@ -124,10 +124,10 @@ async def accept_share(
     accept_token: str,
     request: Request,
     user_key: str = Depends(get_user_key),
-    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+    service: ChatShareService = Depends(get_chat_share_service),
 ):
     """Recipient accepts a share — snapshot-forks the session and returns the new session_id."""
-    result = await usecase.accept_share(
+    result = await service.accept_share(
         accept_token=accept_token,
         recipient_google_sub=user_key,
         recipient_email=_user_email(request),
@@ -139,9 +139,9 @@ async def accept_share(
 async def revoke_share(
     share_id: str,
     user_key: str = Depends(get_user_key),
-    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+    service: ChatShareService = Depends(get_chat_share_service),
 ):
-    await usecase.revoke_share(share_id=share_id, owner_google_sub=user_key)
+    await service.revoke_share(share_id=share_id, owner_google_sub=user_key)
     return {"success": True}
 
 
@@ -150,10 +150,10 @@ async def resend_share_email(
     recipient_id: str,
     request: Request,
     user_key: str = Depends(get_user_key),
-    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+    service: ChatShareService = Depends(get_chat_share_service),
 ):
     """Owner re-sends the notification email for a single recipient."""
-    result = await usecase.resend_email(
+    result = await service.resend_email(
         recipient_id=recipient_id,
         owner_google_sub=user_key,
         owner_name=_user_name(request),
@@ -166,7 +166,7 @@ async def resend_share_email(
 async def revoke_recipient(
     recipient_id: str,
     user_key: str = Depends(get_user_key),
-    usecase: ChatShareUseCase = Depends(get_chat_share_usecase),
+    service: ChatShareService = Depends(get_chat_share_service),
 ):
-    await usecase.revoke_recipient(recipient_id=recipient_id, owner_google_sub=user_key)
+    await service.revoke_recipient(recipient_id=recipient_id, owner_google_sub=user_key)
     return {"success": True}

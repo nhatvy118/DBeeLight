@@ -1,10 +1,11 @@
-"""
-FastAPI Server để kết nối Frontend với MCP Agent
+"""FastAPI Server kết nối Frontend với MCP Agent.
 
-This package is structured into 3 layers:
-- controllers: FastAPI routers + request/response schemas
-- usecases: business logic
-- repositories: IO / external integrations (MCP agent, Google OAuth, etc.)
+Feature-based layout under ``internal/features/<feature>/``:
+- ``router.py``      — FastAPI router (HTTP-only)
+- ``service.py``     — business logic
+- ``repository.py``  — DB / external IO
+- ``schema.py``      — Pydantic request/response
+- ``dependencies.py``— ``Depends()`` chain for this feature
 """
 
 from __future__ import annotations
@@ -19,18 +20,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from internal.controllers import (
-    chat_controller,
-    excel_controller,
-    file_controller,
-    share_controller,
-)
-from internal.db import close_db, init_db
-from internal.features.auth import router as auth_router
-from internal.features.health import router as health_router
-from internal.features.project import router as project_router
-from internal.features.sessions import router as sessions_router
-from internal.utils.redis_client import close_redis_client, init_redis_client
+from internal.features.auth.router import router as auth_router
+from internal.features.chat.router import router as chat_router
+from internal.features.file.router import router as file_router
+from internal.features.health.router import router as health_router
+from internal.features.project.router import router as project_router
+from internal.features.sessions.router import router as sessions_router
+from internal.features.share.router import router as share_router
+from internal.infra.database import close_db, init_db
+from internal.infra.redis import close_redis_client, init_redis_client
 
 load_dotenv()
 
@@ -78,15 +76,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Routers (dependencies are provided via internal/dependencies.py)
+    # Feature routers
     app.include_router(health_router)
     app.include_router(auth_router)
-    app.include_router(chat_controller.router)
-    app.include_router(excel_controller.router)
-    app.include_router(file_controller.router)
+    app.include_router(chat_router)
+    app.include_router(file_router)
     app.include_router(sessions_router)
     app.include_router(project_router)
-    app.include_router(share_controller.router)
+    app.include_router(share_router)
 
     return app
 

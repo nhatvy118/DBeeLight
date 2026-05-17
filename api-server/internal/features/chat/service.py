@@ -12,10 +12,10 @@ from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException
 
+from internal.features.chat.repository import AgentRepository
+from internal.features.file.service import FileService
 from internal.features.project.repository import ProjectRepository
-from internal.repositories.agent_repository import AgentRepository
-from internal.repositories.chat_share_repository import ChatShareRepository
-from internal.usecases.file_usecase import FileUseCase
+from internal.features.share.repository import ChatShareRepository
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
@@ -23,10 +23,40 @@ logger = logging.getLogger(__name__)
 
 _chat_graph = importlib.import_module("mcp_agent.graph.chat_graph")
 chat_checkpoint_config = _chat_graph.chat_checkpoint_config
-langchain_messages_to_session_rows = _chat_graph.langchain_messages_to_session_rows
 _progress = importlib.import_module("mcp_agent.progress")
 set_progress_callback = _progress.set_progress_callback
 reset_progress_callback = _progress.reset_progress_callback
+
+
+def langchain_messages_to_session_rows(messages):
+    """Persistable rows for ``session.content.messages`` (UI).
+
+    Inlined from mcp_agent.graph.chat_graph (removed in commit 787d034).
+    """
+    from datetime import datetime
+
+    ts = datetime.now().isoformat()
+    rows = []
+    for m in messages:
+        if isinstance(m, HumanMessage):
+            rows.append({"role": "user", "content": _text_content(m.content), "timestamp": ts})
+        elif isinstance(m, AIMessage):
+            rows.append({"role": "assistant", "content": _text_content(m.content), "timestamp": ts})
+    return rows
+
+
+def _text_content(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for c in content:
+            if isinstance(c, dict) and isinstance(c.get("text"), str):
+                parts.append(c["text"])
+            elif isinstance(c, str):
+                parts.append(c)
+        return "".join(parts)
+    return str(content)
 
 
 def _sse_format(event: dict) -> str:
@@ -149,18 +179,18 @@ def _classify_file_data_intent_heuristic(text: str) -> str:
     return "uncertain"
 
 
-class ChatUseCase:
+class ChatService:
     def __init__(
         self,
         agent_repo: AgentRepository,
         project_repo: Optional[ProjectRepository] = None,
         share_repo: Optional[ChatShareRepository] = None,
-        file_usecase: Optional[FileUseCase] = None,
+        file_service: Optional[FileService] = None,
     ):
         self._agent_repo = agent_repo
         self._project_repo = project_repo
         self._share_repo = share_repo
-        self._file_usecase = file_usecase
+        self._file_usecase = file_service
 
     async def _get_share_context(
         self, session_id: str | None, user_key: str

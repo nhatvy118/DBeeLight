@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from internal.services.file_parse_service import ParsedFile
+from internal.features.file.services.file_parse_service import ParsedFile
 
 
 @dataclass

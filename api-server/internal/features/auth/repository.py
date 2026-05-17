@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 import asyncpg
 
-from internal.utils.token_crypto import decrypt_token, encrypt_token
+from internal.features.auth.token_crypto import decrypt_token, encrypt_token
 
 logger = logging.getLogger(__name__)
 

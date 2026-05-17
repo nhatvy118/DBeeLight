@@ -18,15 +18,18 @@ from uuid import UUID
 import asyncpg
 from fastapi import HTTPException, UploadFile
 
+from internal.features.file.repository import FileRepository
 from internal.features.project.repository import ProjectRepository
-from internal.repositories.file_repository import FileRepository
-from internal.services.chunking_service import (
+from internal.features.file.services.chunking_service import (
     chunk_parsed_file,
     suggested_sqlite_table_names,
 )
-from internal.services.embedding_service import EmbeddingService
-from internal.services.file_parse_service import parse_file
-from internal.services.retrieval_service import ChunkResult, format_chunks_as_context_block
+from internal.features.file.services.embedding_service import EmbeddingService
+from internal.features.file.services.file_parse_service import parse_file
+from internal.features.file.services.retrieval_service import (
+    ChunkResult,
+    format_chunks_as_context_block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +182,7 @@ def _collect_columns_sync(engine_url: str, table_name: str) -> list[str]:
         eng.dispose()
 
 
-class FileUseCase:
+class FileService:
     def __init__(
         self,
         pool: asyncpg.Pool,
@@ -316,7 +319,7 @@ class FileUseCase:
         stack_key = f"{user_key}:{session_id}:stack"
         pushed = False
         try:
-            from internal.utils.redis_client import redis_stack_push
+            from internal.infra.redis import redis_stack_push
 
             pushed = await redis_stack_push(stack_key, msg)
         except Exception as e:

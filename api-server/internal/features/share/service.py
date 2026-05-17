@@ -6,16 +6,16 @@ from typing import Any, Optional
 
 from fastapi import HTTPException
 
-from internal.repositories.chat_share_repository import (
+from internal.features.share.repository import (
     VALID_PERMISSIONS,
     ChatShareRepository,
 )
-from internal.services.email_service import EmailService
+from internal.features.share.email_service import EmailService
 
 logger = logging.getLogger(__name__)
 
 
-class ChatShareUseCase:
+class ChatShareService:
     """Business logic for sharing chat sessions across users."""
 
     def __init__(

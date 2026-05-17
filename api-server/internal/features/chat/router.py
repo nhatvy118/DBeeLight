@@ -3,26 +3,26 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from internal.controllers.schemas import (
+from internal.dependencies import get_user_key
+from internal.features.chat.dependencies import get_chat_service
+from internal.features.chat.schema import (
     ChatOk,
     ChatRequest,
     ExecuteSqlRequest,
-    ExportRequest,
     WorkflowResumeRequest,
-)  # noqa: F401
-from internal.dependencies import get_chat_usecase, get_user_key
-from internal.usecases.chat_usecase import ChatUseCase
+)
+from internal.features.chat.service import ChatService
 
+router = APIRouter(tags=["chat"])
 
-router = APIRouter()
 
 @router.post("/api/chat", response_model=ChatOk)
 async def chat(
     req: ChatRequest,
     user_key: str = Depends(get_user_key),
-    usecase: ChatUseCase = Depends(get_chat_usecase),
+    service: ChatService = Depends(get_chat_service),
 ) -> ChatOk:
-    response_text, sid, tool_events, pending, warnings, success = await usecase.chat(
+    response_text, sid, tool_events, pending, warnings, success = await service.chat(
         user_key, req.message, req.session_id, req.project_id
     )
     return ChatOk(
@@ -39,20 +39,10 @@ async def chat(
 async def chat_stream(
     req: ChatRequest,
     user_key: str = Depends(get_user_key),
-    usecase: ChatUseCase = Depends(get_chat_usecase),
+    service: ChatService = Depends(get_chat_service),
 ) -> StreamingResponse:
-    """Streaming variant of ``/api/chat``.
-
-    Returns a Server-Sent Events stream:
-      event: started        — stream open, chat task launched
-      event: stage          — workflow stage progress (running/completed/error)
-      event: final          — full chat response (same shape as /api/chat)
-      event: error          — terminal error before final
-
-    Frontend should parse with fetch + ReadableStream rather than EventSource
-    (EventSource is GET-only).
-    """
-    generator = usecase.chat_stream(
+    """Streaming variant of ``/api/chat`` (Server-Sent Events)."""
+    generator = service.chat_stream(
         user_key=user_key,
         message=req.message,
         session_id=req.session_id,
@@ -63,7 +53,7 @@ async def chat_stream(
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",  # disable nginx response buffering
+            "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
         },
     )
@@ -73,9 +63,9 @@ async def chat_stream(
 async def workflow_resume(
     req: WorkflowResumeRequest,
     user_key: str = Depends(get_user_key),
-    usecase: ChatUseCase = Depends(get_chat_usecase),
+    service: ChatService = Depends(get_chat_service),
 ) -> ChatOk:
-    response_text, sid, tool_events, pending, warnings, success = await usecase.workflow_resume(
+    response_text, sid, tool_events, pending, warnings, success = await service.workflow_resume(
         user_key,
         req.session_id,
         req.approved,
@@ -96,16 +86,10 @@ async def workflow_resume(
 async def execute_sql(
     req: ExecuteSqlRequest,
     user_key: str = Depends(get_user_key),
-    usecase: ChatUseCase = Depends(get_chat_usecase),
+    service: ChatService = Depends(get_chat_service),
 ) -> ChatOk:
-    """
-    Execute a raw SQL statement that has already been previewed to the user.
-
-    - `sql`: the exact SQL to execute (taken from the last ```sql``` block shown in the UI)
-    - `session_id`: optional, to keep history linked to the same conversation
-    - `project_id`: optional, to auto-connect to the correct project database
-    """
-    response_text, sid, tool_events, pending, warnings, success = await usecase.execute_sql(
+    """Execute a raw SQL statement that has already been previewed to the user."""
+    response_text, sid, tool_events, pending, warnings, success = await service.execute_sql(
         user_key,
         req.sql,
         req.action_id,
@@ -123,5 +107,3 @@ async def execute_sql(
         tool_events=tool_events,
         pending_workflow_resume=pending,
     )
-
-
