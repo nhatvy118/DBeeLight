@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import MessageList, { type UiMessage } from '../components/chat/MessageList';
 import {
-  sendMessage,
+  sendMessageWithStream,
   createSession,
   uploadSessionFile,
   listUserFilesInventory,
@@ -119,7 +119,7 @@ export default function Home() {
     setQuery('');
     setIsLoading(true);
     try {
-      const res = await sendMessage(sendPayload, sessionId, null);
+      const res = await sendMessageWithStream(sendPayload, sessionId, null);
       if (res.success) {
         const raw = res.response ?? '';
         const exp = extractExportData(raw);

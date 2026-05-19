@@ -23,6 +23,9 @@ from mcp_agent.orchestration import Orchestrator, IntentService, IntentResult
 # LangGraph workflow
 from mcp_agent.graph import AgentState, AgentWorkflow, StageType, SessionStatus
 
+# Bundled MCP server scripts
+from mcp_agent.servers import SERVER_SCRIPTS, SERVERS_DIR, server_script
+
 __all__ = [
     # Agents
     "BaseAgent",
@@ -40,6 +43,10 @@ __all__ = [
     "AgentState",
     "StageType",
     "SessionStatus",
+    # Bundled servers
+    "SERVER_SCRIPTS",
+    "SERVERS_DIR",
+    "server_script",
 ]
 
 __version__ = "0.1.0"

@@ -16,32 +16,17 @@ from internal.features.chat.service import ChatService
 router = APIRouter(tags=["chat"])
 
 
-@router.post("/api/chat", response_model=ChatOk)
-async def chat(
-    req: ChatRequest,
-    user_key: str = Depends(get_user_key),
-    service: ChatService = Depends(get_chat_service),
-) -> ChatOk:
-    response_text, sid, tool_events, pending, warnings, success = await service.chat(
-        user_key, req.message, req.session_id, req.project_id
-    )
-    return ChatOk(
-        success=success,
-        response=response_text,
-        session_id=sid,
-        warnings=warnings,
-        tool_events=tool_events,
-        pending_workflow_resume=pending,
-    )
-
-
 @router.post("/api/chat/stream")
 async def chat_stream(
     req: ChatRequest,
     user_key: str = Depends(get_user_key),
     service: ChatService = Depends(get_chat_service),
 ) -> StreamingResponse:
-    """Streaming variant of ``/api/chat`` (Server-Sent Events)."""
+    """Chat endpoint (Server-Sent Events).
+
+    Emits ``started`` → ``stage`` (progress) → ``final`` events. Callers that
+    only need the final payload can wait for ``final``; ``service.chat()`` is
+    still the underlying processor and is reused as a single code path."""
     generator = service.chat_stream(
         user_key=user_key,
         message=req.message,

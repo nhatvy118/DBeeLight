@@ -5,14 +5,23 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from mcp_agent import DatabaseAgent, ExcelAgent, SessionManager
+from mcp_agent import DatabaseAgent, ExcelAgent, SessionManager, server_script
 from mcp_agent.agents import ChartAgent
 from mcp_agent.orchestration import Orchestrator
 
 logger = logging.getLogger("internal")
 
-# Project root for resolving server paths
-_project_root = Path(__file__).resolve().parent.parent.parent.parent
+# api-server owns the SQLite data directories. Pass them explicitly to the
+# chart-server subprocess so it doesn't have to guess workspace layout.
+# - ``internal/databases/`` is where ``sqlite_helper.generate_sqlite_db_path``
+#   creates project DBs.
+# - ``temp_dbs/`` is for per-session file imports.
+# - ``databases/`` (legacy) kept for any projects rowed before the move.
+_API_SERVER_ROOT = Path(__file__).resolve().parents[3]
+_CHART_SQLITE_ALLOWED_DIRS = ":".join(
+    str((_API_SERVER_ROOT / name).resolve())
+    for name in ("internal/databases", "temp_dbs", "databases")
+)
 
 
 class AgentRepository:
@@ -26,32 +35,20 @@ class AgentRepository:
 
     def __init__(
         self,
-        default_servers: Optional[list[str]] = None,
         model: str = "gpt-4o-mini",
     ):
-        self._default_servers = default_servers or [
-            "database/database.py",
-            "excel-server/excel_server.py",
-            "gsheets-server/gsheets_server.py",
-            "chart-server/chart_server.py",
-        ]
-        # Which servers each agent connects to (agent_id -> list of server path suffixes).
-        # Excel agent connects to BOTH the local-xlsx server and the
-        # Google-Sheets server, so the agent picks tools from either pool
-        # based on whether the user references a local file or a Sheets URL.
+        # Which bundled MCP servers each agent connects to. Excel agent
+        # connects to BOTH the local-xlsx server and the Google-Sheets
+        # server, so the agent picks tools from either pool based on whether
+        # the user references a local file or a Sheets URL.
         self._agent_servers: dict[str, list[str]] = {
-            "database": ["database/database.py"],
-            "excel": [
-                "excel-server/excel_server.py",
-                "gsheets-server/gsheets_server.py",
-            ],
-            "chart": ["chart-server/chart_server.py"],
+            "database": ["database"],
+            "excel": ["excel", "gsheets"],
+            "chart": ["chart"],
         }
-        # Server paths whose subprocess needs the *current app user's* google_sub
+        # Servers whose subprocess needs the *current app user's* google_sub
         # injected via env (so they can act on that user's Google data).
-        self._per_user_google_servers: set[str] = {
-            "gsheets-server/gsheets_server.py",
-        }
+        self._per_user_google_servers: set[str] = {"gsheets"}
         self._model = model
         self._db_pool = None
 
@@ -98,39 +95,41 @@ class AgentRepository:
             chart_agent = ChartAgent(model=self._model, session_manager=session_manager, agent_id="chart")
             agents = [db_agent, excel_agent, chart_agent]
 
-            base_path = _project_root
             connected_count = 0
+            attempted_paths: list[str] = []
             for agent in agents:
-                server_paths = self._agent_servers.get(agent.agent_id, [])
-                for rel in server_paths:
-                    full_path = base_path / rel
+                for server_id in self._agent_servers.get(agent.agent_id, []):
+                    full_path = server_script(server_id)
+                    attempted_paths.append(str(full_path))
                     logger.info(f"Checking server: {full_path} (exists: {full_path.exists()})")
                     if not full_path.exists():
                         logger.warning(f"Server not found: {full_path}")
                         continue
-                    server_name = full_path.stem
-                    # Inject per-user env for servers that act on the user's
-                    # behalf (e.g. Google Sheets). For "anonymous" users we
-                    # skip these — they have no Google account to call.
-                    extra_env: dict[str, str] | None = None
-                    if rel in self._per_user_google_servers:
+                    # Inject per-user / per-server env. For "anonymous" users
+                    # we skip Google servers — they have no Google account.
+                    extra_env: dict[str, str] = {}
+                    if server_id in self._per_user_google_servers:
                         if user_key == "anonymous":
                             logger.info(
-                                f"Skipping {server_name} for anonymous user (no Google identity)"
+                                f"Skipping {server_id} for anonymous user (no Google identity)"
                             )
                             continue
-                        extra_env = {"USER_GOOGLE_SUB": user_key}
+                        extra_env["USER_GOOGLE_SUB"] = user_key
+                    if server_id == "chart":
+                        # chart-server validates that incoming SQLite db_urls
+                        # live under one of these dirs (defense in depth).
+                        extra_env["CHART_SQLITE_ALLOWED_DIRS"] = _CHART_SQLITE_ALLOWED_DIRS
                     try:
-                        logger.info(f"Attempting to connect {agent.agent_id} to {server_name} at {full_path}")
-                        await agent.connect_to_server(server_name, str(full_path), env=extra_env)
+                        logger.info(f"Attempting to connect {agent.agent_id} to {server_id} at {full_path}")
+                        await agent.connect_to_server(server_id, str(full_path), env=extra_env)
                         connected_count += 1
-                        logger.info(f"{agent.agent_id} connected to {server_name}")
+                        logger.info(f"{agent.agent_id} connected to {server_id}")
                     except Exception as e:
-                        logger.exception(f"Failed to connect {agent.agent_id} to {server_name}: {e}")
+                        logger.exception(f"Failed to connect {agent.agent_id} to {server_id}: {e}")
 
             if connected_count == 0:
                 raise RuntimeError(
-                    f"No MCP servers connected. Checked paths: {[base_path / sp for sp in self._default_servers]}"
+                    f"No MCP servers connected. Checked paths: {attempted_paths}"
                 )
 
             orchestrator = Orchestrator(

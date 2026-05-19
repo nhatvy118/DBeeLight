@@ -36,11 +36,15 @@ VEGA_LITE_SCHEMA = "https://vega.github.io/schema/vega-lite/v5.json"
 
 DEFAULT_MAX_ROWS = int(os.environ.get("CHART_MAX_ROWS", "100000"))
 
-_API_SERVER_ROOT = Path(__file__).resolve().parents[1] / "api-server"
-# Session file imports use ``api-server/temp_dbs/<session_id>.db``; charts must allow both.
+# Fallback when CHART_SQLITE_ALLOWED_DIRS is not set in env. In production
+# api-server passes the env var explicitly (it owns these data directories);
+# this default lets standalone testing still work. The chart-server lives at
+# ``<workspace>/mcp-client/servers/chart-server/`` so parents[3] is the
+# workspace root.
+_API_SERVER_ROOT = Path(__file__).resolve().parents[3] / "api-server"
 _DEFAULT_SQLITE_DIRS = ":".join(
     str((_API_SERVER_ROOT / name).resolve())
-    for name in ("databases", "temp_dbs")
+    for name in ("internal/databases", "temp_dbs", "databases")
 )
 ALLOWED_SQLITE_DIRS: tuple[str, ...] = tuple(
     p.rstrip("/")

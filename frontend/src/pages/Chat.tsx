@@ -2,8 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessageList, { type UiMessage, type SchemaPreviewData } from '../components/chat/MessageList';
 import {
   getSession,
-  sendMessage,
-  sendMessageStream,
+  sendMessageWithStream,
   getSessions,
   executeSql,
   resumeWorkflow,
@@ -16,7 +15,6 @@ import {
   type SessionShareInfo,
   type ToolEvent,
   type GetSessionResponse,
-  type StreamEvent,
 } from '../services/api';
 import {
   buildChatMessageWithSessionFiles,
@@ -551,35 +549,20 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const doSend = async (text: string) => {
     setIsLoading(true);
     setIsAssistantTyping(false);
-    setStreamingStage('Đang xử lý...');
+    setStreamingStage('Processing...');
     const controller = new AbortController();
     sendAbortControllerRef.current = controller;
     console.log('Sending message with sessionId:', sessionId);
     console.log('Selected project:', selectedProject);
     try {
-      // Stream progress events; ``finalRes`` is populated on the terminal ``final`` event.
-      let finalRes: any = null;
-      let streamErr: { status?: number; message: string } | null = null;
-      await sendMessageStream(text, sessionId, selectedProject?.id || null, {
+      const finalRes = await sendMessageWithStream(text, sessionId, selectedProject?.id || null, {
+        onStage: (m) => setStreamingStage(m),
         signal: controller.signal,
-        onEvent: (e: StreamEvent) => {
-          if (e.type === 'stage') {
-            if (e.message) setStreamingStage(e.message);
-          } else if (e.type === 'final') {
-            finalRes = e.data;
-          } else if (e.type === 'error') {
-            streamErr = { status: e.status_code, message: e.message };
-          }
-        },
       });
       setStreamingStage(null);
-      if (streamErr !== null) {
-        const errInfo = streamErr as { status?: number; message: string };
-        throw new Error(errInfo.message || 'Streaming chat failed');
-      }
-      if (!finalRes) {
-        throw new Error('Stream ended without a final event');
-      }
+      // ChatResponse is a discriminated union; downstream code reads optional
+      // tool_events / pending_workflow_resume that only exist on success. Keep
+      // the original behaviour of treating the payload as a loose object.
       const res = finalRes as any;
       if (res.response && res.response.trim().length > 0) {
         setIsAssistantTyping(true);
@@ -713,7 +696,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           .filter((a): a is typeof a & { fileId: string } => !!a.fileId)
           .map((a) => ({ id: a.fileId, filename: a.name })),
       );
-      const res = await sendMessage(sendPayload, sessionId, selectedProject?.id || null);
+      const res = await sendMessageWithStream(sendPayload, sessionId, selectedProject?.id || null);
       const resText = res.response;
       if (resText && resText.trim().length > 0) {
         setMessages((prev) => {

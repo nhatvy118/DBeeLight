@@ -26,37 +26,7 @@ chat_checkpoint_config = _chat_graph.chat_checkpoint_config
 _progress = importlib.import_module("mcp_agent.progress")
 set_progress_callback = _progress.set_progress_callback
 reset_progress_callback = _progress.reset_progress_callback
-
-
-def langchain_messages_to_session_rows(messages):
-    """Persistable rows for ``session.content.messages`` (UI).
-
-    Inlined from mcp_agent.graph.chat_graph (removed in commit 787d034).
-    """
-    from datetime import datetime
-
-    ts = datetime.now().isoformat()
-    rows = []
-    for m in messages:
-        if isinstance(m, HumanMessage):
-            rows.append({"role": "user", "content": _text_content(m.content), "timestamp": ts})
-        elif isinstance(m, AIMessage):
-            rows.append({"role": "assistant", "content": _text_content(m.content), "timestamp": ts})
-    return rows
-
-
-def _text_content(content) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for c in content:
-            if isinstance(c, dict) and isinstance(c.get("text"), str):
-                parts.append(c["text"])
-            elif isinstance(c, str):
-                parts.append(c)
-        return "".join(parts)
-    return str(content)
+progress_emit = _progress.emit
 
 
 def _sse_format(event: dict) -> str:
@@ -387,109 +357,83 @@ class ChatService:
             payload["sql"] = sql
         await agent.session_manager.set_pending_approval(str(session_id), payload)
 
-    async def chat(
-        self, user_key: str, message: str, session_id: str | None, project_id: str | None = None
-    ) -> tuple[str, str | None, list[dict], bool, list[dict], bool]:
-        logger.info(f"UseCase: Processing chat message, user_key={user_key}, session_id={session_id}, project_id={project_id}")
-        query = (message or "").strip()
-        if not query:
-            logger.error("UseCase: Message is required but was empty")
-            raise HTTPException(status_code=400, detail="Message is required")
-
-        # Share-permission gating: if this session is a forked share, enforce permission.
-        share_ctx = await self._get_share_context(session_id, user_key)
-        share_permission = share_ctx["permission"] if share_ctx else None
-        if share_permission == "view_only":
-            raise HTTPException(
-                status_code=403,
-                detail="This session is shared with view-only access; you cannot send messages.",
-            )
-        # Keep the original user text (pre system-note injection) so we can
-        # write it back into history. We *keep* upload markers here so the
-        # frontend can recover the attached filename on reload (it strips
-        # markers for display and parses them for the attachment chip).
-        original_user_query = query
-        if share_permission == "read_data":
-            # Prepend a system note so the agent refuses write proposals.
-            query = f"{_READ_DATA_SYSTEM_NOTE}\n\nUser message: {query}"
-
-        # When the session is a forked share, projects belong to the owner, not
-        # the caller — use the owner's user_id when looking up the project's db_url.
-        project_lookup_user = share_ctx["owner_user_id"] if share_ctx else user_key
-
+    async def _get_agent_or_raise(self, user_key: str):
+        """Init agent for user; raise HTTPException(500) if anything is off."""
         try:
             logger.info(f"UseCase: Getting agent for user_key={user_key}")
             agent = await self._agent_repo.get_agent(user_key=user_key)
         except Exception as e:
             logger.error(f"UseCase: Error initializing agent: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to initialize agent: {str(e)}") from e
-
         if not agent.sessions:
             logger.error("UseCase: Agent initialized but no MCP servers connected")
             raise HTTPException(
                 status_code=500,
                 detail="Agent initialized but no MCP servers connected. Please check server logs for connection errors.",
             )
-
-        # Đảm bảo có SessionManager
         if not agent.session_manager:
             logger.error("UseCase: Session manager is not available for this agent")
             raise HTTPException(status_code=500, detail="Session manager is not available for this agent")
+        return agent
 
-        # Single-shot intent classification. The result is reused downstream
-        # by passing it into the chat graph state — orchestrator's
-        # _parse_intent_node detects ``pre_classified_intent`` and skips its
-        # own LLM call. We always classify (not only for forked sessions) so
-        # owner sessions also avoid the duplicate.
-        pre_classified_intent: dict | None = None
-        if hasattr(agent, "classify_intent"):
-            try:
-                history_msgs = await agent.session_manager.get_current_messages()
-            except Exception:
-                history_msgs = []
-            try:
-                pre_classified_intent = await agent.classify_intent(
-                    original_user_query,
-                    conversation_context=history_msgs,
-                )
-            except Exception as e:
-                logger.warning(f"UseCase: Intent classification failed, falling back to in-graph classification: {e}")
-                pre_classified_intent = None
+    async def _classify_intent_with_history(self, agent, original_user_query: str) -> dict | None:
+        """Single-shot intent classification reused by the chat graph (skips its own
+        LLM call when ``pre_classified_intent`` is set in the input state)."""
+        if not hasattr(agent, "classify_intent"):
+            return None
+        try:
+            history_msgs = await agent.session_manager.get_current_messages()
+        except Exception:
+            history_msgs = []
+        await progress_emit("classify", "running", "Analyzing request...")
+        try:
+            return await agent.classify_intent(
+                original_user_query,
+                conversation_context=history_msgs,
+            )
+        except Exception as e:
+            logger.warning(f"UseCase: Intent classification failed, falling back to in-graph classification: {e}")
+            return None
 
-        # Share-permission gate using the intent's access_level. Only enforced
-        # for forked share sessions; owner sessions don't need this check.
-        if share_ctx is not None and pre_classified_intent:
-            required = pre_classified_intent.get("access_level")
-            if not _is_access_allowed(required, share_permission or "view_only"):
-                route = pre_classified_intent.get("route")
-                logger.info(
-                    "UseCase: Rejecting forked-session request: route=%s required=%s, have=%s",
-                    route, required, share_permission,
-                )
-                rejection_text = (
-                    f"This shared chat is in {share_permission!r} mode; "
-                    f"the request needs {required!r} access (route={route!r})."
-                )
-                # Persist the user's question + the rejection into JSONB so
-                # they survive a page reload. Without this, the bubbles only
-                # exist in the client's React state and disappear on refresh.
-                try:
-                    if session_id and await agent.session_manager.load_session(session_id):
-                        if (original_user_query or "").strip():
-                            await agent.session_manager.add_message("user", original_user_query)
-                        await agent.session_manager.add_message(
-                            "assistant", f"Error: {rejection_text}"
-                        )
-                except Exception as e:
-                    logger.warning(
-                        f"UseCase: Failed to persist rejection turn to session: {e}"
-                    )
-                raise HTTPException(status_code=403, detail=rejection_text)
+    async def _enforce_share_access(
+        self,
+        agent,
+        share_ctx: dict | None,
+        share_permission: str | None,
+        intent: dict | None,
+        session_id: str | None,
+        original_user_query: str,
+    ) -> None:
+        """For forked share sessions only: reject the request when the intent's
+        ``access_level`` exceeds what the share grants. Persists the user
+        question + the rejection text into JSONB so they survive a page reload,
+        then raises HTTPException(403)."""
+        if share_ctx is None or not intent:
+            return
+        required = intent.get("access_level")
+        if _is_access_allowed(required, share_permission or "view_only"):
+            return
+        route = intent.get("route")
+        logger.info(
+            "UseCase: Rejecting forked-session request: route=%s required=%s, have=%s",
+            route, required, share_permission,
+        )
+        rejection_text = (
+            f"This shared chat is in {share_permission!r} mode; "
+            f"the request needs {required!r} access (route={route!r})."
+        )
+        try:
+            if session_id and await agent.session_manager.load_session(session_id):
+                if (original_user_query or "").strip():
+                    await agent.session_manager.add_message("user", original_user_query)
+                await agent.session_manager.add_message("assistant", f"Error: {rejection_text}")
+        except Exception as e:
+            logger.warning(f"UseCase: Failed to persist rejection turn to session: {e}")
+        raise HTTPException(status_code=403, detail=rejection_text)
 
-        route_for_rag = str((pre_classified_intent or {}).get("route") or "").strip().lower()
-        semantic_retrieval = bool((pre_classified_intent or {}).get("semantic_retrieval"))
-
-        # Validate project_id as UUID (from projects.id) if provided
+    def _resolve_project_id_uuid(self, project_id: str | None, share_ctx: dict | None) -> str | None:
+        """Validate ``project_id`` as UUID. For forked share sessions whose
+        frontend doesn't know the owner's project, fall back to ``share_ctx``."""
         project_id_uuid: str | None = None
         if project_id:
             s = str(project_id).strip()
@@ -500,48 +444,53 @@ class ChatService:
                     logger.info(f"UseCase: Using project_id={project_id_uuid}")
                 except (ValueError, TypeError):
                     logger.warning(f"UseCase: Invalid project_id UUID: {project_id!r}, ignoring")
-
-        # Forked share sessions: recipient's frontend may not know the owner's
-        # project_id (it isn't in their local project list). Derive from share.
         if project_id_uuid is None and share_ctx and share_ctx.get("project_id"):
             project_id_uuid = share_ctx["project_id"]
             logger.info(f"UseCase: Using share-derived project_id={project_id_uuid}")
+        return project_id_uuid
 
-        # Auto-connect database based on context:
-        # - In project: connect to project's SQLite .db file
-        # - Outside project: leave as-is (user manages PostgreSQL connection manually via chat)
-        # ``project_db_url`` is captured for forwarding to workflows / chart-server
-        # so they scope by the active project's DB without re-querying database_agent.
-        project_db_url: str | None = None
-        if project_id_uuid and self._project_repo:
-            try:
-                project = await self._project_repo.get_project_by_id(project_id_uuid, project_lookup_user)
-                if project and project.get("db_url"):
-                    db_url = project["db_url"]
-                    # Only auto-connect if it's a SQLite path (not placeholder)
-                    if db_url and not db_url.startswith("placeholder://"):
-                        project_db_url = db_url
-                        logger.info(f"UseCase: Auto-connecting to project database: {db_url}")
-                        connect_result = await agent.connect_to_project_db(db_url)
-                        logger.info(f"UseCase: Database connection result: {connect_result}")
-
-                        # Also point the chart-server at the same DB so chart tools
-                        # can render visualizations from this project's data.
-                        try:
-                            chart_result = await agent.connect_chart_to_project_db(db_url)
-                            logger.info(f"UseCase: Chart server connection result: {chart_result}")
-                        except Exception as e:
-                            logger.warning(f"UseCase: Failed to connect chart server to project: {e}")
-            except Exception as e:
-                logger.warning(f"UseCase: Failed to auto-connect project database: {e}")
-
-        # Thesis rule: project sessions use SQLite; non-project sessions use PostgreSQL.
+    async def _push_db_to_agents(self, agent, db_url: str, *, label: str) -> None:
+        """Push ``db_url`` to the database server (connect_sqlite) and the chart
+        server (chart_connect_db). ``label`` is just for log messages."""
         try:
-            agent.connection_info = {"engine": "sqlite" if project_id_uuid else "postgresql"}
-        except Exception:
-            pass
+            connect_result = await agent.connect_to_project_db(db_url)
+            logger.info(f"UseCase: {label} DB connection result: {connect_result}")
+        except Exception as e:
+            logger.warning(f"UseCase: {label} DB connect failed: {e}")
+        try:
+            chart_result = await agent.connect_chart_to_project_db(db_url)
+            logger.info(f"UseCase: {label} chart server connection result: {chart_result}")
+        except Exception as e:
+            logger.warning(f"UseCase: Failed to connect chart server to {label}: {e}")
 
-        # Nếu có session_id → cố gắng load session đó
+    async def _auto_connect_project_db(
+        self, agent, project_id_uuid: str | None, project_lookup_user: str,
+    ) -> str | None:
+        """Look up the project's ``db_url`` and push it to MCP servers.
+        Returns the resolved db_url (so it can be forwarded to workflows /
+        chart-server), or None when no project context applies."""
+        if not project_id_uuid or not self._project_repo:
+            return None
+        try:
+            project = await self._project_repo.get_project_by_id(project_id_uuid, project_lookup_user)
+        except Exception as e:
+            logger.warning(f"UseCase: Failed to auto-connect project database: {e}")
+            return None
+        if not project or not project.get("db_url"):
+            return None
+        db_url = project["db_url"]
+        if not db_url or db_url.startswith("placeholder://"):
+            return None
+        logger.info(f"UseCase: Auto-connecting to project database: {db_url}")
+        await self._push_db_to_agents(agent, db_url, label="project")
+        return db_url
+
+    async def _resolve_or_create_session(
+        self, agent, session_id: str | None, project_id_uuid: str | None,
+    ) -> str | None:
+        """Load the existing session if ``session_id`` is provided; otherwise
+        create a new one (bound to ``project_id_uuid`` when inside a project).
+        Falls back to whatever ``get_session_info()`` reports as a safety net."""
         loaded = False
         current_session_id: str | None = session_id
         if session_id:
@@ -551,39 +500,285 @@ class ChatService:
                 logger.info(f"UseCase: Successfully loaded session: {session_id}")
             else:
                 logger.warning(f"UseCase: Failed to load session: {session_id}")
-
-        # Nếu không có session_id hoặc load thất bại:
-        # - Nếu đang trong project (project_id_uuid) → tạo session mới gắn với project đó
-        # - Nếu không có project → tạo session mới global cho user
         if not loaded:
             logger.info(f"UseCase: Creating new session, project_id={project_id_uuid}")
-            current_session_id = await agent.session_manager.create_session(session_name=None, project_id=project_id_uuid)
-
-        # Important: pass the *same* session_id through to Orchestrator so that
-        # the "preview/approval" flow can find the stored SQL state later.
+            current_session_id = await agent.session_manager.create_session(
+                session_name=None, project_id=project_id_uuid,
+            )
         if not current_session_id:
-            # Should never happen, but keep it safe: fallback to the value inside session_manager.
             current_session_id = (await agent.session_manager.get_session_info()).get("session_id") or None
+        return current_session_id
 
-        has_session_files = False
-        if self._file_usecase and current_session_id and user_key != "anonymous":
+    async def _has_session_files(self, current_session_id: str | None, user_key: str) -> bool:
+        if not (self._file_usecase and current_session_id and user_key != "anonymous"):
+            return False
+        try:
+            return len(
+                await self._file_usecase.get_session_files(current_session_id, user_key)
+            ) > 0
+        except Exception as e:
+            logger.warning("UseCase: failed to inspect session files for RAG gating: %s", e)
+            return False
+
+    async def _try_summary_shortcut(
+        self, agent, current_session_id: str | None, user_key: str,
+        original_user_query: str, use_file_rag: bool,
+    ) -> tuple[str, str | None, list[dict], bool, list[dict], bool] | None:
+        """Excel-route shortcut: "summarize" intent + exactly one attached
+        session file → bypass the tool loop and use ``FileUseCase.summarize_file``.
+        Returns the final chat result tuple, or None if the shortcut does not apply."""
+        if not (use_file_rag and self._file_usecase and current_session_id and user_key != "anonymous"):
+            return None
+        if not _looks_like_summary_request(original_user_query):
+            return None
+        try:
+            session_files = await self._file_usecase.get_session_files(current_session_id, user_key)
+            if len(session_files) != 1:
+                return None
+            fid = uuid.UUID(str(session_files[0]["id"]))
+            summary_text = await self._file_usecase.summarize_file(fid, user_key)
             try:
-                has_session_files = len(
-                    await self._file_usecase.get_session_files(current_session_id, user_key)
-                ) > 0
-            except Exception as e:
-                logger.warning("UseCase: failed to inspect session files for RAG gating: %s", e)
+                await agent.session_manager.load_session(current_session_id)
+            except Exception:
+                pass
+            await agent.session_manager.add_message("user", original_user_query)
+            await agent.session_manager.add_message("assistant", summary_text)
+            return summary_text, current_session_id, [], False, [], True
+        except Exception as e:
+            logger.warning("UseCase: summarize shortcut failed: %s", e)
+            return None
 
-        should_try_llm_for_file_intent = has_session_files and not semantic_retrieval
+    async def _apply_file_rag(
+        self, agent, current_session_id: str | None, user_key: str,
+        query: str, original_user_query: str,
+        use_file_rag: bool, project_db_url: str | None,
+    ) -> tuple[str, str | None]:
+        """When session-file RAG is enabled: (a) connect MCP servers to the
+        session's SQLite file if no project DB was selected, (b) retrieve
+        top-k chunks and prepend them as a context block.
+        Returns ``(augmented_query, possibly_updated_project_db_url)``."""
+        if not (use_file_rag and self._file_usecase and current_session_id and user_key != "anonymous"):
+            return query, project_db_url
+        try:
+            session_sql_url = await self._file_usecase.get_session_sqlite_url(
+                current_session_id, user_key
+            )
+            if session_sql_url and not project_db_url:
+                project_db_url = session_sql_url
+                await self._push_db_to_agents(agent, session_sql_url, label="session-file")
+                try:
+                    if "sqlite" in (session_sql_url or "").lower():
+                        agent.connection_info = {"engine": "sqlite"}
+                    else:
+                        agent.connection_info = {"engine": "postgresql"}
+                except Exception:
+                    pass
+
+            _chunks, block = await self._file_usecase.retrieve_relevant_chunks(
+                current_session_id, original_user_query, user_key, top_k=8,
+            )
+            if block:
+                return f"{block}\n\nUSER MESSAGE:\n{query}", project_db_url
+        except Exception as e:
+            logger.warning("UseCase: session file RAG failed: %s", e)
+        return query, project_db_url
+
+    async def _seed_share_session_messages(
+        self, agent, chat_graph, cfg, share_ctx: dict | None,
+    ) -> list[BaseMessage]:
+        """Forked share sessions: the snapshot copies ``session.content.messages``
+        (JSONB) from the owner, but NOT the LangGraph checkpoint. So on the
+        recipient's first turn the graph state would otherwise start empty.
+        If the checkpoint really is empty, seed it from the JSONB snapshot so
+        the agent sees the owner's transcript. Persistence is unaffected — the
+        new turn is appended separately by ``_persist_turn`` after invoke."""
+        if share_ctx is None:
+            return []
+        existing_in_checkpoint: list = []
+        try:
+            state = await chat_graph.aget_state(cfg)
+            if state:
+                existing_in_checkpoint = (state.values or {}).get("messages") or []
+        except Exception as e:
+            # ``aget_state`` raises "Subgraph chat not found" for never-invoked
+            # threads — treat that as empty.
+            logger.debug(f"UseCase: aget_state for forked session unavailable, treating as empty: {e}")
+        if existing_in_checkpoint:
+            return []
+        seeded: list[BaseMessage] = []
+        try:
+            snapshot = await agent.session_manager.get_current_messages()
+            for m in (snapshot or []):
+                role = (m or {}).get("role")
+                content = (m or {}).get("content", "")
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                if role == "user":
+                    seeded.append(HumanMessage(content=content))
+                elif role == "assistant":
+                    seeded.append(AIMessage(content=content))
+        except Exception as e:
+            logger.warning(f"UseCase: Failed to read snapshot for seeding: {e}")
+        return seeded
+
+    async def _invoke_chat_graph(
+        self, agent, current_session_id: str | None,
+        query: str, rag_augmented_query: str,
+        project_id_uuid: str | None, user_key: str, project_db_url: str | None,
+        pre_classified_intent: dict | None, share_ctx: dict | None,
+    ) -> dict:
+        """Build the chat-graph input (with optional snapshot seeding for forked
+        shares), invoke ``chat_graph.ainvoke`` with the right thread config, and
+        return the output dict."""
+        chat_graph = await agent.get_chat_graph()
+        cfg = chat_checkpoint_config(current_session_id)
+        seeded = await self._seed_share_session_messages(agent, chat_graph, cfg, share_ctx)
+        input_messages: list[BaseMessage] = [
+            *seeded,
+            HumanMessage(content=rag_augmented_query),
+        ]
+        # If RAG injected context, the pre-classification (computed on the raw
+        # query) can become stale and misroute. Let in-graph classification
+        # re-evaluate using the augmented message.
+        pre_classified_for_graph = pre_classified_intent
+        if rag_augmented_query != query:
+            pre_classified_for_graph = None
+        raw_out = await chat_graph.ainvoke(
+            {
+                "messages": input_messages,
+                "project_id": project_id_uuid,
+                "user_id": user_key,
+                "allowed_db_uri": project_db_url,
+                "pre_classified_intent": pre_classified_for_graph,
+            },
+            config=cfg,
+        )
+        return dict(raw_out) if isinstance(raw_out, dict) else {}
+
+    async def _persist_turn(self, agent, original_user_query: str, response_text: str) -> None:
+        """Append the user + assistant turn to JSONB (UI mirror). The LangGraph
+        checkpoint is the source of truth for LLM context and is written by
+        ``chat_graph`` itself."""
+        if not agent.session_manager:
+            return
+        if (original_user_query or "").strip():
+            await agent.session_manager.add_message("user", original_user_query)
+        if (response_text or "").strip():
+            await agent.session_manager.add_message("assistant", response_text)
+
+    async def _finalize_chat_turn(
+        self, agent, out: dict, current_session_id: str | None,
+        user_key: str, original_user_query: str,
+    ) -> tuple[str, str | None, list[dict], bool, list[dict], bool]:
+        """Parse chat-graph output, attach SQL/Excel post-processing markers,
+        persist the turn + any pending approval, and return the final tuple
+        shape expected by the HTTP layer."""
+        response_text = str(out.get("response", ""))
+        agent_id = str(out.get("agent_id", "unknown"))
+        pending_workflow_resume = bool(out.get("pending_workflow_resume"))
+        workflow_state = out.get("workflow_state") or {}
+        warnings: list[dict] = []
+        success = bool(out.get("success", True))
+        if isinstance(workflow_state, dict):
+            ws_warnings = workflow_state.get("warnings") or []
+            if isinstance(ws_warnings, list):
+                warnings = [w for w in ws_warnings if isinstance(w, dict)]
+            success = bool(workflow_state.get("success", success))
+            ws_output = workflow_state.get("output") or {}
+            if isinstance(ws_output, dict) and ws_output.get("type") in {"error", "needs_input"}:
+                success = False
+
+        session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
+        current_session_id = session_info.get("session_id") if session_info else current_session_id
+
+        sql_preview = self._extract_last_mutation_sql_block(response_text)
+        if sql_preview:
+            action_id = str(uuid.uuid4())
+            response_text = self._attach_sql_action_id_marker(response_text, action_id)
+
+        response_text = await self._maybe_persist_excel_export_in_assistant_reply(
+            response_text, current_session_id, user_key,
+        )
+
+        logger.info(
+            "UseCase: Query processed, session_id=%s, agent=%s, success=%s",
+            current_session_id, agent_id, success,
+        )
+
+        await self._persist_turn(agent, original_user_query, response_text)
+
+        tool_events = out.get("tool_events") or []
+        if not isinstance(tool_events, list):
+            tool_events = []
+
+        await self._persist_pending_approval_from_workflow(
+            agent,
+            current_session_id,
+            pending_workflow_resume=pending_workflow_resume,
+            workflow_state=(workflow_state if isinstance(workflow_state, dict) else None),
+            tool_events=tool_events,
+        )
+
+        return response_text, current_session_id, tool_events, pending_workflow_resume, warnings, success
+
+    async def chat(
+        self, user_key: str, message: str, session_id: str | None, project_id: str | None = None
+    ) -> tuple[str, str | None, list[dict], bool, list[dict], bool]:
+        logger.info(f"UseCase: Processing chat message, user_key={user_key}, session_id={session_id}, project_id={project_id}")
+        query = (message or "").strip()
+        if not query:
+            logger.error("UseCase: Message is required but was empty")
+            raise HTTPException(status_code=400, detail="Message is required")
+
+        # Share-permission gating: reject view_only and inject the read_data note.
+        share_ctx = await self._get_share_context(session_id, user_key)
+        share_permission = share_ctx["permission"] if share_ctx else None
+        if share_permission == "view_only":
+            raise HTTPException(
+                status_code=403,
+                detail="This session is shared with view-only access; you cannot send messages.",
+            )
+        # Keep the original user text (pre system-note injection) for history.
+        # Upload markers stay so the frontend can recover attached filenames on reload.
+        original_user_query = query
+        if share_permission == "read_data":
+            query = f"{_READ_DATA_SYSTEM_NOTE}\n\nUser message: {query}"
+        # For forked shares, projects belong to the owner; look them up under the owner's id.
+        project_lookup_user = share_ctx["owner_user_id"] if share_ctx else user_key
+
+        agent = await self._get_agent_or_raise(user_key)
+
+        pre_classified_intent = await self._classify_intent_with_history(agent, original_user_query)
+        await self._enforce_share_access(
+            agent, share_ctx, share_permission, pre_classified_intent,
+            session_id, original_user_query,
+        )
+
+        project_id_uuid = self._resolve_project_id_uuid(project_id, share_ctx)
+        project_db_url = await self._auto_connect_project_db(
+            agent, project_id_uuid, project_lookup_user,
+        )
+        # Thesis rule: project sessions use SQLite; non-project sessions use PostgreSQL.
+        try:
+            agent.connection_info = {"engine": "sqlite" if project_id_uuid else "postgresql"}
+        except Exception:
+            pass
+
+        current_session_id = await self._resolve_or_create_session(
+            agent, session_id, project_id_uuid,
+        )
+
+        # RAG gating: should we splice retrieved file chunks into the user turn?
+        has_session_files = await self._has_session_files(current_session_id, user_key)
+        semantic_retrieval = bool((pre_classified_intent or {}).get("semantic_retrieval"))
         has_file_data_intent, decision_source, heuristic_state, llm_latency_ms = (
             await self._resolve_file_data_intent(
                 original_user_query,
-                should_try_llm=should_try_llm_for_file_intent,
+                should_try_llm=(has_session_files and not semantic_retrieval),
             )
         )
-        needs_uploaded_file_data = bool(semantic_retrieval or has_file_data_intent)
-
-        use_file_rag = has_session_files and needs_uploaded_file_data
+        use_file_rag = has_session_files and bool(semantic_retrieval or has_file_data_intent)
+        route_for_rag = str((pre_classified_intent or {}).get("route") or "").strip().lower()
         logger.info(
             "UseCase: RAG gating route=%s semantic_retrieval=%s "
             "has_file_data_intent=%s needs_uploaded_file_data=%s has_session_files=%s "
@@ -592,7 +787,7 @@ class ChatService:
             route_for_rag or "<none>",
             semantic_retrieval,
             has_file_data_intent,
-            needs_uploaded_file_data,
+            bool(semantic_retrieval or has_file_data_intent),
             has_session_files,
             use_file_rag,
             decision_source,
@@ -601,59 +796,19 @@ class ChatService:
             bool(self._file_usecase),
         )
 
-        # Shortcut: only for Excel route. If user asks to summarize and there is
-        # exactly one attached file in the session, use FileUseCase.summarize_file
-        # (RAG-style) instead of routing to the generic tool loop.
-        if use_file_rag and self._file_usecase and current_session_id and user_key != "anonymous":
-            try:
-                if _looks_like_summary_request(original_user_query):
-                    session_files = await self._file_usecase.get_session_files(current_session_id, user_key)
-                    if len(session_files) == 1:
-                        fid = uuid.UUID(str(session_files[0]["id"]))
-                        summary_text = await self._file_usecase.summarize_file(fid, user_key)
-                        # Persist the turn as a normal chat exchange.
-                        try:
-                            await agent.session_manager.load_session(current_session_id)
-                        except Exception:
-                            pass
-                        await agent.session_manager.add_message("user", original_user_query)
-                        await agent.session_manager.add_message("assistant", summary_text)
-                        return summary_text, current_session_id, [], False, [], True
-            except Exception as e:
-                logger.warning("UseCase: summarize shortcut failed: %s", e)
+        shortcut = await self._try_summary_shortcut(
+            agent, current_session_id, user_key, original_user_query, use_file_rag,
+        )
+        if shortcut is not None:
+            return shortcut
 
-        rag_augmented_query = query
-        if use_file_rag and self._file_usecase and current_session_id and user_key != "anonymous":
-            try:
-                session_sql_url = await self._file_usecase.get_session_sqlite_url(
-                    current_session_id, user_key
-                )
-                if session_sql_url and not project_db_url:
-                    project_db_url = session_sql_url
-                    try:
-                        await agent.connect_to_project_db(session_sql_url)
-                    except Exception as e:
-                        logger.warning("UseCase: session-file DB connect failed: %s", e)
-                    try:
-                        await agent.connect_chart_to_project_db(session_sql_url)
-                    except Exception as e:
-                        logger.warning("UseCase: session-file chart connect failed: %s", e)
-                    try:
-                        if "sqlite" in (session_sql_url or "").lower():
-                            agent.connection_info = {"engine": "sqlite"}
-                        else:
-                            agent.connection_info = {"engine": "postgresql"}
-                    except Exception:
-                        pass
+        rag_augmented_query, project_db_url = await self._apply_file_rag(
+            agent, current_session_id, user_key, query, original_user_query,
+            use_file_rag, project_db_url,
+        )
 
-                _chunks, block = await self._file_usecase.retrieve_relevant_chunks(
-                    current_session_id, original_user_query, user_key, top_k=8
-                )
-                if block:
-                    rag_augmented_query = f"{block}\n\nUSER MESSAGE:\n{query}"
-            except Exception as e:
-                logger.warning("UseCase: session file RAG failed: %s", e)
-
+        # Resolve session-file markers in the prompt (when frontend emitted
+        # [SESSION_FILE_ID_START] markers but RAG didn't substitute them).
         if self._file_usecase and user_key != "anonymous" and "[SESSION_FILE_ID_START]" in (
             rag_augmented_query or ""
         ):
@@ -666,165 +821,14 @@ class ChatService:
 
         logger.info(f"UseCase: Processing query: {query[:100]}...")
         try:
-            # Chat graph (MessagesState + checkpoint_ns=chat) wraps Orchestrator as one node.
-            chat_graph = await agent.get_chat_graph()
-            cfg = chat_checkpoint_config(current_session_id)
-
-            # Forked share sessions: the snapshot copies session.content.messages
-            # (JSONB) from the owner, but NOT the LangGraph checkpoint. So on
-            # the recipient's first turn here, the graph state would otherwise
-            # start empty and the agent wouldn't see the owner's transcript at
-            # all. Seed the graph input with the snapshot so the agent has
-            # context. We append-to-JSONB separately after invoke (see
-            # ``add_message`` calls below), so seeding only feeds the agent —
-            # it does not affect persistence.
-            seeded_messages: list[BaseMessage] = []
-            if share_ctx is not None:
-                # Step 1: figure out whether the checkpoint already has messages
-                # for this thread. ``aget_state`` raises "Subgraph chat not
-                # found" for never-invoked threads — treat that as empty.
-                existing_in_checkpoint: list = []
-                try:
-                    state = await chat_graph.aget_state(cfg)
-                    if state:
-                        existing_in_checkpoint = (state.values or {}).get("messages") or []
-                except Exception as e:
-                    logger.debug(f"UseCase: aget_state for forked session unavailable, treating as empty: {e}")
-
-                # Step 2: only seed when the checkpoint is empty. Otherwise the
-                # reducer would duplicate snapshot messages on top of what the
-                # checkpoint already has.
-                if not existing_in_checkpoint:
-                    try:
-                        snapshot = await agent.session_manager.get_current_messages()
-                        for m in (snapshot or []):
-                            role = (m or {}).get("role")
-                            content = (m or {}).get("content", "")
-                            if not isinstance(content, str) or not content.strip():
-                                continue
-                            if role == "user":
-                                seeded_messages.append(HumanMessage(content=content))
-                            elif role == "assistant":
-                                seeded_messages.append(AIMessage(content=content))
-                    except Exception as e:
-                        logger.warning(f"UseCase: Failed to read snapshot for seeding: {e}")
-
-            input_messages: list[BaseMessage] = [
-                *seeded_messages,
-                HumanMessage(content=rag_augmented_query),
-            ]
-            # If we injected RAG context into the user turn, the single-shot
-            # pre-classification (computed on the raw query earlier) can become
-            # stale and misroute to the Excel agent. Let in-graph classification
-            # re-evaluate using the augmented message.
-            pre_classified_for_graph = pre_classified_intent
-            if rag_augmented_query != query:
-                pre_classified_for_graph = None
-
-            raw_out = await chat_graph.ainvoke(
-                {
-                    "messages": input_messages,
-                    "project_id": project_id_uuid,
-                    "user_id": user_key,
-                    "allowed_db_uri": project_db_url,
-                    "pre_classified_intent": pre_classified_for_graph,
-                },
-                config=cfg,
+            out = await self._invoke_chat_graph(
+                agent, current_session_id, query, rag_augmented_query,
+                project_id_uuid, user_key, project_db_url,
+                pre_classified_intent, share_ctx,
             )
-            out = dict(raw_out) if isinstance(raw_out, dict) else {}
-
-            response_text = str(out.get("response", ""))
-            original_response_text = response_text
-            agent_id = str(out.get("agent_id", "unknown"))
-            pending_workflow_resume = bool(out.get("pending_workflow_resume"))
-            workflow_state = out.get("workflow_state") or {}
-            warnings: list[dict] = []
-            success = bool(out.get("success", True))
-            if isinstance(workflow_state, dict):
-                ws_warnings = workflow_state.get("warnings") or []
-                if isinstance(ws_warnings, list):
-                    warnings = [w for w in ws_warnings if isinstance(w, dict)]
-                success = bool(workflow_state.get("success", success))
-                ws_output = workflow_state.get("output") or {}
-                if isinstance(ws_output, dict) and ws_output.get("type") in {"error", "needs_input"}:
-                    success = False
-
-            session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
-            current_session_id = session_info.get("session_id") if session_info else current_session_id
-
-            sql_preview = self._extract_last_mutation_sql_block(response_text)
-            if sql_preview:
-                action_id = str(uuid.uuid4())
-                response_text = self._attach_sql_action_id_marker(response_text, action_id)
-
-            response_text = await self._maybe_persist_excel_export_in_assistant_reply(
-                response_text, current_session_id, user_key
+            return await self._finalize_chat_turn(
+                agent, out, current_session_id, user_key, original_user_query,
             )
-
-            logger.info(
-                "UseCase: Query processed, session_id=%s, agent=%s, success=%s",
-                current_session_id,
-                agent_id,
-                success,
-            )
-
-            # Persist the new turn.
-            if share_ctx is not None:
-                # Forked share session: JSONB snapshot from the owner is the
-                # authoritative history. The LangGraph checkpoint here may not
-                # reflect that snapshot, so do NOT overwrite JSONB with the
-                # graph state — that would wipe the snapshot. Append the new
-                # turn manually instead.
-                if agent.session_manager and (original_user_query or "").strip():
-                    await agent.session_manager.add_message("user", original_user_query)
-                if agent.session_manager and (response_text or "").strip():
-                    await agent.session_manager.add_message("assistant", response_text)
-            elif agent.session_manager and isinstance(out.get("messages"), list):
-                # Owner sessions: sync the full transcript from the graph
-                # checkpoint (existing behaviour).
-                rows = langchain_messages_to_session_rows(out["messages"])
-                if (
-                    rows
-                    and response_text != original_response_text
-                    and rows[-1].get("role") == "assistant"
-                ):
-                    rows[-1] = {**rows[-1], "content": response_text}
-                # Strip upload markers from the persisted user row so the chat
-                # history doesn't show internal ``[UPLOADED_EXCEL_*]`` blocks
-                # on reload. We rewrite only the most recent user row (the
-                # turn we just added); older rows are already clean.
-                if original_user_query is not None:
-                    for i in range(len(rows) - 1, -1, -1):
-                        if rows[i].get("role") == "user":
-                            rows[i] = {**rows[i], "content": original_user_query}
-                            break
-                await agent.session_manager.replace_messages_from_graph_export(rows)
-
-            tool_events = out.get("tool_events") or []
-            if not isinstance(tool_events, list):
-                tool_events = []
-
-            result = {
-                "response": response_text,
-                "agent_id": agent_id,
-                "session_id": current_session_id,
-                "requires_approval": pending_workflow_resume,
-                "intent": out.get("intent") or {},
-                "tool_events": tool_events,
-                "pending_workflow_resume": pending_workflow_resume,
-                "workflow_state": workflow_state,
-            }
-
-            # Persist pending approval payload for SQL gate (CREATE TABLE / mutation preview).
-            await self._persist_pending_approval_from_workflow(
-                agent,
-                current_session_id,
-                pending_workflow_resume=pending_workflow_resume,
-                workflow_state=(workflow_state if isinstance(workflow_state, dict) else None),
-                tool_events=tool_events,
-            )
-
-            return response_text, current_session_id, tool_events, pending_workflow_resume, warnings, success
         except Exception as e:
             logger.error(f"UseCase: Error processing query: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to process query: {str(e)}") from e

@@ -14,6 +14,7 @@ from mcp.types import CallToolResult
 from openai import OpenAI
 
 from mcp_agent.session.session_manager import SessionManager
+from mcp_agent.progress import emit as _progress_emit
 
 try:
     from langchain_core.messages.utils import count_tokens_approximately
@@ -304,6 +305,7 @@ class BaseAgent(ABC):
                     print(f"[{self.agent_id}] [{target_server}] Calling tool: {tool_name} {tool_args}")
                     if verbose:
                         print(f"[{self.agent_id}] [{target_server}] {tool_name} {tool_args}")
+                    await _progress_emit("tool", "running", f"Calling {tool_name}...")
                     try:
                         result = await self.sessions[target_server].call_tool(tool_name, tool_args)
                         single_export_fast = (

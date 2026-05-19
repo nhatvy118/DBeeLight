@@ -19,11 +19,13 @@ auto-detects this venv when launching the server (see
 
 ## How the agent invokes it
 
-`agent_repository.py` registers `excel-server/excel_server.py` for the
-`excel` agent. On each session boot, the agent spawns:
+`AgentRepository` registers the bundled `excel` server (resolved via
+`mcp_agent.server_script("excel")`) for the `excel` agent. On each
+session boot, the agent spawns:
 
 ```
-excel-server/.venv/bin/python excel-server/excel_server.py
+mcp-client/servers/excel-server/.venv/bin/python \
+    mcp-client/servers/excel-server/excel_server.py
 ```
 
 which calls `run_stdio()` from `excel_mcp.server`.

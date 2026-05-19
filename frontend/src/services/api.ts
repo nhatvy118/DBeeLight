@@ -55,27 +55,6 @@ function url(path: string) {
   return API_BASE_URL.startsWith('http') ? `${API_BASE_URL}${path}` : path;
 }
 
-export async function sendMessage(
-  message: string,
-  sessionId: string | null = null,
-  projectId: string | null = null,
-  signal?: AbortSignal
-): Promise<ChatResponse> {
-  const response = await fetch(url('/api/chat'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, session_id: sessionId, project_id: projectId }),
-    signal,
-  });
-
-  const data = (await response.json()) as ChatResponse & { error?: string };
-  if (!response.ok) {
-    throw new Error((data as any).error || 'Failed to send message');
-  }
-  return data;
-}
-
 export type StreamEvent =
   | { type: 'started' }
   | { type: 'stage'; stage: string; status: 'running' | 'completed' | 'error'; message?: string }
@@ -142,6 +121,44 @@ export async function sendMessageStream(
       }
     }
   }
+}
+
+/**
+ * Stream-based chat call that awaits the terminal ``final`` event and returns
+ * the same ChatResponse shape as the old blocking ``sendMessage``. Lets call
+ * sites that don't care about intermediate stage events still benefit from
+ * SSE (one transport, one backend code path).
+ *
+ * Pass ``onStage`` to surface progress in a loading indicator; omit it when
+ * you only need the final result.
+ */
+export async function sendMessageWithStream(
+  message: string,
+  sessionId: string | null,
+  projectId: string | null,
+  options?: { onStage?: (stage: string) => void; signal?: AbortSignal },
+): Promise<ChatResponse> {
+  let finalRes: ChatResponse | null = null;
+  let streamErr: { status?: number; message: string } | null = null;
+  await sendMessageStream(message, sessionId, projectId, {
+    signal: options?.signal,
+    onEvent: (e: StreamEvent) => {
+      if (e.type === 'stage') {
+        if (e.message && options?.onStage) options.onStage(e.message);
+      } else if (e.type === 'final') {
+        finalRes = e.data;
+      } else if (e.type === 'error') {
+        streamErr = { status: e.status_code, message: e.message };
+      }
+    },
+  });
+  if (streamErr !== null) {
+    throw new Error((streamErr as { message: string }).message || 'Streaming chat failed');
+  }
+  if (finalRes === null) {
+    throw new Error('Stream ended without a final event');
+  }
+  return finalRes;
 }
 
 export async function resumeWorkflow(

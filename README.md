@@ -4,12 +4,14 @@ Dự án này chứa các MCP (Model Context Protocol) servers và client để 
 
 ## Các Servers
 
-### 1. Database Server (`database/`)
+Các MCP server giờ được bundle bên trong `mcp-client/servers/` (cùng package với `mcp_agent`). API server không cần biết workspace layout — chỉ import `mcp_agent.server_script("database")` để lấy đường dẫn.
+
+### 1. Database Server (`mcp-client/servers/database/`)
 MCP server cung cấp các công cụ để thao tác với PostgreSQL database (CRUD, schema management, SQL execution, etc.).
 
 **Cài đặt:**
 ```bash
-cd database
+cd mcp-client/servers/database
 uv sync  # Tạo .venv và cài đặt dependencies
 ```
 
@@ -23,12 +25,12 @@ uv sync  # Tạo .venv và cài đặt dependencies
 
 Client sẽ tự động sử dụng Python từ `.venv` của database server để đảm bảo tất cả dependencies đã được cài đặt.
 
-### 2. Excel Server (`excel-server/`)
+### 2. Excel Server (`mcp-client/servers/excel-server/`)
 Stdio adapter cho [`excel-mcp-server`](https://github.com/haris-musa/excel-mcp-server) (haris-musa, MIT). Cung cấp tool thao tác file Excel: workbook/worksheet ops, đọc/ghi cell, formula, formatting, chart, pivot table, native Excel tables.
 
 **Cài đặt:**
 ```bash
-cd excel-server
+cd mcp-client/servers/excel-server
 uv sync  # Tạo .venv và cài đặt excel-mcp-server
 ```
 
@@ -38,12 +40,12 @@ uv sync  # Tạo .venv và cài đặt excel-mcp-server
 
 **Tools (24):** create_workbook, create_worksheet, get_workbook_metadata, read_data_from_excel, write_data_to_excel, copy_worksheet, delete_worksheet, rename_worksheet, copy_range, delete_range, validate_excel_range, get_data_validation_info, insert_rows, insert_columns, delete_sheet_rows, delete_sheet_columns, apply_formula, validate_formula_syntax, format_range, merge_cells, unmerge_cells, get_merged_cells, create_chart, create_pivot_table, create_table.
 
-### 2b. Google Sheets Server (`gsheets-server/`)
+### 2b. Google Sheets Server (`mcp-client/servers/gsheets-server/`)
 Per-user Google Sheets / Drive read access. Mỗi user app login Google → tokens (access + refresh) được lưu encrypted vào `users` table → server này dùng để đọc Sheets thay user.
 
 **Cài đặt:**
 ```bash
-cd gsheets-server
+cd mcp-client/servers/gsheets-server
 uv sync
 ```
 

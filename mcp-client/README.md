@@ -111,23 +111,18 @@ Nodes in the workflow **delegate to BaseAgent** for tool execution.
 ```
 mcp-client/
 ├── mcp_agent/                    # Main package
-│   ├── __init__.py              # Exports
-│   ├── base_agent.py             # BaseAgent class
-│   ├── database_agent.py         # Database agent
-│   ├── excel_agent.py            # Excel agent
-│   ├── orchestrator.py           # Legacy orchestrator
-│   ├── intent_router.py         # Intent classification
-│   ├── hybrid_orchestrator.py    # Hybrid orchestrator
-│   ├── session.py               # Session manager
-│   └── graph/                   # LangGraph workflows
-│       ├── __init__.py
-│       ├── state.py              # State types
-│       ├── graph_state.py        # TypedDict state
-│       ├── base_workflow.py      # Base workflow class
-│       ├── database_workflow.py  # Database workflow
-│       ├── excel_workflow.py     # Excel workflow
-│       └── workflow.py           # Main workflow
-└── pyproject.toml               # Package configuration
+│   ├── __init__.py               # Exports
+│   ├── servers.py                # Paths of bundled MCP server scripts
+│   ├── agents/                   # BaseAgent + per-domain agents
+│   ├── orchestration/            # Orchestrator + IntentService
+│   ├── session/                  # SessionManager
+│   └── graph/                    # LangGraph workflows
+├── servers/                      # Bundled MCP server projects
+│   ├── database/                 # PostgreSQL / SQLite server
+│   ├── excel-server/             # Local xlsx server
+│   ├── gsheets-server/           # Google Sheets server (per-user)
+│   └── chart-server/             # Chart-rendering server
+└── pyproject.toml                # Package configuration
 ```
 
 ## Usage as Library
@@ -143,8 +138,9 @@ session_manager = SessionManager(db_pool=pool, user_id="user-123")
 # Create agent
 agent = DatabaseAgent(model="gpt-4o-mini", session_manager=session_manager)
 
-# Connect to MCP servers
-await agent.connect_to_server("database", "../database/database.py")
+# Connect to a bundled MCP server (paths resolved by the package)
+from mcp_agent import server_script
+await agent.connect_to_server("database", str(server_script("database")))
 
 # Process queries
 response = await agent.process_query("Show all users")
@@ -162,9 +158,10 @@ session_manager = SessionManager(db_pool=pool, user_id="user-123")
 db_agent = DatabaseAgent(model="gpt-4o-mini", session_manager=session_manager, agent_id="database")
 excel_agent = ExcelAgent(model="gpt-4o-mini", session_manager=session_manager, agent_id="excel")
 
-# Connect to MCP servers
-await db_agent.connect_to_server("database", "../database/database.py")
-await excel_agent.connect_to_server("excel", "../excel-server/excel_server.py")
+# Connect to bundled MCP servers (paths resolved by the package)
+from mcp_agent import server_script
+await db_agent.connect_to_server("database", str(server_script("database")))
+await excel_agent.connect_to_server("excel", str(server_script("excel")))
 
 # Create hybrid orchestrator
 orchestrator = HybridOrchestrator(

@@ -179,17 +179,25 @@ mcp-server/
 │       │   └── agent_repository.py   # Tạo Orchestrator + agents cho từng user
 │       └── usecases/
 │           └── chat_usecase.py       # Gọi get_agent → process_query
-├── database/
-│   ├── database.py              # MCP server: tools PostgreSQL + SQLite
-│   └── adapters/                # Database adapters (Factory Pattern)
-│       ├── __init__.py
-│       ├── base.py              # DatabaseAdapter (abstract base class)
-│       ├── postgres.py          # PostgresAdapter
-│       ├── sqlite.py            # SQLiteAdapter
-│       └── factory.py           # DatabaseAdapterFactory
-└── excel-server/
-    └── excel_server.py           # Stdio adapter cho excel-mcp-server (haris-musa)
+└── mcp-client/
+    └── servers/                  # Bundled MCP server projects (sibling of mcp_agent/)
+        ├── database/
+        │   ├── database.py       # MCP server: tools PostgreSQL + SQLite
+        │   └── adapters/         # Database adapters (Factory Pattern)
+        │       ├── __init__.py
+        │       ├── base.py       # DatabaseAdapter (abstract base class)
+        │       ├── postgres.py   # PostgresAdapter
+        │       ├── sqlite.py     # SQLiteAdapter
+        │       └── factory.py    # DatabaseAdapterFactory
+        ├── excel-server/
+        │   └── excel_server.py   # Stdio adapter cho excel-mcp-server (haris-musa)
+        ├── gsheets-server/
+        │   └── gsheets_server.py # Per-user Google Sheets read access
+        └── chart-server/
+            └── chart_server.py   # Chart-rendering server
 ```
+
+> Path resolution: `api-server` không hardcode workspace layout — nó gọi `mcp_agent.server_script("database" | "excel" | "gsheets" | "chart")` để lấy đường dẫn tuyệt đối của server đã bundle.
 
 ---
 
