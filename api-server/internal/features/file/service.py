@@ -39,8 +39,6 @@ USER_STORAGE_LIMIT_BYTES = 5 * 1024 * 1024 * 1024
 # Session files (RAG import + chat export) under ``file_handle/{user}/{session_id}/import|export/``.
 SESSION_IMPORT_SUBDIR = "import"
 SESSION_EXPORT_SUBDIR = "export"
-# Excel MCP staging (``POST /api/excel/upload``); not counted in ``USER_STORAGE_LIMIT_BYTES``.
-EXCEL_MCP_SUBDIR = "excel_mcp"
 
 
 def _file_handle_root() -> Path:
@@ -49,15 +47,6 @@ def _file_handle_root() -> Path:
 
 def _session_file_tree_dir(user_key: str, session_id: str) -> Path:
     return _file_handle_root() / user_key / session_id
-
-
-def excel_mcp_staging_dir(user_key: str, session_id: str | None) -> Path:
-    """``file_handle/{user}/excel_mcp/`` or ``file_handle/{user}/{session}/excel_mcp/``."""
-    uk = (user_key or "anonymous").strip() or "anonymous"
-    sid = (session_id or "").strip()
-    if sid:
-        return _file_handle_root() / uk / sid / EXCEL_MCP_SUBDIR
-    return _file_handle_root() / uk / EXCEL_MCP_SUBDIR
 
 
 def _path_parts(local_path: str) -> tuple[str, ...]:
@@ -119,25 +108,6 @@ _ASSIST_ROW_COUNT_RE = re.compile(
     r"\[ROW_COUNT_START\]\s*(?P<rc>\d+)\s*\[ROW_COUNT_END\]",
 )
 
-
-def _csv_to_xlsx_for_mcp(csv_path: Path, xlsx_path: Path) -> None:
-    """Convert CSV to a one-sheet .xlsx; Excel MCP (openpyxl) cannot read CSV directly."""
-    from openpyxl import Workbook
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Sheet1"
-    with csv_path.open("r", encoding="utf-8", errors="replace", newline="") as f:
-        sample = f.read(8192)
-        f.seek(0)
-        try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-        except csv.Error:
-            dialect = csv.excel
-        reader = csv.reader(f, dialect=dialect)
-        for row in reader:
-            ws.append(row)
-    wb.save(xlsx_path)
 
 
 def _api_server_root() -> Path:
@@ -232,68 +202,6 @@ class FileService:
         """``(import_used_bytes, export_used_bytes, total_used_bytes)`` — indexed storage only."""
         imp, chat = await self._storage_bytes_breakdown(user_key)
         return imp, chat, imp + chat
-
-    def _resolve_disk_path_for_excel_mcp(self, local_path_str: str) -> str | None:
-        """Absolute path for Excel MCP tools: CSV is materialized as sibling .xlsx when needed."""
-        try:
-            p = Path(local_path_str).expanduser().resolve()
-        except OSError:
-            return None
-        if not p.is_file():
-            return None
-        ext = p.suffix.lower()
-        if ext == ".csv":
-            xlsx_p = p.with_suffix(".xlsx")
-            try:
-                if (not xlsx_p.is_file()) or (xlsx_p.stat().st_mtime < p.stat().st_mtime):
-                    _csv_to_xlsx_for_mcp(p, xlsx_p)
-            except Exception as e:
-                logger.warning("CSV→XLSX for Excel MCP failed (%s): %s", p, e)
-                return None
-            return str(xlsx_p.resolve())
-        if ext in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
-            return str(p)
-        return str(p)
-
-    async def inject_session_excel_paths_into_prompt(self, text: str, user_key: str) -> str:
-        """Append ``[UPLOADED_EXCEL_PATH_*]`` after each session file pair so the Excel agent uses real paths."""
-        if not (text or "").strip() or not user_key or user_key == "anonymous":
-            return text
-        if "[SESSION_FILE_ID_START]" not in text:
-            return text
-        parts: list[str] = []
-        pos = 0
-        for m in _SESSION_FILE_PAIR_RE.finditer(text):
-            parts.append(text[pos : m.start()])
-            block = m.group(0)
-            tail = text[m.end() : m.end() + 320].lstrip()
-            if tail.startswith("[UPLOADED_EXCEL_PATH_START]"):
-                parts.append(block)
-                pos = m.end()
-                continue
-            fid_raw = (m.group("fid") or "").strip()
-            try:
-                fid = UUID(fid_raw)
-            except ValueError:
-                parts.append(block)
-                pos = m.end()
-                continue
-            row = await self._files.get_file(fid, user_key)
-            if not row:
-                parts.append(block)
-                pos = m.end()
-                continue
-            abs_path = self._resolve_disk_path_for_excel_mcp(str(row.get("local_path") or ""))
-            if not abs_path:
-                parts.append(block)
-                pos = m.end()
-                continue
-            parts.append(
-                f"{block}\n[UPLOADED_EXCEL_PATH_START]{abs_path}[UPLOADED_EXCEL_PATH_END]"
-            )
-            pos = m.end()
-        parts.append(text[pos:])
-        return "".join(parts)
 
     def _session_file_marker_content(self, file_id: UUID, filename: str) -> str:
         return (
@@ -436,9 +344,26 @@ class FileService:
         user_key: str,
         upload: UploadFile,
         project_id_override: str | None = None,
+        use_project_db: bool | None = None,
     ) -> dict[str, Any]:
         sess = await self._require_session(session_id, user_key)
         pid = project_id_override or sess.get("project_id")
+
+        # Check quota before writing — use Content-Length header when available,
+        # otherwise fall back to reading into memory first then checking.
+        content_length = upload.size  # set by FastAPI from Content-Length header
+        used_before = await self.get_total_storage_used_bytes(user_key)
+        if content_length is not None and used_before + content_length > USER_STORAGE_LIMIT_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "code": "storage_quota_exceeded",
+                    "message": "User storage limit reached (5 GB). Delete some uploaded files and try again.",
+                    "used_bytes": used_before,
+                    "limit_bytes": USER_STORAGE_LIMIT_BYTES,
+                    "attempted_bytes": content_length,
+                },
+            )
 
         original_name = self._safe_filename(upload.filename or "upload.bin")
         stored_name = f"{uuid.uuid4().hex}_{original_name}"
@@ -455,8 +380,8 @@ class FileService:
                 size_bytes += len(chunk)
                 f.write(chunk)
 
-        used_before = await self.get_total_storage_used_bytes(user_key)
-        if used_before + int(size_bytes) > USER_STORAGE_LIMIT_BYTES:
+        # Re-check with actual size if Content-Length was absent or mismatched.
+        if content_length is None and used_before + size_bytes > USER_STORAGE_LIMIT_BYTES:
             dest_path.unlink(missing_ok=True)
             raise HTTPException(
                 status_code=413,
@@ -465,7 +390,7 @@ class FileService:
                     "message": "User storage limit reached (5 GB). Delete some uploaded files and try again.",
                     "used_bytes": used_before,
                     "limit_bytes": USER_STORAGE_LIMIT_BYTES,
-                    "attempted_bytes": int(size_bytes),
+                    "attempted_bytes": size_bytes,
                 },
             )
 
@@ -502,7 +427,10 @@ class FileService:
             engine_url: str | None = None
             temp_fs_path: str | None = None
             eff_pid = pid or sess.get("project_id")
-            if eff_pid and self._project_repo:
+            # use_project_db=True  → always try project DB
+            # use_project_db=False → always use temp SQLite (user chose "lưu tạm")
+            # use_project_db=None  → legacy: auto-use project DB if available
+            if use_project_db is not False and eff_pid and self._project_repo:
                 proj = await self._project_repo.get_project_by_id(eff_pid, user_key)
                 if proj and proj.get("db_url") and not str(proj["db_url"]).startswith("placeholder"):
                     engine_url = str(proj["db_url"]).strip()
@@ -556,10 +484,7 @@ class FileService:
         original_filename: str,
         data: bytes,
     ) -> dict[str, Any]:
-        """Write export bytes under ``file_handle/{user}/{session}/export/``.
-
-        Index for RAG like ``upload_file``, but do **not** re-import tabular data into SQLite (avoids duplicate tables).
-        """
+        """Write export bytes under ``file_handle/{user}/{session}/export/`` and record metadata."""
         await self._require_session(session_id, user_key)
         original_name = self._safe_filename(original_filename)
         if not original_name.lower().endswith((".xlsx", ".xlsm")):
@@ -568,14 +493,9 @@ class FileService:
             else:
                 original_name = re.sub(r"\.[^.]+$", ".xlsx", original_name)
 
-        stored_name = f"{uuid.uuid4().hex}_{original_name}"
-        dest_dir = _session_file_tree_dir(user_key, session_id) / SESSION_EXPORT_SUBDIR
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest_path = dest_dir / stored_name
-
         size_bytes = len(data)
         used_before = await self.get_total_storage_used_bytes(user_key)
-        if used_before + int(size_bytes) > USER_STORAGE_LIMIT_BYTES:
+        if used_before + size_bytes > USER_STORAGE_LIMIT_BYTES:
             raise HTTPException(
                 status_code=413,
                 detail={
@@ -583,37 +503,17 @@ class FileService:
                     "message": "User storage limit reached (5 GB). Delete some uploaded files and try again.",
                     "used_bytes": used_before,
                     "limit_bytes": USER_STORAGE_LIMIT_BYTES,
-                    "attempted_bytes": int(size_bytes),
+                    "attempted_bytes": size_bytes,
                 },
             )
 
+        stored_name = f"{uuid.uuid4().hex}_{original_name}"
+        dest_dir = _session_file_tree_dir(user_key, session_id) / SESSION_EXPORT_SUBDIR
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = dest_dir / stored_name
         dest_path.write_bytes(data)
 
         mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        try:
-            parsed = parse_file(dest_path, original_name, mime)
-        except Exception as e:
-            dest_path.unlink(missing_ok=True)
-            logger.exception("export parse failed")
-            raise HTTPException(status_code=400, detail=f"Could not parse export file: {e}") from e
-
-        text_chunks = chunk_parsed_file(parsed)
-        if not text_chunks:
-            dest_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail="No indexable content in export file")
-
-        texts = [c.text for c in text_chunks]
-        try:
-            embeddings = await self._embed.embed_batch(texts)
-        except Exception as e:
-            dest_path.unlink(missing_ok=True)
-            logger.exception("export embedding failed")
-            raise HTTPException(status_code=502, detail=f"Embedding failed: {e}") from e
-
-        if len(embeddings) != len(text_chunks):
-            dest_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=500, detail="Embedding count mismatch")
-
         file_id = await self._files.insert_file(
             session_id=session_id,
             user_id=user_key,
@@ -623,26 +523,14 @@ class FileService:
             size_bytes=size_bytes,
             sqlite_table_name=None,
             sqlite_db_path=None,
-            summary=(parsed.summary[:2000] if parsed.summary else None),
+            summary=None,
         )
-
-        batch: list[tuple[str, list[float], dict[str, Any]]] = []
-        for tc, emb in zip(text_chunks, embeddings, strict=True):
-            meta = dict(tc.metadata)
-            meta["file_id"] = str(file_id)
-            meta["source"] = "chat_export"
-            batch.append((tc.text, emb, meta))
-
-        await self._files.insert_chunks_batch(file_id=file_id, session_id=session_id, chunks=batch)
 
         return {
             "id": str(file_id),
             "filename": original_name,
             "mime_type": mime,
             "size_bytes": size_bytes,
-            "summary": parsed.summary,
-            "sqlite_table_name": None,
-            "sqlite_db_path": None,
         }
 
     async def rewrite_assistant_text_persist_excel_export(
@@ -1012,7 +900,7 @@ class FileService:
             await self.delete_file(UUID(str(r["id"])), user_key)
         tpath = _temp_db_path(session_id)
         tpath.unlink(missing_ok=True)
-        # Remove session tree (import, export, excel_mcp) and legacy ``uploads/.../session`` if present.
+        # Remove session tree (import, export) and legacy ``uploads/.../session`` if present.
         for rel in (
             _session_file_tree_dir(user_key, session_id),
             _api_server_root() / "uploads" / user_key / session_id,

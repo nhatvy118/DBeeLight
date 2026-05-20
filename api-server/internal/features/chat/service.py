@@ -721,18 +721,6 @@ class ChatService:
             use_file_rag, project_db_url,
         )
 
-        # Resolve session-file markers in the prompt (when frontend emitted
-        # [SESSION_FILE_ID_START] markers but RAG didn't substitute them).
-        if self._file_usecase and user_key != "anonymous" and "[SESSION_FILE_ID_START]" in (
-            rag_augmented_query or ""
-        ):
-            try:
-                rag_augmented_query = await self._file_usecase.inject_session_excel_paths_into_prompt(
-                    rag_augmented_query, user_key
-                )
-            except Exception as e:
-                logger.warning("UseCase: session excel path injection failed: %s", e)
-
         logger.info(f"UseCase: Processing query: {query[:100]}...")
         try:
             out = await self._invoke_chat_graph(

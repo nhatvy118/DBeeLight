@@ -550,48 +550,6 @@ export async function exportData(
   a.remove();
 }
 
-export type UploadExcelResponse =
-  | {
-      success: true;
-      file: {
-        original_name: string;
-        stored_name: string;
-        server_path: string;
-        size_bytes: number;
-        session_id?: string | null;
-        project_id?: string | null;
-      };
-    }
-  | { success: false; error: string };
-
-export async function uploadExcel(
-  file: File,
-  sessionId: string | null = null,
-  projectId: string | null = null
-): Promise<UploadExcelResponse> {
-  const form = new FormData();
-  form.append('file', file);
-  if (sessionId) form.append('session_id', sessionId);
-  if (projectId) form.append('project_id', projectId);
-
-  const response = await fetch(url('/api/excel/upload'), {
-    method: 'POST',
-    credentials: 'include',
-    body: form,
-  });
-
-  if (!response.ok) {
-    let detail = 'Failed to upload file';
-    try {
-      const data = (await response.json()) as { detail?: string; error?: string };
-      detail = data.detail || data.error || detail;
-    } catch {
-      // ignore JSON parse errors
-    }
-    return { success: false, error: detail };
-  }
-  return (await response.json()) as UploadExcelResponse;
-}
 
 // ----- Session file memory (RAG) -----
 
@@ -690,11 +648,13 @@ export async function uploadSessionFile(
   sessionId: string,
   file: File,
   projectId: string | null = null,
+  useProjectDb?: boolean,
 ): Promise<UploadSessionFileResult> {
   const form = new FormData();
   form.append('file', file);
   form.append('session_id', sessionId);
   if (projectId) form.append('project_id', projectId);
+  if (useProjectDb !== undefined) form.append('use_project_db', String(useProjectDb));
   const response = await fetch(url('/api/files/upload'), {
     method: 'POST',
     credentials: 'include',

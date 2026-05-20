@@ -92,8 +92,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [isUploadingExcel, setIsUploadingExcel] = useState(false);
-  /** Session files staged above the textarea until the user sends (Enter). */
+  /** Session files already uploaded to server (have a server ID). */
   const [inputAttachedFiles, setInputAttachedFiles] = useState<{ id: string; filename: string }[]>([]);
+  /** Files selected locally but not yet uploaded — staged until Enter is pressed. */
+  const [stagedFiles, setStagedFiles] = useState<{ localId: string; file: File; filename: string }[]>([]);
+  /** Whether to show the "Save data / Q&A only" question above the input. */
+  const [pendingStorageChoice, setPendingStorageChoice] = useState(false);
+  /** Message payload waiting to be sent after storage choice is made. */
+  const pendingSendPayloadRef = useRef<string | null>(null);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [typingStopSignal, setTypingStopSignal] = useState(0);
   // Live progress label streamed from the backend (e.g. "Đang sinh SQL...").
@@ -369,15 +375,18 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const isViewOnlyShare = shareInfo?.permission === 'view_only' || shareInfo?.revoked === true;
 
   const canSend = useMemo(() => {
-    // ChatGPT-style: an attachment alone is not enough — the user must type
-    // what they want to do with it. The Send button stays disabled until
-    // there's actual text in the textarea.
     const hasText = query.trim().length > 0;
     if (isViewOnlyShare) return false;
-    return !isStopVisible && !isUploadingExcel && hasText;
-  }, [isStopVisible, isUploadingExcel, query, isViewOnlyShare]);
+    return !isStopVisible && !isUploadingExcel && !pendingStorageChoice && hasText;
+  }, [isStopVisible, isUploadingExcel, pendingStorageChoice, query, isViewOnlyShare]);
 
   const handleRemoveInputAttachment = async (fileId: string) => {
+    // Staged files (not yet uploaded) — just remove locally
+    if (fileId.startsWith('staged-')) {
+      setStagedFiles((prev) => prev.filter((f) => f.localId !== fileId));
+      return;
+    }
+    // Uploaded files — delete from server
     try {
       await deleteSessionFile(fileId);
       setInputAttachedFiles((prev) => prev.filter((f) => f.id !== fileId));
@@ -386,15 +395,22 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
   };
 
-  const handleExcelFileSelected = async (file: File) => {
+  /** Upload all staged files to server with the chosen storage destination. */
+  const uploadStagedFiles = async (
+    useProjectDb: boolean,
+    filesToUpload?: { localId: string; file: File; filename: string }[],
+  ): Promise<{ id: string; filename: string }[]> => {
+    const toUpload = filesToUpload ?? [...stagedFiles];
+    if (toUpload.length === 0) return [];
     setIsUploadingExcel(true);
+    const uploaded: { id: string; filename: string }[] = [];
     try {
       let sid = sessionId;
       if (!sid) {
         const cr = await createSession(null, selectedProject?.id || propProjectId || null);
         if (!cr.success || !cr.session_id) {
           window.alert('Could not create a chat session for this upload');
-          return;
+          return [];
         }
         sid = cr.session_id;
         setSessionId(sid);
@@ -407,35 +423,47 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         }
         window.dispatchEvent(new PopStateEvent('popstate'));
       }
-      const { file: uploaded } = await uploadSessionFile(sid!, file, selectedProject?.id || propProjectId || null);
-      setInputAttachedFiles((prev) => [...prev, { id: uploaded.id, filename: uploaded.filename }]);
-      setTimeout(() => textareaRef.current?.focus(), 0);
-    } catch (err) {
-      const e = err as Error & { code?: string };
-      if (e.code === 'storage_quota_exceeded' || /5\s*GB|storage limit/i.test(e.message || '')) {
+      for (const staged of toUpload) {
         try {
-          const inv = await listUserFilesInventory();
-          const lines = inv
-            .slice(0, 12)
-            .map(
-              (r) =>
-                `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — phiên ${r.session_id.slice(0, 8)}…`,
-            );
-          window.alert(
-            'Bạn đã dùng hết 5 GB dung lượng lưu trữ cho file đã tải. Hãy xóa bớt file (dấu × trên chip ở ô nhập hoặc trong mục Lưu trữ) rồi thử lại.\n\n' +
-              (lines.length ? `Một số file gần đây:\n${lines.join('\n')}` : ''),
+          const { file: up } = await uploadSessionFile(
+            sid!,
+            staged.file,
+            selectedProject?.id || propProjectId || null,
+            useProjectDb,
           );
-        } catch {
-          window.alert(
-            'Bạn đã dùng hết 5 GB dung lượng lưu trữ. Hãy xóa file (dấu × trên chip ở ô nhập hoặc trong mục Lưu trữ) rồi thử lại.',
-          );
+          uploaded.push({ id: up.id, filename: up.filename });
+        } catch (err) {
+          const e = err as Error & { code?: string };
+          if (e.code === 'storage_quota_exceeded' || /5\s*GB|storage limit/i.test(e.message || '')) {
+            try {
+              const inv = await listUserFilesInventory();
+              const lines = inv.slice(0, 12).map(
+                (r) => `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — session ${r.session_id.slice(0, 8)}…`,
+              );
+              window.alert(
+                'Storage limit reached (5 GB). Delete some files and try again.\n\n' +
+                  (lines.length ? `Recent files:\n${lines.join('\n')}` : ''),
+              );
+            } catch {
+              window.alert('Storage limit reached (5 GB). Delete some files and try again.');
+            }
+          } else {
+            window.alert(e instanceof Error ? e.message : 'Failed to upload file');
+          }
         }
-      } else {
-        window.alert(e instanceof Error ? e.message : 'Failed to upload file');
       }
+      setStagedFiles([]);
+      setInputAttachedFiles((prev) => [...prev, ...uploaded]);
+      return uploaded;
     } finally {
       setIsUploadingExcel(false);
     }
+  };
+
+  /** Stage file locally — actual upload happens on Enter. */
+  const handleExcelFileSelected = (file: File) => {
+    const localId = `staged-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setStagedFiles((prev) => [...prev, { localId, file, filename: file.name }]);
   };
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -534,6 +562,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
 
   // Auto-resize textarea (grow until MAX_TEXTAREA_HEIGHT, then scroll)
   useEffect(() => {
@@ -662,9 +691,36 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (!hasText) return;
 
     const displayText = query.trim();
-    const sendPayload = buildChatMessageWithSessionFiles(displayText, inputAttachedFiles);
-    const attachmentsForUi = inputAttachedFiles.map((f) => ({ name: f.filename, fileId: f.id }));
+    const activeProjectId = selectedProject?.id || propProjectId;
 
+    // If there are staged files and we're inside a project → show message in chat
+    // immediately, then show storage choice question before uploading/sending
+    if (stagedFiles.length > 0 && activeProjectId) {
+      const attachmentsForUi = [
+        ...inputAttachedFiles.map((f) => ({ name: f.filename, fileId: f.id })),
+        ...stagedFiles.map((f) => ({ name: f.filename })),
+      ];
+      lockAllSchemaPreviews();
+      setMessages((prev) => [
+        ...prev,
+        {
+          text: displayText,
+          isUser: true,
+          ...(attachmentsForUi.length > 0 ? { attachments: attachmentsForUi } : {}),
+        },
+      ]);
+      setQuery('');
+      setInputKey((k) => k + 1);
+      pendingSendPayloadRef.current = displayText;
+      setPendingStorageChoice(true);
+      return;
+    }
+
+    // Show message in chat immediately, then upload and send
+    const attachmentsForUi = [
+      ...inputAttachedFiles.map((f) => ({ name: f.filename, fileId: f.id })),
+      ...stagedFiles.map((f) => ({ name: f.filename })),
+    ];
     lockAllSchemaPreviews();
     setMessages((prev) => [
       ...prev,
@@ -674,11 +730,38 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         ...(attachmentsForUi.length > 0 ? { attachments: attachmentsForUi } : {}),
       },
     ]);
-    setInputAttachedFiles([]);
     setQuery('');
-    // Forcefully reset the textarea to avoid any IME/browser ghost text by
-    // both clearing state and remounting the textarea component.
     setInputKey((k) => k + 1);
+
+    // Capture and clear staged files immediately
+    const captured = [...stagedFiles];
+    setStagedFiles([]);
+    const prevUploaded = [...inputAttachedFiles];
+    setInputAttachedFiles([]);
+
+    // Upload staged files (if any) then send
+    const newUploaded = captured.length > 0 ? await uploadStagedFiles(false, captured) : [];
+    setInputAttachedFiles([]); // uploadStagedFiles adds to inputAttachedFiles internally — clear again
+    const allAttached = [...prevUploaded, ...newUploaded];
+    const sendPayload = buildChatMessageWithSessionFiles(displayText, allAttached);
+    await doSend(sendPayload);
+  };
+
+  /** Called after user picks storage destination — upload staged files then send. */
+  const handleStorageChoice = async (useProjectDb: boolean) => {
+    // Capture and clear staged files immediately so chips don't flash back
+    const captured = [...stagedFiles];
+    setStagedFiles([]);
+    setPendingStorageChoice(false);
+    const displayText = pendingSendPayloadRef.current ?? '';
+    pendingSendPayloadRef.current = null;
+
+    const prevUploaded = [...inputAttachedFiles];
+    const newUploaded = await uploadStagedFiles(useProjectDb, captured);
+    setInputAttachedFiles([]); // uploadStagedFiles adds internally — clear again
+    const allAttached = [...prevUploaded, ...newUploaded];
+
+    const sendPayload = buildChatMessageWithSessionFiles(displayText, allAttached);
     await doSend(sendPayload);
   };
 
@@ -1187,7 +1270,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               typingStopSignal={typingStopSignal}
             />
             {streamingStage && (
-              <div className="flex items-center gap-2 px-4 py-2 mt-2 text-sm text-gray-600">
+              <div className="flex items-center gap-2 px-4 py-2 mt-2 text-sm text-gray-600 dark:text-gray-400">
                 <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-pulse" />
                 <span>{streamingStage}</span>
               </div>
@@ -1200,6 +1283,32 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       {/* Input Field - Fixed position, same position whether empty or has history */}
       <div className={`flex flex-col pb-10 pt-10 ${isEmptyState ? "justify-center flex-1 " : "justify-start pt-50"}`}>
         <div className="max-w-5xl mx-auto w-full">
+          {/* Upload storage choice — sits above the input box like Claude Code's permission prompt */}
+          {pendingStorageChoice && (
+            <div className="mb-3 rounded-2xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 shadow-sm overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-100 dark:border-slate-800">
+                <span className="text-base font-bold text-gray-900 dark:text-gray-100">
+                  Do you want to save the data of this file, or just Q&amp;A on this file?
+                </span>
+              </div>
+              <div className="px-3 py-2 flex flex-col gap-1.5">
+                <button
+                  type="button"
+                  className="w-full text-left px-3 py-1.5 rounded-lg border border-gray-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+                  onClick={() => void handleStorageChoice(false)}
+                >
+                  Q&amp;A only
+                </button>
+                <button
+                  type="button"
+                  className="w-full text-left px-3 py-1.5 rounded-lg border border-gray-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+                  onClick={() => void handleStorageChoice(true)}
+                >
+                  Save data
+                </button>
+              </div>
+            </div>
+          )}
           {/* Greeting text - Show in empty state or when project has history */}
           {(isEmptyState || projectHasHistory) && (
             <div className="text-center mb-6">
@@ -1208,11 +1317,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           )}
           <div className="relative bg-white dark:bg-slate-800 border-2 border-gray-300 dark:border-slate-700 rounded-3xl px-4 shadow-lg dark:shadow-none">
             <div className="flex flex-col">
-              {(inputAttachedFiles.length > 0 || isUploadingExcel) && (
+              {!pendingStorageChoice && (inputAttachedFiles.length > 0 || stagedFiles.length > 0) && (
                 <div className="flex flex-wrap items-center gap-2 pt-3 pb-3">
-                  {isUploadingExcel && (
-                    <span className="text-sm text-gray-500 dark:text-slate-400">File is loading…</span>
-                  )}
                   {inputAttachedFiles.map((f) => (
                     <span
                       key={f.id}
@@ -1224,10 +1330,30 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                       </span>
                       <button
                         type="button"
-                        disabled={isViewOnlyShare}
-                        className="shrink-0 text-base leading-none text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-100 px-0.5 disabled:opacity-40 disabled:pointer-events-none"
+                        disabled={isViewOnlyShare || isUploadingExcel}
+                        className="shrink-0 text-base leading-none text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-100 px-0.5 disabled:opacity-0 disabled:pointer-events-none"
                         aria-label={`Remove ${f.filename}`}
                         onClick={() => void handleRemoveInputAttachment(f.id)}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  {stagedFiles.map((f) => (
+                    <span
+                      key={f.localId}
+                      className="inline-flex items-center gap-2 bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-slate-100 px-3 py-2.5 rounded-xl border border-dashed border-gray-300 dark:border-slate-500 max-w-full min-w-0"
+                    >
+                      <img src={fileIcon} alt="" className="w-4 h-4 flex-shrink-0 opacity-60" />
+                      <span className="text-sm sm:text-base font-semibold leading-snug truncate min-w-0 max-w-md">
+                        {f.filename}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isViewOnlyShare || pendingStorageChoice || isUploadingExcel}
+                        className="shrink-0 text-base leading-none text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-100 px-0.5 disabled:opacity-0 disabled:pointer-events-none"
+                        aria-label={`Remove ${f.filename}`}
+                        onClick={() => void handleRemoveInputAttachment(f.localId)}
                       >
                         ×
                       </button>
@@ -1238,7 +1364,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
               <div
                 className={`flex items-center gap-3 min-h-[48px] ${
-                  inputAttachedFiles.length > 0 || isUploadingExcel
+                  !pendingStorageChoice && (inputAttachedFiles.length > 0 || stagedFiles.length > 0)
                     ? '-mx-4 px-4 border-t border-gray-300 dark:border-slate-600 pt-3'
                     : ''
                 }`}
@@ -1379,6 +1505,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           </div>
         )
       }
+
 
     </div >
   );

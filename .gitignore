@@ -76,3 +76,5 @@ sessions/
 api-server/databases/*
 api-server/temp_dbs/*
 test_file/*
+/api-server/internal/temp_dbs
+/api-server/internal/databases
