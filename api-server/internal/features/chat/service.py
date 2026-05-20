@@ -53,19 +53,6 @@ def _looks_like_summary_request(text: str) -> bool:
     return False
 
 # Permission ladder: view_only < read_data < edit_data. A request is allowed
-# when the caller's rank ≥ the rank of the access_level the IntentResult
-# carries. The IntentService is the single source of truth for ``access_level``
-# (derived deterministically from ``route``); chat_usecase only enforces.
-_PERMISSION_RANK = {"view_only": 0, "read_data": 1, "edit_data": 2}
-
-
-def _is_access_allowed(required: str | None, have: str) -> bool:
-    """True if caller's permission ``have`` covers the required ``access_level``."""
-    if not required:
-        # Classifier didn't return an access_level (clarification needed, or
-        # error). Let the request through; downstream gates still apply.
-        return True
-    return _PERMISSION_RANK.get(have, -1) >= _PERMISSION_RANK.get(required, 99)
 
 _READ_DATA_SYSTEM_NOTE = (
     "[SHARED SESSION — READ-ONLY MODE] This session was shared with you in "
@@ -376,61 +363,6 @@ class ChatService:
             raise HTTPException(status_code=500, detail="Session manager is not available for this agent")
         return agent
 
-    async def _classify_intent_with_history(self, agent, original_user_query: str) -> dict | None:
-        """Single-shot intent classification reused by the chat graph (skips its own
-        LLM call when ``pre_classified_intent`` is set in the input state)."""
-        if not hasattr(agent, "classify_intent"):
-            return None
-        try:
-            history_msgs = await agent.session_manager.get_current_messages()
-        except Exception:
-            history_msgs = []
-        await progress_emit("classify", "running", "Analyzing request...")
-        try:
-            return await agent.classify_intent(
-                original_user_query,
-                conversation_context=history_msgs,
-            )
-        except Exception as e:
-            logger.warning(f"UseCase: Intent classification failed, falling back to in-graph classification: {e}")
-            return None
-
-    async def _enforce_share_access(
-        self,
-        agent,
-        share_ctx: dict | None,
-        share_permission: str | None,
-        intent: dict | None,
-        session_id: str | None,
-        original_user_query: str,
-    ) -> None:
-        """For forked share sessions only: reject the request when the intent's
-        ``access_level`` exceeds what the share grants. Persists the user
-        question + the rejection text into JSONB so they survive a page reload,
-        then raises HTTPException(403)."""
-        if share_ctx is None or not intent:
-            return
-        required = intent.get("access_level")
-        if _is_access_allowed(required, share_permission or "view_only"):
-            return
-        route = intent.get("route")
-        logger.info(
-            "UseCase: Rejecting forked-session request: route=%s required=%s, have=%s",
-            route, required, share_permission,
-        )
-        rejection_text = (
-            f"This shared chat is in {share_permission!r} mode; "
-            f"the request needs {required!r} access (route={route!r})."
-        )
-        try:
-            if session_id and await agent.session_manager.load_session(session_id):
-                if (original_user_query or "").strip():
-                    await agent.session_manager.add_message("user", original_user_query)
-                await agent.session_manager.add_message("assistant", f"Error: {rejection_text}")
-        except Exception as e:
-            logger.warning(f"UseCase: Failed to persist rejection turn to session: {e}")
-        raise HTTPException(status_code=403, detail=rejection_text)
-
     def _resolve_project_id_uuid(self, project_id: str | None, share_ctx: dict | None) -> str | None:
         """Validate ``project_id`` as UUID. For forked share sessions whose
         frontend doesn't know the owner's project, fall back to ``share_ctx``."""
@@ -625,7 +557,7 @@ class ChatService:
         self, agent, current_session_id: str | None,
         query: str, rag_augmented_query: str,
         project_id_uuid: str | None, user_key: str, project_db_url: str | None,
-        pre_classified_intent: dict | None, share_ctx: dict | None,
+        share_ctx: dict | None,
     ) -> dict:
         """Build the chat-graph input (with optional snapshot seeding for forked
         shares), invoke ``chat_graph.ainvoke`` with the right thread config, and
@@ -637,19 +569,12 @@ class ChatService:
             *seeded,
             HumanMessage(content=rag_augmented_query),
         ]
-        # If RAG injected context, the pre-classification (computed on the raw
-        # query) can become stale and misroute. Let in-graph classification
-        # re-evaluate using the augmented message.
-        pre_classified_for_graph = pre_classified_intent
-        if rag_augmented_query != query:
-            pre_classified_for_graph = None
         raw_out = await chat_graph.ainvoke(
             {
                 "messages": input_messages,
                 "project_id": project_id_uuid,
                 "user_id": user_key,
                 "allowed_db_uri": project_db_url,
-                "pre_classified_intent": pre_classified_for_graph,
             },
             config=cfg,
         )
@@ -748,12 +673,6 @@ class ChatService:
 
         agent = await self._get_agent_or_raise(user_key)
 
-        pre_classified_intent = await self._classify_intent_with_history(agent, original_user_query)
-        await self._enforce_share_access(
-            agent, share_ctx, share_permission, pre_classified_intent,
-            session_id, original_user_query,
-        )
-
         project_id_uuid = self._resolve_project_id_uuid(project_id, share_ctx)
         project_db_url = await self._auto_connect_project_db(
             agent, project_id_uuid, project_lookup_user,
@@ -770,24 +689,19 @@ class ChatService:
 
         # RAG gating: should we splice retrieved file chunks into the user turn?
         has_session_files = await self._has_session_files(current_session_id, user_key)
-        semantic_retrieval = bool((pre_classified_intent or {}).get("semantic_retrieval"))
         has_file_data_intent, decision_source, heuristic_state, llm_latency_ms = (
             await self._resolve_file_data_intent(
                 original_user_query,
-                should_try_llm=(has_session_files and not semantic_retrieval),
+                should_try_llm=has_session_files,
             )
         )
-        use_file_rag = has_session_files and bool(semantic_retrieval or has_file_data_intent)
-        route_for_rag = str((pre_classified_intent or {}).get("route") or "").strip().lower()
+        use_file_rag = has_session_files and has_file_data_intent
         logger.info(
-            "UseCase: RAG gating route=%s semantic_retrieval=%s "
-            "has_file_data_intent=%s needs_uploaded_file_data=%s has_session_files=%s "
+            "UseCase: RAG gating "
+            "has_file_data_intent=%s has_session_files=%s "
             "use_file_rag=%s decision_source=%s heuristic_state=%s llm_latency_ms=%s "
             "has_file_usecase=%s",
-            route_for_rag or "<none>",
-            semantic_retrieval,
             has_file_data_intent,
-            bool(semantic_retrieval or has_file_data_intent),
             has_session_files,
             use_file_rag,
             decision_source,
@@ -824,7 +738,7 @@ class ChatService:
             out = await self._invoke_chat_graph(
                 agent, current_session_id, query, rag_augmented_query,
                 project_id_uuid, user_key, project_db_url,
-                pre_classified_intent, share_ctx,
+                share_ctx,
             )
             return await self._finalize_chat_turn(
                 agent, out, current_session_id, user_key, original_user_query,

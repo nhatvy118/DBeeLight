@@ -58,10 +58,6 @@ class ChatGraphState(MessagesState, total=False):
     project_id: NotRequired[Optional[str]]
     user_id: NotRequired[Optional[str]]
     allowed_db_uri: NotRequired[Optional[str]]
-    # Optional: an IntentResult dict already classified by the caller
-    # (e.g. chat_usecase running its share-permission gate). Skips a
-    # duplicate LLM call inside the orchestrator's _parse_intent_node.
-    pre_classified_intent: NotRequired[Optional[Dict[str, Any]]]
 
 
 def chat_checkpoint_config(session_id: str) -> Dict[str, Any]:
@@ -218,7 +214,6 @@ def build_chat_graph(orchestrator: Any, checkpointer: Any):
                 project_id=state.get("project_id"),
                 user_id=state.get("user_id"),
                 allowed_db_uri=state.get("allowed_db_uri"),
-                pre_classified_intent=state.get("pre_classified_intent"),
             )
         except Exception as e:
             logger.exception("[ChatGraph] orchestrate_node: %s", e)

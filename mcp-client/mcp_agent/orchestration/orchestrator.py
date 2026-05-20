@@ -35,9 +35,6 @@ class OrchestratorState(TypedDict, total=False):
     project_id: Optional[str]
     user_id: Optional[str]
     allowed_db_uri: Optional[str]
-    # Pre-classified intent (from caller). When present, _parse_intent_node
-    # skips its own LLM classification and reuses this dict.
-    pre_classified_intent: Optional[Dict[str, Any]]
 
 
 class Orchestrator:
@@ -115,15 +112,6 @@ class Orchestrator:
         return "general"
 
     async def _parse_intent_node(self, state: OrchestratorState) -> OrchestratorState:
-        # Reuse caller-provided classification when present (chat_usecase passes
-        # one for share permission gating). Skips a duplicate LLM call.
-        pre = state.get("pre_classified_intent")
-        if isinstance(pre, dict) and pre.get("route"):
-            primary_agent = (
-                pre.get("agent_type") or pre.get("fallback_agent") or "database"
-            )
-            return {**state, "intent_result": pre, "primary_agent": primary_agent}
-
         query = str(state.get("user_message") or "").strip()
         conversation_context = state.get("conversation_context") or []
         conversation_summary = str(state.get("conversation_summary") or "").strip()
@@ -474,18 +462,8 @@ class Orchestrator:
         project_id: Optional[str] = None,
         user_id: Optional[str] = None,
         allowed_db_uri: Optional[str] = None,
-        pre_classified_intent: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Process query through top-level LangGraph orchestrator.
-
-        ``project_id`` / ``user_id`` / ``allowed_db_uri`` flow down to per-agent workflows
-        so chart-server (and future agents) can enforce that resources are scoped to the project.
-
-        ``pre_classified_intent`` (optional): an ``IntentResult.to_dict()`` payload from
-        a caller that already ran intent classification (e.g. chat_usecase's share
-        permission gate). When present, skips the duplicate classify call in
-        ``_parse_intent_node``.
-        """
+        """Process query through top-level LangGraph orchestrator."""
         if not session_id:
             session_id = str(uuid.uuid4())
 
@@ -500,7 +478,6 @@ class Orchestrator:
                     "project_id": project_id,
                     "user_id": user_id,
                     "allowed_db_uri": allowed_db_uri,
-                    "pre_classified_intent": pre_classified_intent,
                 }
             )
         except Exception as e:
