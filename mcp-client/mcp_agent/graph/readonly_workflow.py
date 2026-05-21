@@ -160,7 +160,8 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
                 "role": "system",
                 "content": """Analyze the database request and extract:
 - operation: SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, EXPORT, LIST_TABLES, DESCRIBE_TABLE, CONNECT, DISCONNECT, UNKNOWN
-  Use **EXPORT** (not SELECT) when the user wants an Excel/.xlsx file, download, or "export rows" to a spreadsheet — even if they mention row numbers.
+  Use **EXPORT** (not SELECT) ONLY when the user explicitly asks to download, save, or export data as a file (e.g. "export to Excel", "download as xlsx", "save to csv", "export rows 10-20").
+  Do NOT use EXPORT just because the user message contains an uploaded file marker or mentions reading/querying data from an uploaded file — that is SELECT.
 - tables: list of every table name referenced (required for ALTER/INSERT/UPDATE/DELETE/DROP/SELECT), e.g. "add column to table bicycle" -> ["bicycle"]
 - filters: WHERE conditions
 - exports: if user wants to export to Excel

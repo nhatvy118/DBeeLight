@@ -273,15 +273,11 @@ class Orchestrator:
         raw_message = str(state.get("user_message") or "")
         normalized_message = str(intent_result.get("nl_query") or raw_message)
         chart_type = str(intent_result.get("chart_type") or "").strip().lower()
-        requires_export = bool(intent_result.get("requires_export"))
-        file_format = str(intent_result.get("file_format") or "").strip().lower()
 
-        # Fan-out selection: DB is base; add Chart for visualization; add Excel for exports/files.
+        # Fan-out selection: DB is base; add Chart for visualization.
         selected_agents: List[str] = ["database"]
         if chart_type:
             selected_agents.append("chart")
-        if requires_export or file_format in {"xlsx", "xls", "csv"}:
-            selected_agents.append("excel")
 
         selected_agents = [a for a in dict.fromkeys(selected_agents) if a in self._agents]
         if not selected_agents:

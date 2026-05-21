@@ -57,77 +57,6 @@ _VALID_ORCHESTRATOR_ROUTES = frozenset(r["id"] for r in ORCHESTRATOR_ROUTES)
 INTENT_CONTEXT_TURNS = max(2, int(os.getenv("INTENT_CONTEXT_TURNS", "6")))
 
 
-def _has_attached_files_context(prompt: str) -> bool:
-    return (prompt or "").lstrip().startswith("[ATTACHED FILES CONTEXT]")
-
-
-def _looks_excel_native(nl_query: str) -> bool:
-    """True when the user likely wants Excel/workbook operations (not just data questions)."""
-    q = (nl_query or "").lower()
-    keywords = (
-        # summary intent should stay in Excel-native lane
-        "summary", "summarize", "summarise", "tóm tắt", "tom tat",
-        # formatting / layout
-        "format", "formatting", "conditional format", "merge", "unmerge", "font", "color", "border",
-        "wrap", "freeze", "filter view",
-        # excel features (avoid bare "sheet" substring match on full prompts — use word-boundary regex below for nl_query)
-        "pivot", "pivot table", "chart", "plot", "graph", "worksheet", "workbook",
-        "formula", "vlookup", "xlookup", "sumif", "countif",
-        # write back
-        "write", "fill", "update cells", "insert row", "delete row", "insert column", "delete column",
-        "export to excel", "download excel", "xlsx",
-    )
-    if any(k in q for k in keywords):
-        return True
-    # Workbook structure: "how many sheets", ".csv" filename must not force SQL-only (see _policy_override_route).
-    if re.search(r"\bsheets?\b", q):
-        return True
-    if re.search(r"\bworksheets?\b", q):
-        return True
-    return False
-
-
-def _looks_sql_tabular(nl_query: str) -> bool:
-    """True when the user likely wants SQL-style querying over tabular data."""
-    q = (nl_query or "").lower()
-    keywords = (
-        "select", "where", "group by", "order by", "having", "join", "distinct", "count", "sum", "avg", "min", "max",
-        "top ", "limit",
-    )
-    return any(k in q for k in keywords)
-
-
-def _policy_override_route(
-    *,
-    prompt: str,
-    nl_query: str,
-    file_format: str | None,
-    route: OrchestratorRoute,
-) -> OrchestratorRoute:
-    """Deterministic routing overrides to keep Excel vs SQL behavior consistent."""
-    ff = (file_format or "").lower().strip()
-    has_ctx = _has_attached_files_context(prompt)
-
-    # When we have RAG file context, prefer SQL for data questions over tabular uploads.
-    if has_ctx:
-        if _looks_excel_native(nl_query):
-            # Excel-native tasks should still go to Excel agent.
-            return "excel"
-        if ff in {"csv", "xlsx", "xls", "excel"} or _looks_sql_tabular(nl_query):
-            return "db_readonly"
-
-    # Without explicit file-context, keep Excel for explicit workbook tasks,
-    # but default CSV questions to SQL (DB agent) when they look tabular.
-    # Do not treat ".csv" in the *filename* inside nl_query as "must use SQL" if the question is workbook/sheet metadata.
-    if ff in {"csv", "xlsx", "xls", "excel"} and not _looks_excel_native(nl_query):
-        qn = (nl_query or "").lower()
-        sqlish = _looks_sql_tabular(nl_query)
-        mentions_csv_word = re.search(r"\bcsv\b", qn) is not None
-        if sqlish or mentions_csv_word:
-            return "db_readonly"
-
-    return route
-
 AccessLevel = Literal["view_only", "read_data", "edit_data"]
 
 # Minimum permission a caller needs to run a query of this route. Derived
@@ -173,9 +102,8 @@ Return strict JSON with:
 - "route": REQUIRED when needs_clarification=false — exactly one of: "db_readonly" | "db_create_table" | "db_mutation" | "database" | "excel" | "chart"
 - "nl_query": normalized natural-language query
 - "chart_type": chart hint if visualization requested, else null
-- "requires_export": true if user asks to export/download/save query or table results as a file (Excel/CSV/etc.), else false. If true and they are **not** asking for INSERT/UPDATE/DELETE/DROP/ALTER, route must NOT be db_mutation.
 - "table_hint": table/entity hint if mentioned, else null
-- "file_format": output/input file format if present (csv, xlsx, json, etc.), else null
+- "file_format": desired OUTPUT file format explicitly requested by the user (e.g. "save as csv", "export to xlsx"). Do NOT set this from the format of an uploaded/input file — only set when the user explicitly asks for output in a specific format.
 - "semantic_retrieval": true only when semantic document grounding is needed; false for SQL/filter/aggregate/ranking over structured uploaded tables
 
 Return JSON only."""
@@ -192,7 +120,6 @@ class IntentResult(BaseModel):
     fallback_agent: Optional[Literal["database", "excel", "chart"]] = None
     nl_query: str
     chart_type: Optional[str] = None
-    requires_export: bool = False
     table_hint: Optional[str] = None
     file_format: Optional[str] = None
     semantic_retrieval: bool = False
@@ -307,7 +234,7 @@ class IntentService:
                 "route": "database",
                 "nl_query": prompt,
                 "chart_type": None,
-                "requires_export": False,
+
                 "table_hint": None,
                 "file_format": None,
                 "semantic_retrieval": False,
@@ -338,12 +265,6 @@ class IntentService:
             workflow_id, fallback_agent, agent_type = (None, None, None)
         else:
             route = _resolve_orchestrator_route(result, nl_query)
-            route = _policy_override_route(
-                prompt=prompt,
-                nl_query=nl_query,
-                file_format=(str(result.get("file_format")).strip().lower() if result.get("file_format") else None),
-                route=route,
-            )
             route = _adjust_route_for_available(route, available)
             workflow_id, fallback_agent, agent_type = _route_to_workflow_fields(route)
 
@@ -356,7 +277,7 @@ class IntentService:
             agent_type=(agent_type if isinstance(agent_type, str) else None),
             nl_query=nl_query,
             chart_type=(str(result["chart_type"]).strip() if result.get("chart_type") else None),
-            requires_export=bool(result.get("requires_export")),
+
             table_hint=(str(result["table_hint"]).strip() if result.get("table_hint") else None),
             file_format=(str(result["file_format"]).strip().lower() if result.get("file_format") else None),
             semantic_retrieval=bool(result.get("semantic_retrieval")),
@@ -517,11 +438,6 @@ def _infer_fallback_agent(result: dict, nl_query: str) -> str:
     """Heuristic agent pick when workflow_id is null and model omitted fallback_agent."""
     if result.get("chart_type"):
         return "chart"
-    if bool(result.get("requires_export")):
-        return "excel"
-    ff = str(result.get("file_format") or "").lower().strip()
-    if ff in {"xlsx", "xls", "csv"} or ff == "excel":
-        return "excel"
     q = (nl_query or "").lower()
     if any(
         w in q
