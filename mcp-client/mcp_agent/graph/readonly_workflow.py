@@ -162,14 +162,13 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
 - operation: SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, EXPORT, LIST_TABLES, DESCRIBE_TABLE, CONNECT, DISCONNECT, UNKNOWN
   Use **EXPORT** (not SELECT) ONLY when the user explicitly asks to download, save, or export data as a file (e.g. "export to Excel", "download as xlsx", "save to csv", "export rows 10-20").
   Do NOT use EXPORT just because the user message contains an uploaded file marker or mentions reading/querying data from an uploaded file — that is SELECT.
+  Use **CONNECT** when the user asks to connect to a database. Use **DISCONNECT** when the user asks to disconnect.
 - tables: list of every table name referenced (required for ALTER/INSERT/UPDATE/DELETE/DROP/SELECT), e.g. "add column to table bicycle" -> ["bicycle"]
 - filters: WHERE conditions
 - exports: if user wants to export to Excel
 - detected_language: "en" by default. Use "vi" ONLY if the LATEST user message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "truy vấn", "kết nối", "danh sách"). Ignore conversation history. Short English-keyword queries like "list tables" → "en".
 - resolved_query: rewrite latest user message into a self-contained request by resolving context references.
   **Preserve** row numbers and ranges for exports (e.g. "rows 10 to 20", "10-20") verbatim — do not drop them.
-- connection: object for CONNECT with keys host, port, database, username, password (use null if unknown)
-- IMPORTANT: if operation is CONNECT, ALWAYS include `connection` with all five keys.
 
 Return JSON."""
             },
@@ -207,45 +206,13 @@ Return JSON."""
         )
         if schema_like:
             operation = "DESCRIBE_TABLE"
-    operation_to_intent = {
-        "SELECT": "select_query",
-        "INSERT": "insert_data",
-        "UPDATE": "update_data",
-        "DELETE": "delete_data",
-        "CREATE": "create_table",
-        "ALTER": "alter_table",
-        "DROP": "drop_table",
-        "EXPORT": "export_data",
-        "LIST_TABLES": "list_tables",
-        "DESCRIBE_TABLE": "describe_table",
-        "CONNECT": "connect_db",
-        "DISCONNECT": "disconnect_db",
-        "CONFIRM": "confirm_action",
-    }
-    derived_intent = operation_to_intent.get(operation, "unknown")
-
     safe_intent = {
         "operation": operation,
         "tables": intent.get("tables", []),
         "filters": intent.get("filters", {}),
-        "exports": intent.get("exports", "no"),
         "detected_language": intent.get("detected_language", "en"),
-        "derived_intent": derived_intent,
         "resolved_query": resolved_query,
-        "connection": intent.get("connection", {}) if isinstance(intent.get("connection"), dict) else {},
     }
-    if safe_intent["operation"] == "CONNECT":
-        conn = safe_intent.get("connection") if isinstance(safe_intent.get("connection"), dict) else {}
-        if not isinstance(conn, dict):
-            conn = {}
-        safe_intent["connection"] = {
-            "host": conn.get("host"),
-            "port": conn.get("port"),
-            "database": conn.get("database"),
-            "username": conn.get("username"),
-            "password": conn.get("password"),
-        }
-
     raw_um = str(state.get("user_message") or "")
     from_ctx = _sqlite_table_names_from_attached_context(raw_um)
     merged_tables: list = list(safe_intent.get("tables") or [])
@@ -262,17 +229,7 @@ Return JSON."""
         operation = "DESCRIBE_TABLE"
         safe_intent["operation"] = operation
 
-    if operation in operation_to_intent:
-        safe_intent["derived_intent"] = operation_to_intent[operation]
-    else:
-        safe_intent["derived_intent"] = "unknown"
-
-    logger.info(
-        "[ReadOnly] Parsed operation=%s, derived_intent=%s, connection=%s",
-        operation,
-        safe_intent.get("derived_intent"),
-        safe_intent.get("connection"),
-    )
+    logger.info("[ReadOnly] Parsed operation=%s", operation)
 
     return {
         **state,
@@ -417,7 +374,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
     # Safe DB metadata/connect tools — prefer direct MCP calls when we already know the table
     # (avoids process_query failing on long RAG-prefixed user_message).
     _SAFE_DB_TOOL_OPERATIONS = frozenset(
-        {"LIST_TABLES", "DESCRIBE_TABLE", "CONNECT", "DISCONNECT"}
+        {"LIST_TABLES", "DESCRIBE_TABLE"}
     )
     if operation in _SAFE_DB_TOOL_OPERATIONS:
         if not agent:
@@ -478,6 +435,19 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                 "data": response,
                 "message": response,
             },
+        }
+
+    # Connect/Disconnect — redirect user to UI button.
+    if operation in {"CONNECT", "DISCONNECT"}:
+        msg = (
+            "To connect to a database, please use the **Connect Database** button in the side panel. "
+            "Database connections are managed through the UI, not via chat."
+        )
+        return {
+            **state,
+            "sql": None,
+            "query_result": msg,
+            "output": {"type": "query_result", "data": msg, "message": msg},
         }
 
     # Export to Excel — must call MCP tool (do not fall through to SELECT + markdown table).

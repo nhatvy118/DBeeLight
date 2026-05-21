@@ -45,7 +45,7 @@ OrchestratorRoute = Literal[
 ]
 
 ORCHESTRATOR_ROUTES: List[Dict[str, str]] = [
-    {"id": "db_readonly", "kind": "workflow", "label": "Database read-only (SELECT, schema, list/describe tables, connect/disconnect, …)"},
+    {"id": "db_readonly", "kind": "workflow", "label": "Database read-only (SELECT, schema, list/describe tables, …)"},
     {"id": "db_create_table", "kind": "workflow", "label": "Database create table"},
     {"id": "db_mutation", "kind": "workflow", "label": "Database mutation (INSERT/UPDATE/DELETE/ALTER/DROP/…)"},
     {"id": "database", "kind": "agent", "label": "Database agent (general tool loop)"},
@@ -86,7 +86,7 @@ _INTENT_CLASSIFICATION_PROMPT = """You are an orchestration router. Pick exactly
 
 Branches:
 
-1) "db_readonly" — Read-only: SELECT, list/describe tables, schema exploration, aggregates without modifying data; **connect/disconnect**; host/port/credentials; SQLite path; `connect_db` / `connect_sqlite`.
+1) "db_readonly" — Read-only: SELECT, list/describe tables, schema exploration, aggregates without modifying data. Also use this when user mentions connecting or disconnecting a database — do NOT ask for clarification, route immediately.
 2) "db_create_table" — CREATE TABLE / define new table structure.
 3) "db_mutation" — **Only** writes / schema changes: INSERT, UPDATE, DELETE, ALTER TABLE, DROP, TRUNCATE, MERGE that modifies data. **Never** use this route for "export/download/save table to Excel or CSV" — that only **reads** data; use **database** (general DB agent with export tools) or **db_readonly** instead.
 4) "database" — DB requests that need the **general tool loop**: export table/query to Excel/CSV file, `export_table_to_excel`, troubleshooting, or anything that does not fit 1–3 cleanly. **Prefer this** when the user asks to export or download a dataset as a file.
@@ -97,7 +97,7 @@ Reference (registry workflows for wording only):
 {workflow_descriptions}
 
 Return strict JSON with:
-- "needs_clarification": REQUIRED boolean — true ONLY if the user request is ambiguous and you cannot safely choose a route yet.
+- "needs_clarification": REQUIRED boolean — true ONLY if the user request is ambiguous and you cannot safely choose a route yet. Never set true for connect/disconnect database requests.
 - "clarification_question": REQUIRED string or null — if needs_clarification is true, ask ONE concise follow-up question to disambiguate; otherwise null.
 - "route": REQUIRED when needs_clarification=false — exactly one of: "db_readonly" | "db_create_table" | "db_mutation" | "database" | "excel" | "chart"
 - "nl_query": normalized natural-language query

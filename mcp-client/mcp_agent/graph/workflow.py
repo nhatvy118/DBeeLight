@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Safe DB operations that route to ReadOnlyWorkflow (direct tool execution)
 _SAFE_DB_OPERATIONS = frozenset(
-    {"LIST_TABLES", "DESCRIBE_TABLE", "CONNECT", "DISCONNECT"}
+    {"LIST_TABLES", "DESCRIBE_TABLE"}
 )
 
 
@@ -26,7 +26,7 @@ class AgentWorkflow:
     """Per-agent LangGraph runner.
 
     Database paths (usually chosen by Orchestrator via ``database_route``):
-    - ``readonly`` → ReadOnlyWorkflow (SELECT, list/describe tables, connect/disconnect, …)
+    - ``readonly`` → ReadOnlyWorkflow (SELECT, list/describe tables, …)
     - ``create_table`` → CreateTableWorkflow
     - ``mutation`` → MutationWorkflow
     - ``general`` → DatabaseAgent.process_query (tool loop; request is DB-related but not one of the three graphs)
@@ -77,7 +77,7 @@ class AgentWorkflow:
                         "content": (
                             "Analyze the database request and return the operation type as JSON. "
                             "Operations: SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, EXPORT, "
-                            "LIST_TABLES, DESCRIBE_TABLE, CONNECT, DISCONNECT, UNKNOWN. "
+                            "LIST_TABLES, DESCRIBE_TABLE, UNKNOWN. "
                             "Return JSON with key 'operation'."
                         ),
                     },

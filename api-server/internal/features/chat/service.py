@@ -1163,3 +1163,46 @@ class ChatService:
             logger.error(f"UseCase: Error executing SQL: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to execute SQL: {str(e)}") from e
 
+
+    async def connect_external_db(
+        self,
+        user_key: str,
+        host: str,
+        port: int,
+        database: str,
+        username: str,
+        password: str,
+    ) -> tuple[bool, str]:
+        """Connect the database agent to an external PostgreSQL database."""
+        try:
+            agent = await self._agent_repo.get_agent(user_key=user_key)
+        except Exception as e:
+            return False, f"Failed to initialize agent: {e}"
+
+        result = await agent.connect_external_db(
+            host=host, port=port, database=database,
+            username=username, password=password,
+        )
+        success = "failed" not in result.lower() and "error" not in result.lower() and "not found" not in result.lower()
+        return success, result
+
+    async def disconnect_external_db(self, user_key: str) -> tuple[bool, str]:
+        """Disconnect the database agent from its current external database."""
+        try:
+            agent = await self._agent_repo.get_agent(user_key=user_key)
+        except Exception as e:
+            return False, f"Failed to initialize agent: {e}"
+
+        result = await agent.disconnect_external_db()
+        return True, result
+
+    async def check_db_connection(self, user_key: str) -> tuple[bool, str]:
+        """Return (True, message) if the database agent has an active connection."""
+        try:
+            agent = await self._agent_repo.get_agent(user_key=user_key)
+        except Exception as e:
+            return False, f"Failed to initialize agent: {e}"
+
+        result = await agent.check_db_connection()
+        connected = "not connected" not in result.lower() and "error" not in result.lower()
+        return connected, result

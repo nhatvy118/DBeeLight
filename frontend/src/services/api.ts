@@ -731,3 +731,36 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
 }
 
 
+
+export type DbConnectResult = { success: boolean; message: string };
+
+export async function connectExternalDb(data: {
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  password: string;
+}): Promise<DbConnectResult> {
+  const response = await fetch(url('/api/db/connect'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(data),
+  });
+  return response.json() as Promise<DbConnectResult>;
+}
+
+export async function disconnectExternalDb(): Promise<DbConnectResult> {
+  const response = await fetch(url('/api/db/disconnect'), {
+    method: 'POST',
+    credentials: 'include',
+  });
+  return response.json() as Promise<DbConnectResult>;
+}
+
+export async function getDbConnectionStatus(): Promise<DbConnectResult> {
+  const response = await fetch(url('/api/db/status'), {
+    credentials: 'include',
+  });
+  return response.json() as Promise<DbConnectResult>;
+}

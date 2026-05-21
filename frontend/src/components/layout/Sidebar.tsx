@@ -6,6 +6,9 @@ import {
   createProject,
   getProjects,
   listReceivedShares,
+  connectExternalDb,
+  disconnectExternalDb,
+  getDbConnectionStatus,
   type ReceivedShare,
   type SessionInfo,
 } from '../../services/api';
@@ -41,6 +44,31 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
   const [projects, setProjects] = useState<Project[]>([]);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isDatabasePopupOpen, setIsDatabasePopupOpen] = useState(false);
+  const [connectedDb, setConnectedDb] = useState<DatabaseConnectionData | null>(() => {
+    try {
+      const stored = localStorage.getItem('connectedDb');
+      return stored ? (JSON.parse(stored) as DatabaseConnectionData) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const updateConnectedDb = (data: DatabaseConnectionData | null) => {
+    setConnectedDb(data);
+    if (data) localStorage.setItem('connectedDb', JSON.stringify(data));
+    else localStorage.removeItem('connectedDb');
+  };
+
+  // On mount: verify backend still has an active DB connection; reset UI if not.
+  useEffect(() => {
+    const stored = localStorage.getItem('connectedDb');
+    if (stored) {
+      getDbConnectionStatus()
+        .then((res) => { if (!res.success) updateConnectedDb(null); })
+        .catch(() => updateConnectedDb(null));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
@@ -239,12 +267,23 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
     }
   };
 
-  const handleDatabaseConnect = (connectionData: DatabaseConnectionData) => {
-    console.log('Connecting to database with:', connectionData);
-    // TODO: Implement actual database connection logic
-    // For now, just close the popup and show success message
-    alert(`Connecting to ${connectionData.databaseName} at ${connectionData.server}:${connectionData.port}`);
-    setIsDatabasePopupOpen(false);
+  const handleDatabaseConnect = async (connectionData: DatabaseConnectionData): Promise<{ success: boolean; error?: string }> => {
+    const result = await connectExternalDb({
+      host: connectionData.server,
+      port: parseInt(connectionData.port, 10) || 5432,
+      database: connectionData.databaseName,
+      username: connectionData.username,
+      password: connectionData.password,
+    });
+    if (result.success) {
+      updateConnectedDb(connectionData);
+    }
+    return { success: result.success, error: result.success ? undefined : result.message };
+  };
+
+  const handleDatabaseDisconnect = async () => {
+    await disconnectExternalDb();
+    updateConnectedDb(null);
   };
 
   const navigate = (path: string) => {
@@ -487,6 +526,9 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
         isOpen={isDatabasePopupOpen}
         onClose={() => setIsDatabasePopupOpen(false)}
         onConnect={handleDatabaseConnect}
+        onDisconnect={handleDatabaseDisconnect}
+        connectedDb={connectedDb}
+        isInProject={!!selectedProjectId}
       />
     </>
   );

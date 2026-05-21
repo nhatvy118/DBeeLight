@@ -39,6 +39,19 @@ class ExportRequest(BaseModel):
     format: Optional[str] = "csv"  # "csv" or "excel"
 
 
+class DbConnectRequest(BaseModel):
+    host: str
+    port: int = 5432
+    database: str
+    username: str
+    password: str = ""
+
+
+class DbConnectOk(BaseModel):
+    success: bool
+    message: str
+
+
 class ChatOk(BaseModel):
     success: bool = True
     response: str

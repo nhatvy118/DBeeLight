@@ -8,6 +8,8 @@ from internal.features.chat.dependencies import get_chat_service
 from internal.features.chat.schema import (
     ChatOk,
     ChatRequest,
+    DbConnectOk,
+    DbConnectRequest,
     ExecuteSqlRequest,
     WorkflowResumeRequest,
 )
@@ -65,6 +67,44 @@ async def workflow_resume(
         tool_events=tool_events,
         pending_workflow_resume=pending,
     )
+
+
+@router.post("/api/db/connect", response_model=DbConnectOk)
+async def db_connect(
+    req: DbConnectRequest,
+    user_key: str = Depends(get_user_key),
+    service: ChatService = Depends(get_chat_service),
+) -> DbConnectOk:
+    """Connect the database agent to an external PostgreSQL database."""
+    success, message = await service.connect_external_db(
+        user_key=user_key,
+        host=req.host,
+        port=req.port,
+        database=req.database,
+        username=req.username,
+        password=req.password,
+    )
+    return DbConnectOk(success=success, message=message)
+
+
+@router.get("/api/db/status", response_model=DbConnectOk)
+async def db_status(
+    user_key: str = Depends(get_user_key),
+    service: ChatService = Depends(get_chat_service),
+) -> DbConnectOk:
+    """Check whether the database agent currently has an active connection."""
+    connected, message = await service.check_db_connection(user_key=user_key)
+    return DbConnectOk(success=connected, message=message)
+
+
+@router.post("/api/db/disconnect", response_model=DbConnectOk)
+async def db_disconnect(
+    user_key: str = Depends(get_user_key),
+    service: ChatService = Depends(get_chat_service),
+) -> DbConnectOk:
+    """Disconnect the database agent from its current external database."""
+    success, message = await service.disconnect_external_db(user_key=user_key)
+    return DbConnectOk(success=success, message=message)
 
 
 @router.post("/api/sql/execute", response_model=ChatOk)

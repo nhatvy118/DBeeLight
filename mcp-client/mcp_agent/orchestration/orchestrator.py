@@ -731,6 +731,84 @@ class Orchestrator:
         for agent in self._agents.values():
             await agent.cleanup()
 
+    async def connect_external_db(
+        self,
+        host: str,
+        port: int,
+        database: str,
+        username: str,
+        password: str,
+    ) -> str:
+        """Connect the database agent to an external PostgreSQL database via UI."""
+        db_agent = self._agents.get("database")
+        if not db_agent:
+            return "No database agent available"
+
+        for server_name, session in db_agent.sessions.items():
+            try:
+                result = await session.call_tool(
+                    "connect_db",
+                    {
+                        "host": host,
+                        "port": port,
+                        "database": database,
+                        "username": username,
+                        "password": password,
+                    },
+                )
+                result_content = result.content
+                if not isinstance(result_content, str):
+                    result_content = str(result_content)
+                logger.info(f"[Orchestrator] connect_external_db result: {result_content}")
+                return result_content
+            except Exception as e:
+                logger.debug(f"[Orchestrator] connect_db not found in {server_name}: {e}")
+                continue
+
+        return "connect_db tool not found in any session"
+
+    async def check_db_connection(self) -> str:
+        """Ping the database agent to check if it has an active connection."""
+        db_agent = self._agents.get("database")
+        if not db_agent:
+            return "No database agent available"
+
+        for server_name, session in db_agent.sessions.items():
+            try:
+                result = await session.call_tool("list_tables", {})
+                result_content = result.content
+                if not isinstance(result_content, str):
+                    result_content = str(result_content)
+                # If list_tables succeeds → connected
+                if "not connected" in result_content.lower():
+                    return result_content
+                return "connected"
+            except Exception as e:
+                logger.debug(f"[Orchestrator] check_db_connection error in {server_name}: {e}")
+                continue
+
+        return "Database not connected"
+
+    async def disconnect_external_db(self) -> str:
+        """Disconnect the database agent from its current external database."""
+        db_agent = self._agents.get("database")
+        if not db_agent:
+            return "No database agent available"
+
+        for server_name, session in db_agent.sessions.items():
+            try:
+                result = await session.call_tool("disconnect_db", {})
+                result_content = result.content
+                if not isinstance(result_content, str):
+                    result_content = str(result_content)
+                logger.info(f"[Orchestrator] disconnect_external_db result: {result_content}")
+                return result_content
+            except Exception as e:
+                logger.debug(f"[Orchestrator] disconnect_db not found in {server_name}: {e}")
+                continue
+
+        return "disconnect_db tool not found in any session"
+
     async def connect_to_project_db(self, db_url: str) -> str:
         """Connect the database agent to a project's SQLite database."""
         db_agent = self._agents.get("database")
