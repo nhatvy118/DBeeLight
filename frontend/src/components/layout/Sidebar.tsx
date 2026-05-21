@@ -14,6 +14,7 @@ import {
 } from '../../services/api';
 import ProjectModal from '../modals/ProjectModal';
 import DatabaseConnectPopup, { type DatabaseConnectionData } from '../modals/DatabaseConnectPopup';
+import { encryptPassword, decryptPassword } from '../../utils/crypto';
 import settingsIcon from '../../assets/icons/Settings.svg';
 import gridIcon from '../../assets/icons/Grid.svg';
 import penIcon from '../../assets/icons/Pen.svg';
@@ -44,29 +45,39 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
   const [projects, setProjects] = useState<Project[]>([]);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isDatabasePopupOpen, setIsDatabasePopupOpen] = useState(false);
-  const [connectedDb, setConnectedDb] = useState<DatabaseConnectionData | null>(() => {
-    try {
-      const stored = localStorage.getItem('connectedDb');
-      return stored ? (JSON.parse(stored) as DatabaseConnectionData) : null;
-    } catch {
-      return null;
-    }
-  });
+  const [connectedDb, setConnectedDb] = useState<DatabaseConnectionData | null>(null);
 
-  const updateConnectedDb = (data: DatabaseConnectionData | null) => {
-    setConnectedDb(data);
-    if (data) localStorage.setItem('connectedDb', JSON.stringify(data));
-    else localStorage.removeItem('connectedDb');
+  const saveConnectedDb = async (data: DatabaseConnectionData) => {
+    const encryptedPassword = await encryptPassword(data.password);
+    localStorage.setItem('connectedDb', JSON.stringify({ ...data, password: encryptedPassword }));
   };
 
-  // On mount: verify backend still has an active DB connection; reset UI if not.
+  const clearConnectedDb = () => {
+    localStorage.removeItem('connectedDb');
+    setConnectedDb(null);
+  };
+
+  // On mount: load + decrypt stored connection, then verify backend is still connected.
   useEffect(() => {
     const stored = localStorage.getItem('connectedDb');
-    if (stored) {
-      getDbConnectionStatus()
-        .then((res) => { if (!res.success) updateConnectedDb(null); })
-        .catch(() => updateConnectedDb(null));
-    }
+    if (!stored) return;
+
+    (async () => {
+      try {
+        const parsed = JSON.parse(stored) as DatabaseConnectionData;
+        const plainPassword = await decryptPassword(parsed.password);
+        const data = { ...parsed, password: plainPassword };
+
+        const status = await getDbConnectionStatus();
+        if (status.success) {
+          setConnectedDb(data);
+        } else {
+          clearConnectedDb();
+        }
+      } catch {
+        clearConnectedDb();
+      }
+    })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
@@ -276,14 +287,15 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
       password: connectionData.password,
     });
     if (result.success) {
-      updateConnectedDb(connectionData);
+      setConnectedDb(connectionData);
+      await saveConnectedDb(connectionData);
     }
     return { success: result.success, error: result.success ? undefined : result.message };
   };
 
   const handleDatabaseDisconnect = async () => {
     await disconnectExternalDb();
-    updateConnectedDb(null);
+    clearConnectedDb();
   };
 
   const navigate = (path: string) => {
