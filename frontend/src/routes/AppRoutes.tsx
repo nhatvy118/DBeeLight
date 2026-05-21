@@ -3,10 +3,8 @@ import { useAuth } from '../context/AuthContext';
 import AcceptShare from '../pages/AcceptShare';
 import Account from '../pages/Account';
 import Chat from '../pages/Chat';
-import Home from '../pages/Home';
 import Login from '../pages/Login';
 import PrintChat from '../pages/PrintChat';
-import SignUp from '../pages/SignUp';
 import NotFound from '../pages/NotFound';
 
 type AppRoutesProps = {
@@ -16,8 +14,8 @@ type AppRoutesProps = {
 
 /**
  * Routing patterns:
- * - "/"      -> Chat đơn giản (không sidebar, không history) cho khách. Đã đăng nhập thì redirect /chat.
- * - "/chat"  -> Chat mới (không có session)
+ * - "/"      -> Redirect /login (chưa đăng nhập) hoặc /chat (đã đăng nhập)
+ * - "/chat"  -> Chat mới (không có session, bắt buộc đăng nhập)
  * - "/chat/:sessionId" -> Unassigned session (ngoài project)
  * - "/chat/:projectId" -> Project view (không có session)
  * - "/chat/:projectId/:sessionId" -> Project session
@@ -33,29 +31,27 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  // Đã đăng nhập vào "/" -> chuyển /chat
+  // Chưa đăng nhập vào bất kỳ trang nào (trừ /login, /signup, /share) -> chuyển /login
   useEffect(() => {
-    if (!isLoading && path === '/' && user) {
+    if (isLoading) return;
+    if (user) return;
+    const isPublic =
+      path === '/login' ||
+      path.startsWith('/share/');
+    if (!isPublic) {
+      window.history.pushState({}, '', '/login');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
+  }, [path, user, isLoading]);
+
+  // Đã đăng nhập vào "/" hoặc "/login" -> chuyển /chat
+  useEffect(() => {
+    if (!isLoading && user && (path === '/' || path === '/login')) {
       window.history.pushState({}, '', '/chat');
       window.dispatchEvent(new PopStateEvent('popstate'));
     }
   }, [path, user, isLoading]);
 
-  // Chưa đăng nhập vào "/chat*" -> chuyển "/" (chat đơn giản)
-  useEffect(() => {
-    if (!isLoading && path.startsWith('/chat') && !user) {
-      window.history.pushState({}, '', '/');
-      window.dispatchEvent(new PopStateEvent('popstate'));
-    }
-  }, [path, user, isLoading]);
-
-  // Đã đăng nhập vào "/login" hoặc "/signup" -> chuyển /chat
-  useEffect(() => {
-    if (!isLoading && (path === '/login' || path === '/signup') && user) {
-      window.history.pushState({}, '', '/chat');
-      window.dispatchEvent(new PopStateEvent('popstate'));
-    }
-  }, [path, user, isLoading]);
 
   // Parse chat route: /chat, /chat/:sessionId, /chat/:projectId, /chat/:projectId/:sessionId
   const parseChatRoute = (path: string): { projectId: string | null; sessionId: string | null } => {
@@ -81,9 +77,7 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
     return { projectId: null, sessionId: null };
   };
 
-  if (path === '/') return <Home />;
   if (path === '/login') return <Login />;
-  if (path === '/signup') return <SignUp />;
   if (path.startsWith('/share/accept/')) {
     const token = path.slice('/share/accept/'.length);
     return <AcceptShare token={decodeURIComponent(token)} />;

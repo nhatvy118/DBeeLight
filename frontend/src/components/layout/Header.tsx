@@ -176,7 +176,7 @@ export default function Header() {
       } catch {
         // ignore if storage is blocked
       }
-      window.history.pushState({}, '', '/');
+      window.history.pushState({}, '', '/login');
       window.dispatchEvent(new PopStateEvent('popstate'));
     }
   };
