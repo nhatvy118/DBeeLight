@@ -9,6 +9,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     project_id: Optional[str] = None
+    active_file_ids: Optional[list[str]] = None  # Data sources selected in UI (file UUIDs or '__primary_db__')
 
 
 class WorkflowResumeRequest(BaseModel):

@@ -207,14 +207,13 @@ Return JSON."""
         **state,
         "intent": safe_intent,
         "detected_language": safe_intent.get("detected_language", "en"),
-        "tables": safe_intent.get("tables", []),
         "followup_context": recent_context,
     }
 
 
 async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
     """Discover schema for relevant tables."""
-    tables = state.get("tables", []) or []
+    tables = list((state.get("intent") or {}).get("tables") or [])
     logger.info(f"[Mutation] Schema discovery for: {tables}")
 
     if not agent:
@@ -323,9 +322,9 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
 
     # Attach preview for affected rows
     out = await _enrich_mutation_preview(agent, operation, sql, out)
-    logger.info("[Mutation] SQL preview attached for op=%s", operation)
 
     if out.get("mutation_preview_fatal"):
+        logger.warning("[Mutation] SQL preview fatal for op=%s", operation)
         err_raw = str(out.pop("mutation_preview_error_raw", "") or "")
         out.pop("mutation_preview_fatal", None)
         from mcp_agent.graph.database_utils import friendly_mutation_preview_error
@@ -446,6 +445,7 @@ async def _mutation_preview_run_select(
     if not agent or not select_sql:
         return out
     try:
+        logger.info("[Mutation] Preview SELECT: %s", select_sql[:300])
         preview_raw = await _call_tool(agent, "execute_query", {"query": select_sql})
         from mcp_agent.graph.database_utils import (
             is_execute_query_error_response,
@@ -454,6 +454,7 @@ async def _mutation_preview_run_select(
             markdown_table_from_rows,
         )
         if is_execute_query_error_response(preview_raw):
+            logger.warning("[Mutation] Preview SELECT failed: %s", (preview_raw or "")[:300])
             out["mutation_preview_fatal"] = True
             out["mutation_preview_error_raw"] = preview_raw
             return out
@@ -682,6 +683,12 @@ class MutationWorkflow:
         async def done_handler(state):
             return {**state, "current_stage": StageType.DONE.value}
 
+        def route_after_preview(state):
+            """Skip approval when sql_preview already returned an error."""
+            if state.get("error") or (state.get("output") or {}).get("type") == "error":
+                return StageType.DONE.value
+            return "SQL_APPROVAL"
+
         workflow.add_node("INTENT_PARSE", intent_parse_node)
         workflow.add_node("SCHEMA_DISCOVERY", schema_discovery_node)
         workflow.add_node("SQL_PREVIEW", sql_preview_node)
@@ -692,7 +699,11 @@ class MutationWorkflow:
         workflow.set_entry_point("INTENT_PARSE")
         workflow.add_edge("INTENT_PARSE", "SCHEMA_DISCOVERY")
         workflow.add_edge("SCHEMA_DISCOVERY", "SQL_PREVIEW")
-        workflow.add_edge("SQL_PREVIEW", "SQL_APPROVAL")
+        workflow.add_conditional_edges(
+            "SQL_PREVIEW",
+            route_after_preview,
+            {"SQL_APPROVAL": "SQL_APPROVAL", StageType.DONE.value: StageType.DONE.value},
+        )
         workflow.add_edge("SQL_APPROVAL", "SQL_EXECUTION")
         workflow.add_edge("SQL_EXECUTION", StageType.DONE.value)
         workflow.add_edge(StageType.DONE.value, END)

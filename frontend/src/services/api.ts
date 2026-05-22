@@ -78,12 +78,18 @@ export async function sendMessageStream(
   sessionId: string | null,
   projectId: string | null,
   handlers: StreamHandlers,
+  activeFileIds?: string[] | null,
 ): Promise<void> {
   const response = await fetch(url('/api/chat/stream'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ message, session_id: sessionId, project_id: projectId }),
+    body: JSON.stringify({
+      message,
+      session_id: sessionId,
+      project_id: projectId,
+      active_file_ids: activeFileIds?.length ? activeFileIds : null,
+    }),
     signal: handlers.signal,
   });
 
@@ -136,7 +142,7 @@ export async function sendMessageWithStream(
   message: string,
   sessionId: string | null,
   projectId: string | null,
-  options?: { onStage?: (stage: string) => void; signal?: AbortSignal },
+  options?: { onStage?: (stage: string) => void; signal?: AbortSignal; activeFileIds?: string[] | null },
 ): Promise<ChatResponse> {
   let finalRes: ChatResponse | null = null;
   let streamErr: { status?: number; message: string } | null = null;
@@ -151,7 +157,7 @@ export async function sendMessageWithStream(
         streamErr = { status: e.status_code, message: e.message };
       }
     },
-  });
+  }, options?.activeFileIds);
   if (streamErr !== null) {
     throw new Error((streamErr as { message: string }).message || 'Streaming chat failed');
   }

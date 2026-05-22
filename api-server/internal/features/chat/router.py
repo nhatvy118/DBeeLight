@@ -34,6 +34,7 @@ async def chat_stream(
         message=req.message,
         session_id=req.session_id,
         project_id=req.project_id,
+        active_file_ids=req.active_file_ids,
     )
     return StreamingResponse(
         generator,

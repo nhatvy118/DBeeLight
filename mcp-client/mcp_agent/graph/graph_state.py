@@ -32,8 +32,9 @@ class AgentState(TypedDict):
     orchestrator_intent: NotRequired[Optional[Dict[str, Any]]]
 
     # Database-specific state
-    tables: list
-    selected_table: Optional[str]
+    # table_schema  — {"tables": [...targeted for this query...], "all_tables": [...all physical...]}
+    #                 "tables"     set by schema_discovery (refined from intent["tables"])
+    #                 "all_tables" populated by schema_discovery from list_tables output
     table_schema: Dict[str, Any]
     sql: Optional[str]
     query_result: Optional[Any]
@@ -91,8 +92,6 @@ def create_initial_state(
         "detected_language": "en",
 
         # Database
-        "tables": [],
-        "selected_table": None,
         "table_schema": {},
         "sql": None,
         "query_result": None,

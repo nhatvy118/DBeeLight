@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessageList, { type UiMessage, type SchemaPreviewData } from '../components/chat/MessageList';
+import DataSourceBar, { buildDataSources, getActiveFileIds, type DataSource } from '../components/chat/DataSourceBar';
 import {
   getSession,
   sendMessageWithStream,
@@ -8,11 +9,13 @@ import {
   resumeWorkflow,
   createSession,
   listUserFilesInventory,
+  listSessionFiles,
   uploadSessionFile,
   deleteSessionFile,
   downloadStoredSessionFile,
   type SessionInfo,
   type SessionShareInfo,
+  type SessionFileMeta,
   type ToolEvent,
   type GetSessionResponse,
 } from '../services/api';
@@ -106,6 +109,37 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   // Null when no streaming chat is in flight.
   const [streamingStage, setStreamingStage] = useState<string | null>(null);
   const sendAbortControllerRef = useRef<AbortController | null>(null);
+
+  // Data source selector (multi-select: DB is exclusive with files, multiple files allowed)
+  const [sessionFiles, setSessionFiles] = useState<SessionFileMeta[]>([]);
+  const [activeDataSources, setActiveDataSources] = useState<DataSource[]>([]);
+
+  const handleToggleDataSource = (src: DataSource) => {
+    setActiveDataSources((prev) => {
+      const isAlreadySelected =
+        src.type === 'primary_db'
+          ? prev.some((s) => s.type === 'primary_db')
+          : prev.some((s) => s.type === 'file' && s.id === src.id);
+
+      if (isAlreadySelected) {
+        if (src.type === 'primary_db') return prev.filter((s) => s.type !== 'primary_db');
+        return prev.filter((s) => !(s.type === 'file' && s.id === src.id));
+      }
+
+      return [...prev, src];
+    });
+  };
+
+  // Read connected DB label from localStorage (written by Sidebar)
+  const connectedDbLabel = (() => {
+    try {
+      const raw = localStorage.getItem('connectedDb');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as { server?: string; databaseName?: string };
+      if (parsed?.databaseName) return `${parsed.databaseName}@${parsed.server ?? 'localhost'}`;
+    } catch { /* ignore */ }
+    return null;
+  })();
 
   // Load selected project from URL (propProjectId) - URL is source of truth
   useEffect(() => {
@@ -454,6 +488,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       }
       setStagedFiles([]);
       setInputAttachedFiles((prev) => [...prev, ...uploaded]);
+      // Refresh session files list for DataSource selector
+      if (sessionId && uploaded.length > 0) {
+        listSessionFiles(sessionId).then(setSessionFiles).catch(() => {});
+      }
       return uploaded;
     } finally {
       setIsUploadingExcel(false);
@@ -563,6 +601,35 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     scrollToBottom();
   }, [messages]);
 
+  // Fetch session files for the DataSource selector whenever session changes
+  useEffect(() => {
+    if (!sessionId) {
+      setSessionFiles([]);
+      setActiveDataSources([]);
+      return;
+    }
+    listSessionFiles(sessionId)
+      .then((files) => {
+        setSessionFiles(files);
+        // Auto-select only when user hasn't made a choice yet
+        setActiveDataSources((prev) => {
+          if (prev.length > 0) return prev;
+          const hasPrimaryDb = !!connectedDbLabel;
+          // Only DB and no files → auto-select DB
+          if (hasPrimaryDb && files.length === 0) {
+            return [{ type: 'primary_db', label: 'Database', detail: connectedDbLabel! }];
+          }
+          // Only 1 file and no DB → auto-select that file
+          if (!hasPrimaryDb && files.length === 1) {
+            const f = files[0];
+            return [{ type: 'file', id: f.id, filename: f.filename, mime_type: f.mime_type, uploaded_at: f.uploaded_at ?? null }];
+          }
+          return [];
+        });
+      })
+      .catch(() => setSessionFiles([]));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
   // Auto-resize textarea (grow until MAX_TEXTAREA_HEIGHT, then scroll)
   useEffect(() => {
@@ -587,6 +654,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       const finalRes = await sendMessageWithStream(text, sessionId, selectedProject?.id || null, {
         onStage: (m) => setStreamingStage(m),
         signal: controller.signal,
+        activeFileIds: getActiveFileIds(activeDataSources),
       });
       setStreamingStage(null);
       // ChatResponse is a discriminated union; downstream code reads optional
@@ -779,7 +847,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           .filter((a): a is typeof a & { fileId: string } => !!a.fileId)
           .map((a) => ({ id: a.fileId, filename: a.name })),
       );
-      const res = await sendMessageWithStream(sendPayload, sessionId, selectedProject?.id || null);
+      const res = await sendMessageWithStream(sendPayload, sessionId, selectedProject?.id || null, { activeFileIds: getActiveFileIds(activeDataSources) });
       const resText = res.response;
       if (resText && resText.trim().length > 0) {
         setMessages((prev) => {
@@ -1315,6 +1383,17 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               <h2 className="text-5xl md:text-6xl font-bold text-gray-900 dark:text-gray-100">Hi, How are you today?</h2>
             </div>
           )}
+          {/* Data source selector — shown when there are multiple sources to choose from */}
+          {(() => {
+            const sources = buildDataSources(sessionFiles, connectedDbLabel);
+            return sources.length > 1 ? (
+              <DataSourceBar
+                sources={sources}
+                active={activeDataSources}
+                onToggle={handleToggleDataSource}
+              />
+            ) : null;
+          })()}
           <div className="relative bg-white dark:bg-slate-800 border-2 border-gray-300 dark:border-slate-700 rounded-3xl px-4 shadow-lg dark:shadow-none">
             <div className="flex flex-col">
               {!pendingStorageChoice && (inputAttachedFiles.length > 0 || stagedFiles.length > 0) && (

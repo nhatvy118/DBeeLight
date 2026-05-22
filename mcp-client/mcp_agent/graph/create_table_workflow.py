@@ -211,7 +211,6 @@ Return JSON."""
         **state,
         "intent": safe_intent,
         "detected_language": safe_intent.get("detected_language", "en"),
-        "tables": safe_intent.get("tables", []),
         "followup_context": recent_context,
     }
 

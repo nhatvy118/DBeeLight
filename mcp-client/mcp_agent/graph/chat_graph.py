@@ -58,6 +58,8 @@ class ChatGraphState(MessagesState, total=False):
     project_id: NotRequired[Optional[str]]
     user_id: NotRequired[Optional[str]]
     allowed_db_uri: NotRequired[Optional[str]]
+    # UI data-source selector: table name of the user-selected file (overrides intent LLM)
+    active_file_table_hint: NotRequired[Optional[str]]
 
 
 def chat_checkpoint_config(session_id: str) -> Dict[str, Any]:
@@ -214,6 +216,7 @@ def build_chat_graph(orchestrator: Any, checkpointer: Any):
                 project_id=state.get("project_id"),
                 user_id=state.get("user_id"),
                 allowed_db_uri=state.get("allowed_db_uri"),
+                active_file_table_hint=state.get("active_file_table_hint") or None,
             )
         except Exception as e:
             logger.exception("[ChatGraph] orchestrate_node: %s", e)

@@ -658,6 +658,10 @@ class FileService:
             )
         return out
 
+    async def get_file(self, file_id: UUID, user_key: str) -> dict[str, Any] | None:
+        """Return raw file row (includes sqlite_table_name, sqlite_db_path, etc.)."""
+        return await self._files.get_file(file_id, user_key)
+
     async def get_file_for_download(self, file_id: UUID, user_key: str) -> dict[str, Any]:
         row = await self._files.get_file(file_id, user_key)
         if not row:
@@ -708,8 +712,13 @@ class FileService:
         session_id: str,
         user_key: str,
         chunk_results: list[ChunkResult],
+        active_file_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         rows = await self._files.list_files_by_session(session_id, user_key)
+        # If the user explicitly selected specific files, only surface those tables.
+        if active_file_ids:
+            selected_set = set(str(fid) for fid in active_file_ids)
+            rows = [r for r in rows if str(r.get("id", "")) in selected_set]
         sheet_by_fid = self._sheet_hints_from_chunks(chunk_results)
         out: list[dict[str, Any]] = []
         for r in rows:
@@ -745,6 +754,7 @@ class FileService:
         query: str,
         user_key: str,
         top_k: int = 8,
+        active_file_ids: list[str] | None = None,
     ) -> tuple[list[ChunkResult], str]:
         await self._require_session(session_id, user_key)
         if not (query or "").strip():
@@ -760,7 +770,7 @@ class FileService:
             for r in rows
         ]
         available_tables = await self._build_available_tables_for_session(
-            session_id, user_key, results
+            session_id, user_key, results, active_file_ids=active_file_ids
         )
         block = format_chunks_as_context_block(results, available_tables)
         return results, block

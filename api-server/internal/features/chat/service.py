@@ -382,7 +382,7 @@ class ChatService:
         return project_id_uuid
 
     async def _push_db_to_agents(self, agent, db_url: str, *, label: str) -> None:
-        """Push ``db_url`` to the database server (connect_sqlite) and the chart
+        """Push ``db_url`` to the database server (connect_sqlite / primary adapter) and the chart
         server (chart_connect_db). ``label`` is just for log messages."""
         try:
             connect_result = await agent.connect_to_project_db(db_url)
@@ -394,6 +394,23 @@ class ChatService:
             logger.info(f"UseCase: {label} chart server connection result: {chart_result}")
         except Exception as e:
             logger.warning(f"UseCase: Failed to connect chart server to {label}: {e}")
+
+    async def _push_session_file_to_agents(
+        self, agent, db_url: str, *, label: str, allowed_tables: str | None = None
+    ) -> None:
+        """Push a session-file SQLite as the *session* adapter (does NOT override primary DB).
+
+        Use when the user selected both their primary database and an uploaded file so that
+        both can be queried simultaneously.
+
+        Args:
+            allowed_tables: Comma-separated table names to expose (only selected files' tables).
+        """
+        try:
+            result = await agent.connect_session_file_db(db_url, allowed_tables=allowed_tables)
+            logger.info(f"UseCase: {label} session-file DB connection result: {result}")
+        except Exception as e:
+            logger.warning(f"UseCase: {label} session-file DB connect failed: {e}")
 
     async def _auto_connect_project_db(
         self, agent, project_id_uuid: str | None, project_lookup_user: str,
@@ -484,6 +501,7 @@ class ChatService:
         self, agent, current_session_id: str | None, user_key: str,
         query: str, original_user_query: str,
         use_file_rag: bool, project_db_url: str | None,
+        active_file_ids: list[str] | None = None,
     ) -> tuple[str, str | None]:
         """When session-file RAG is enabled: (a) connect MCP servers to the
         session's SQLite file if no project DB was selected, (b) retrieve
@@ -506,8 +524,11 @@ class ChatService:
                 except Exception:
                     pass
 
+            # Pass active_file_ids so the ATTACHED FILES CONTEXT only lists
+            # tables from the files the user actually selected.
             _chunks, block = await self._file_usecase.retrieve_relevant_chunks(
                 current_session_id, original_user_query, user_key, top_k=8,
+                active_file_ids=active_file_ids or None,
             )
             if block:
                 return f"{block}\n\nUSER MESSAGE:\n{query}", project_db_url
@@ -558,6 +579,7 @@ class ChatService:
         query: str, rag_augmented_query: str,
         project_id_uuid: str | None, user_key: str, project_db_url: str | None,
         share_ctx: dict | None,
+        active_file_table_hint: str | None = None,
     ) -> dict:
         """Build the chat-graph input (with optional snapshot seeding for forked
         shares), invoke ``chat_graph.ainvoke`` with the right thread config, and
@@ -575,6 +597,7 @@ class ChatService:
                 "project_id": project_id_uuid,
                 "user_id": user_key,
                 "allowed_db_uri": project_db_url,
+                "active_file_table_hint": active_file_table_hint or None,
             },
             config=cfg,
         )
@@ -647,7 +670,8 @@ class ChatService:
         return response_text, current_session_id, tool_events, pending_workflow_resume, warnings, success
 
     async def chat(
-        self, user_key: str, message: str, session_id: str | None, project_id: str | None = None
+        self, user_key: str, message: str, session_id: str | None, project_id: str | None = None,
+        active_file_ids: list[str] | None = None,
     ) -> tuple[str, str | None, list[dict], bool, list[dict], bool]:
         logger.info(f"UseCase: Processing chat message, user_key={user_key}, session_id={session_id}, project_id={project_id}")
         query = (message or "").strip()
@@ -687,6 +711,49 @@ class ChatService:
             agent, session_id, project_id_uuid,
         )
 
+        # --- Active data source from UI selector ---
+        # active_file_ids may contain '__primary_db__' and/or actual file UUIDs.
+        ids = list(active_file_ids or [])
+        user_selected_primary_db = "__primary_db__" in ids
+        file_ids_selected = [fid for fid in ids if fid != "__primary_db__"]
+
+        active_file_table_hint: str | None = None   # comma-separated table names for multi-file
+        active_file_sqlite_url: str | None = None
+
+        # file_meta_for_context: list of (filename, sqlite_table_name) for selected files
+        # used later to inject a table-name context block when RAG is skipped (DB+file mode).
+        file_meta_for_context: list[tuple[str, str]] = []
+
+        if file_ids_selected and self._file_usecase and current_session_id and user_key != "anonymous":
+            table_hints: list[str] = []
+            sqlite_url_seen: str | None = None
+            from internal.features.file.service import _sqlite_engine_url_from_stored
+            for fid in file_ids_selected:
+                try:
+                    file_row = await self._file_usecase.get_file(uuid.UUID(fid), user_key)
+                    if file_row:
+                        tname = file_row.get("sqlite_table_name")
+                        fname = file_row.get("filename") or ""
+                        if tname:
+                            table_hints.append(str(tname))
+                            file_meta_for_context.append((str(fname), str(tname)))
+                        raw_path = file_row.get("sqlite_db_path")
+                        if raw_path and not sqlite_url_seen:
+                            sqlite_url_seen = _sqlite_engine_url_from_stored(str(raw_path))
+                except Exception as e:
+                    logger.warning("UseCase: failed to resolve active_file_id=%s: %s", fid, e)
+            if table_hints:
+                active_file_sqlite_url = sqlite_url_seen
+                # Only force a table hint when the user chose file(s) WITHOUT the primary DB.
+                # When both DB + file(s) are selected, leave table_hint=None so the LLM
+                # sees all tables from both sources via list_tables and can query freely.
+                if not user_selected_primary_db:
+                    active_file_table_hint = ", ".join(table_hints)
+            logger.info(
+                "UseCase: active_file_ids=%s → table_hint=%s sqlite_url=%s",
+                file_ids_selected, active_file_table_hint, active_file_sqlite_url,
+            )
+
         # RAG gating: should we splice retrieved file chunks into the user turn?
         has_session_files = await self._has_session_files(current_session_id, user_key)
         has_file_data_intent, decision_source, heuristic_state, llm_latency_ms = (
@@ -695,7 +762,8 @@ class ChatService:
                 should_try_llm=has_session_files,
             )
         )
-        use_file_rag = has_session_files and has_file_data_intent
+        # Skip RAG entirely when user has selected their primary DB — don't override with session SQLite.
+        use_file_rag = (not user_selected_primary_db) and has_session_files and has_file_data_intent
         logger.info(
             "UseCase: RAG gating "
             "has_file_data_intent=%s has_session_files=%s "
@@ -716,10 +784,51 @@ class ChatService:
         if shortcut is not None:
             return shortcut
 
+        # Connect the selected file's SQLite to the MCP server.
+        if active_file_sqlite_url:
+            if user_selected_primary_db:
+                # Both DB + file selected → attach file as session adapter (keeps primary intact).
+                # Pass the selected table names so list_tables only surfaces those tables,
+                # not every table that has ever been uploaded to this session's SQLite.
+                allowed_tables_str = ", ".join(table_hints) if table_hints else None
+                await self._push_session_file_to_agents(
+                    agent, active_file_sqlite_url,
+                    label="active-file-session",
+                    allowed_tables=allowed_tables_str,
+                )
+            else:
+                # File-only selected → connect as primary (no user DB to protect).
+                await self._push_db_to_agents(agent, active_file_sqlite_url, label="active-file")
+                if not project_db_url:
+                    project_db_url = active_file_sqlite_url
+        else:
+            # No file selected this turn — disconnect any leftover session adapter so
+            # list_tables / queries don't accidentally surface tables from a previous file.
+            try:
+                await agent.disconnect_session_file_db()
+            except Exception as _e:
+                logger.debug("UseCase: disconnect_session_file_db skipped: %s", _e)
+
         rag_augmented_query, project_db_url = await self._apply_file_rag(
             agent, current_session_id, user_key, query, original_user_query,
             use_file_rag, project_db_url,
+            active_file_ids=file_ids_selected or None,
         )
+
+        # When DB + file(s) selected, RAG is skipped so LLM has no knowledge of the
+        # session-file table names. Inject a minimal hint so it uses exact table names.
+        if user_selected_primary_db and file_meta_for_context and rag_augmented_query == query:
+            table_lines = "\n".join(
+                f"  - file: {fname}  →  sqlite table: `{tname}`"
+                for fname, tname in file_meta_for_context
+            )
+            hint_block = (
+                "[SESSION FILE TABLES — use these EXACT table names in SQL queries]\n"
+                f"{table_lines}\n"
+                "[/SESSION FILE TABLES]"
+            )
+            rag_augmented_query = f"{hint_block}\n\nUSER MESSAGE:\n{query}"
+            logger.info("UseCase: injected session file table hints into query (DB+file mode)")
 
         logger.info(f"UseCase: Processing query: {query[:100]}...")
         try:
@@ -727,6 +836,7 @@ class ChatService:
                 agent, current_session_id, query, rag_augmented_query,
                 project_id_uuid, user_key, project_db_url,
                 share_ctx,
+                active_file_table_hint=active_file_table_hint,
             )
             return await self._finalize_chat_turn(
                 agent, out, current_session_id, user_key, original_user_query,
@@ -741,6 +851,7 @@ class ChatService:
         message: str,
         session_id: str | None,
         project_id: str | None = None,
+        active_file_ids: list[str] | None = None,
     ) -> AsyncIterator[str]:
         """Streaming variant of ``chat`` — yields SSE-formatted strings.
 
@@ -758,7 +869,7 @@ class ChatService:
             token = set_progress_callback(progress_cb)
             try:
                 response_text, sid, tool_events, pending, warnings, success = await self.chat(
-                    user_key, message, session_id, project_id
+                    user_key, message, session_id, project_id, active_file_ids
                 )
                 await queue.put({
                     "type": "final",

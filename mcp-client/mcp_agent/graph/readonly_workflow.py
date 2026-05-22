@@ -21,6 +21,23 @@ def _sqlite_table_names_from_attached_context(msg: str) -> list[str]:
     return re.findall(r"table:\s*`([^`]+)`", msg)
 
 
+def _session_file_tables_from_hint_block(msg: str) -> list[tuple[str, str]]:
+    """Parse ``[SESSION FILE TABLES...]`` block injected for DB+file mode.
+
+    Returns list of (filename, table_name) pairs.
+    Example line: ``  - file: 50 product categories.csv  →  sqlite table: `t_50_...` ``
+    """
+    if not msg or "[SESSION FILE TABLES" not in msg:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for m in re.finditer(r"file:\s*(.+?)\s*→\s*sqlite table:\s*`([^`]+)`", msg):
+        fname = m.group(1).strip()
+        tname = m.group(2).strip()
+        if tname:
+            pairs.append((fname, tname))
+    return pairs
+
+
 def _parse_table_names_from_list_tools(text: str) -> list[str]:
     """Parse MCP ``list_tables`` text like ``Tables in database: a, b``."""
     s = (text or "").strip()
@@ -160,6 +177,8 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
                 "role": "system",
                 "content": """Analyze the database request and extract:
 - operation: SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, EXPORT, LIST_TABLES, DESCRIBE_TABLE, CONNECT, DISCONNECT, UNKNOWN
+  Use **LIST_TABLES** when the user wants to see, list, show, count, or discover what tables exist (e.g. "show me all tables", "list tables", "how many tables", "what tables are there", "which tables", "display all tables", "liệt kê bảng", "bao nhiêu bảng"). Do NOT generate SQL for this — just use LIST_TABLES.
+  Use **DESCRIBE_TABLE** when the user wants to see the structure/schema/columns of a specific table.
   Use **EXPORT** (not SELECT) ONLY when the user explicitly asks to download, save, or export data as a file (e.g. "export to Excel", "download as xlsx", "save to csv", "export rows 10-20").
   Do NOT use EXPORT just because the user message contains an uploaded file marker or mentions reading/querying data from an uploaded file — that is SELECT.
   Use **CONNECT** when the user asks to connect to a database. Use **DISCONNECT** when the user asks to disconnect.
@@ -191,21 +210,7 @@ Return JSON."""
 
     operation = str(intent.get("operation", "SELECT")).strip().upper()
     resolved_query = str(intent.get("resolved_query") or user_message).strip() or user_message
-    rq_lower = resolved_query.lower()
-    if operation == "SELECT":
-        schema_like = (
-            "show info about table" in rq_lower
-            or "describe table" in rq_lower
-            or "table structure" in rq_lower
-            or "schema of table" in rq_lower
-            or "thông tin bảng" in rq_lower
-            or "mô tả bảng" in rq_lower
-            or "cấu trúc bảng" in rq_lower
-            or _looks_schema_or_columns_question(resolved_query)
-            or _looks_schema_or_columns_question(user_message)
-        )
-        if schema_like:
-            operation = "DESCRIBE_TABLE"
+
     safe_intent = {
         "operation": operation,
         "tables": intent.get("tables", []),
@@ -219,15 +224,18 @@ Return JSON."""
     for t in from_ctx:
         if t and t not in merged_tables:
             merged_tables.append(t)
-    safe_intent["tables"] = merged_tables
 
-    # LLM often returns UNKNOWN for short schema/column questions; map before query_execution.
-    if operation == "UNKNOWN" and merged_tables and (
-        _looks_schema_or_columns_question(resolved_query)
-        or _looks_schema_or_columns_question(user_message)
-    ):
-        operation = "DESCRIBE_TABLE"
-        safe_intent["operation"] = operation
+    # If the orchestrator injected an authoritative table_hint from the UI data-source selector,
+    # use it as the definitive table list (overrides LLM-extracted tables and context markers).
+    orch_intent = state.get("orchestrator_intent")
+    forced_table_hint = str((orch_intent or {}).get("table_hint") or "").strip() if isinstance(orch_intent, dict) else ""
+    if forced_table_hint:
+        forced_tables = [t.strip() for t in forced_table_hint.split(",") if t.strip()]
+        if forced_tables:
+            merged_tables = forced_tables
+            logger.info("[ReadOnly] orchestrator table_hint overrides merged_tables → %s", merged_tables)
+
+    safe_intent["tables"] = merged_tables
 
     logger.info("[ReadOnly] Parsed operation=%s", operation)
 
@@ -235,14 +243,13 @@ Return JSON."""
         **state,
         "intent": safe_intent,
         "detected_language": safe_intent.get("detected_language", "en"),
-        "tables": merged_tables,
         "followup_context": recent_context,
     }
 
 
 async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
     """Discover schema for relevant tables - skip for CREATE."""
-    tables = state.get("tables", []) or []
+    tables = list((state.get("intent") or {}).get("tables") or [])
     logger.info(f"[ReadOnly] Schema discovery for: {tables}")
 
     if not agent:
@@ -266,7 +273,7 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
         logger.info(f"[ReadOnly] Schema discovery response: {log_block[:500]}...")
         return {
             **state,
-            "table_schema": {"tables": tables},
+            "table_schema": {"tables": tables, "all_tables": list(actual_tables)},
         }
 
     # Uploaded session DB often has exactly one real table; user may say "user" or omit name.
@@ -324,15 +331,14 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
                 "type": "error",
                 "message": msg,
             },
-            "table_schema": {"tables": tables_work, "missing": missing},
+            "table_schema": {"tables": tables_work, "missing": missing, "all_tables": list(actual_tables)},
         }
 
     intent_patch = {**(state.get("intent") or {}), "tables": tables_work}
     return {
         **state,
         "intent": intent_patch,
-        "tables": tables_work,
-        "table_schema": {"tables": tables_work},
+        "table_schema": {"tables": tables_work, "all_tables": list(actual_tables)},
     }
 
 
@@ -352,7 +358,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
     if operation == "UNKNOWN":
         combined = f"{effective_message} {user_message}"
         if _looks_schema_or_columns_question(combined):
-            tables = state.get("tables", []) or intent.get("tables", []) or []
+            tables = (state.get("table_schema") or {}).get("tables") or intent.get("tables") or []
             if tables and agent:
                 table_name = str(tables[0]).strip()
                 if table_name:
@@ -388,7 +394,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                 },
             }
         if operation == "DESCRIBE_TABLE":
-            tables = state.get("tables", []) or intent.get("tables", []) or []
+            tables = (state.get("table_schema") or {}).get("tables") or intent.get("tables") or []
             if tables:
                 table_name = str(tables[0]).strip()
                 if table_name:
@@ -460,7 +466,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                     "message": "No agent available for Excel export.",
                 },
             }
-        tables = state.get("tables", []) or intent.get("tables", []) or []
+        tables = (state.get("table_schema") or {}).get("tables") or intent.get("tables") or []
         if not tables:
             return {
                 **state,
@@ -540,7 +546,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
             or _looks_schema_or_columns_question(ql)
         )
         if schema_like and agent:
-            tables = state.get("tables", []) or intent.get("tables", []) or []
+            tables = (state.get("table_schema") or {}).get("tables") or intent.get("tables") or []
             if tables:
                 table_name = str(tables[0]).strip()
                 if table_name:
@@ -569,18 +575,51 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
         db_type = detect_db_type(agent)
         attached = extract_attached_files_context_block(user_message)
         messages = [{"role": "system", "content": get_select_system_prompt(db_type)}]
-        tables_resolved = state.get("tables", []) or intent.get("tables", []) or []
-        if tables_resolved:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": (
-                        "Valid SQLite table identifier(s) for this session (use exactly as given, "
-                        "including double-quotes if the name has mixed case): "
-                        + ", ".join(str(t) for t in tables_resolved)
-                    ),
-                }
-            )
+
+        # --- Allowed tables injection ---
+        # all_tables: every table returned by list_tables during schema_discovery.
+        # Stored inside table_schema to avoid extra top-level state fields.
+        all_db_tables: list[str] = [
+            str(t).strip()
+            for t in ((state.get("table_schema") or {}).get("all_tables") or [])
+            if str(t).strip()
+        ]
+
+        # session_file_pairs: (filename, table_name) from [SESSION FILE TABLES] block (DB+file mode).
+        session_file_pairs = _session_file_tables_from_hint_block(user_message)
+        session_file_table_names = {tname for _, tname in session_file_pairs}
+
+        # Split all_db_tables into primary-DB tables and session-file tables.
+        primary_db_tables = [t for t in all_db_tables if t not in session_file_table_names and not t.startswith("t_")]
+        # session file tables already in all_db_tables (via list_tables filter).
+        session_tables_in_db = [t for t in all_db_tables if t.startswith("t_")]
+
+        # Build constraint block whenever we have any table info.
+        if all_db_tables or session_file_pairs:
+            constraint_lines: list[str] = [
+                "ALLOWED TABLES — your SQL MUST reference ONLY the table names listed below.",
+                "Do NOT use information_schema, pg_catalog, pg_tables, sqlite_master,",
+                "  or ANY system/metadata tables — even to count tables.",
+                "Do NOT use filenames or invented names as table identifiers.",
+                "To answer 'how many tables': count the entries in this list, do not query system tables.",
+                "",
+            ]
+            if primary_db_tables:
+                constraint_lines.append("Primary database tables:")
+                for t in primary_db_tables:
+                    constraint_lines.append(f"  - `{t}`")
+                constraint_lines.append("")
+            # Session file tables — show with filename hint when available.
+            session_tname_to_fname = {tname: fname for fname, tname in session_file_pairs}
+            all_session_tables = list(dict.fromkeys(session_tables_in_db + list(session_file_table_names)))
+            if all_session_tables:
+                constraint_lines.append("Session-file tables (use these EXACT identifiers):")
+                for t in all_session_tables:
+                    fname_hint = session_tname_to_fname.get(t, "")
+                    suffix = f"  ← from file: {fname_hint}" if fname_hint else ""
+                    constraint_lines.append(f"  - `{t}`{suffix}")
+            messages.append({"role": "system", "content": "\n".join(constraint_lines)})
+
         if attached:
             messages.append({"role": "system", "content": attached})
         messages.append({"role": "user", "content": effective_message})

@@ -35,6 +35,9 @@ class OrchestratorState(TypedDict, total=False):
     project_id: Optional[str]
     user_id: Optional[str]
     allowed_db_uri: Optional[str]
+    # When user picks a specific file from the DataSource selector, its SQLite table name
+    # is injected here so intent classification uses it as an authoritative table_hint.
+    active_file_table_hint: Optional[str]
 
 
 class Orchestrator:
@@ -123,6 +126,12 @@ class Orchestrator:
             conversation_summary=conversation_summary,
         )
         ir = intent_result.to_dict()
+        # If user explicitly selected a file as the active data source, its SQLite table
+        # name takes precedence over whatever the LLM inferred as table_hint.
+        forced_hint = str(state.get("active_file_table_hint") or "").strip()
+        if forced_hint:
+            ir["table_hint"] = forced_hint
+            logger.info("[Orchestrator] active_file_table_hint overrides table_hint → %s", forced_hint)
         primary_agent = intent_result.agent_type or intent_result.fallback_agent or "database"
         return {
             **state,
@@ -458,6 +467,7 @@ class Orchestrator:
         project_id: Optional[str] = None,
         user_id: Optional[str] = None,
         allowed_db_uri: Optional[str] = None,
+        active_file_table_hint: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process query through top-level LangGraph orchestrator."""
         if not session_id:
@@ -474,6 +484,7 @@ class Orchestrator:
                     "project_id": project_id,
                     "user_id": user_id,
                     "allowed_db_uri": allowed_db_uri,
+                    "active_file_table_hint": active_file_table_hint or None,
                 }
             )
         except Exception as e:
@@ -810,7 +821,7 @@ class Orchestrator:
         return "disconnect_db tool not found in any session"
 
     async def connect_to_project_db(self, db_url: str) -> str:
-        """Connect the database agent to a project's SQLite database."""
+        """Connect the database agent to a project's SQLite database (sets primary adapter)."""
         db_agent = self._agents.get("database")
         if not db_agent:
             return "No database agent available"
@@ -828,6 +839,60 @@ class Orchestrator:
                 continue
 
         return "connect_sqlite tool not found in any session"
+
+    async def connect_session_file_db(self, db_url: str, allowed_tables: Optional[str] = None) -> str:
+        """Connect a session-file SQLite as the *session* adapter WITHOUT overriding the primary DB.
+
+        Use this when the user has selected both their primary database and an uploaded
+        file — the primary adapter stays intact and both can be queried simultaneously.
+
+        Args:
+            db_url: Path / URL of the session SQLite file.
+            allowed_tables: Comma-separated list of table names to expose from this file.
+                When provided, ``list_tables`` on the session adapter will only show these
+                tables so the LLM cannot accidentally reference tables from other uploads.
+        """
+        db_agent = self._agents.get("database")
+        if not db_agent:
+            return "No database agent available"
+
+        tool_args: dict = {"file_path": db_url}
+        if allowed_tables:
+            tool_args["allowed_tables"] = allowed_tables
+
+        for server_name, session in db_agent.sessions.items():
+            try:
+                result = await session.call_tool("connect_session_sqlite", tool_args)
+                result_content = result.content
+                if not isinstance(result_content, str):
+                    result_content = str(result_content)
+                logger.info(f"[Orchestrator] connect_session_sqlite result: {result_content}")
+                return result_content
+            except Exception as e:
+                logger.debug(f"[Orchestrator] connect_session_sqlite not found in {server_name}: {e}")
+                continue
+
+        return "connect_session_sqlite tool not found in any session"
+
+    async def disconnect_session_file_db(self) -> str:
+        """Disconnect the session-file SQLite adapter so subsequent queries only see the primary DB."""
+        db_agent = self._agents.get("database")
+        if not db_agent:
+            return "No database agent available"
+
+        for server_name, session in db_agent.sessions.items():
+            try:
+                result = await session.call_tool("disconnect_session_sqlite", {})
+                result_content = result.content
+                if not isinstance(result_content, str):
+                    result_content = str(result_content)
+                logger.info(f"[Orchestrator] disconnect_session_sqlite result: {result_content}")
+                return result_content
+            except Exception as e:
+                logger.debug(f"[Orchestrator] disconnect_session_sqlite not found in {server_name}: {e}")
+                continue
+
+        return "disconnect_session_sqlite tool not found in any session"
 
     async def connect_chart_to_project_db(self, db_url: str) -> str:
         """Set the active database connection on the chart-server for this user's

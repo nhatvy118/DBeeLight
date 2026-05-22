@@ -149,20 +149,36 @@ def delete_sql_to_select_preview(delete_sql: str) -> Optional[str]:
 
 
 def update_sql_to_select_preview(update_sql: str) -> Optional[str]:
-    """Map UPDATE ... SET ... [WHERE ...] to a bounded SELECT * for row preview."""
+    """Map UPDATE ... SET ... [WHERE ...] to a bounded SELECT * for row preview.
+
+    Handles multiple UPDATE statements by combining all WHERE conditions with OR
+    so the preview shows every row that would be affected.
+    """
     s = strip_sql_fences((update_sql or "").strip().rstrip(";"))
+    # Extract table name from the first UPDATE statement.
     m = re.match(r"^\s*UPDATE\s+([`\"\w.]+)\s+SET\b", s, re.IGNORECASE | re.DOTALL)
     if not m:
         return None
     table_ref = m.group(1).strip()
-    parts = re.split(r"\bWHERE\b", s, flags=re.IGNORECASE)
-    if len(parts) >= 2:
-        where_clause = parts[-1].strip().rstrip(";")
-        if ";" in where_clause:
-            return None
+
+    # Collect every WHERE clause across all UPDATE statements.
+    # Pattern: WHERE <condition> followed by ; or end-of-string or next UPDATE.
+    where_conditions = re.findall(
+        r"\bWHERE\b\s+(.*?)(?=\s*;|\s*$)",
+        s,
+        re.IGNORECASE | re.DOTALL,
+    )
+    conditions = [c.strip() for c in where_conditions if c.strip()]
+
+    if conditions:
+        if len(conditions) == 1:
+            where_clause = conditions[0]
+        else:
+            where_clause = " OR ".join(f"({c})" for c in conditions)
         sel = f"SELECT * FROM {table_ref} WHERE {where_clause}"
     else:
         sel = f"SELECT * FROM {table_ref}"
+
     if "LIMIT" not in sel.upper():
         sel = f"{sel.rstrip(';')} LIMIT {_DELETE_PREVIEW_ROW_CAP}"
     return sel
@@ -559,13 +575,25 @@ def is_execute_query_error_response(text: str) -> bool:
 
 
 def friendly_mutation_preview_error(raw: str) -> str:
-    """Short user-facing message when preview SELECT fails (e.g. missing table)."""
+    """Short user-facing message when preview SELECT fails (e.g. missing table/column)."""
     r = (raw or "").strip()
     low = r.lower()
+    # Distinguish column errors from table errors — PostgreSQL uses "does not exist" for both.
+    if "column" in low and "does not exist" in low:
+        return (
+            "**Column not found** in the table (or the column name is misspelled). "
+            "Please check the column name in the SQL statement.\n\n"
+            f"Details: {r[:400]}"
+        )
     if "does not exist" in low or "no such table" in low or "unknown table" in low:
         return (
-            "**Bảng không tồn tại** trong database đang kết nối (hoặc sai tên). "
-            "Hãy tạo bảng hoặc kiểm tra chính tả trước khi thêm cột / sửa dữ liệu."
+            "**Table does not exist** in the connected database (or the name is misspelled). "
+            "Please create the table or check the spelling before modifying data."
+        )
+    if "syntax error" in low:
+        return (
+            "**SQL syntax error** in the preview query.\n\n"
+            f"Details: {r[:400]}"
         )
     return (
         "**Không thể tải preview** (truy vấn đọc thất bại).\n\n"
