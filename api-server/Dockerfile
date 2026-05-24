@@ -52,13 +52,16 @@ FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/app/api-server/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+    PATH="/app/api-server/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Runtime OS deps only — no compilers.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
         libpq5 curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r app && useradd -r -g app -d /app -s /bin/bash app
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r app \
+    && useradd -r -g app -d /app -s /bin/bash app
 
 WORKDIR /app
 
