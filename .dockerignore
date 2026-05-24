@@ -33,10 +33,25 @@ Thumbs.db
 # User-uploaded data (mounted as volume in dev; lives in S3 in prod)
 api-server/file_handle
 api-server/temp_dbs
+api-server/databases
+api-server/internal/temp_dbs
+api-server/internal/databases
 
 # CI / test scratch
 test_file
 **/tests/__pycache__
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+
+# Logs / sessions
+**/*.log
+**/logs
+
+# Docs / markdown (not needed in image)
+**/README.md
+**/*.md
+!api-server/README.md
 
 # Local Docker artifacts
 docker-compose.override.yml
