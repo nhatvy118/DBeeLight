@@ -49,9 +49,13 @@ test_file
 **/logs
 
 # Docs / markdown (not needed in image)
+# Keep READMEs that pyproject.toml declares as build-time readme files, otherwise
+# hatchling fails the editable install with "Readme file does not exist".
 **/README.md
 **/*.md
 !api-server/README.md
+!mcp-client/README.md
+!mcp-client/servers/*/README.md
 
 # Local Docker artifacts
 docker-compose.override.yml
