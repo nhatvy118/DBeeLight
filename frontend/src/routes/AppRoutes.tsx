@@ -77,11 +77,20 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
     return { projectId: null, sessionId: null };
   };
 
+  // Public routes — render regardless of auth state.
   if (path === '/login') return <Login />;
   if (path.startsWith('/share/accept/')) {
     const token = path.slice('/share/accept/'.length);
     return <AcceptShare token={decodeURIComponent(token)} />;
   }
+
+  // Auth gate for everything below. While the /api/auth/me check is in flight
+  // we render nothing — prevents a flash of the Chat empty state for users
+  // who turn out to be logged out. Once the check resolves and there's no
+  // user, fall through to <Login /> (the useEffect above also rewrites the URL).
+  if (isLoading) return null;
+  if (!user) return <Login />;
+
   // Print-friendly view of a chat session: ``/chat/.../print``. Used as the
   // PDF export path — the page auto-triggers ``window.print()`` and the user
   // saves to PDF via the browser dialog.

@@ -177,8 +177,10 @@ export default function Header() {
       } catch {
         // ignore if storage is blocked
       }
-      window.history.pushState({}, '', '/login');
-      window.dispatchEvent(new PopStateEvent('popstate'));
+      // Hard navigation — fully unmount the Chat tree so no stale React state
+      // (open sessions, pending requests, cached project data) leaks across
+      // user identities. Cheaper and safer than reconciling everything.
+      window.location.assign('/login');
     }
   };
 
