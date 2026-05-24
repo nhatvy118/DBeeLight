@@ -234,10 +234,16 @@ async def schema_preview(state: AgentState, llm, agent) -> AgentState:
             reason=str(e),
         )
 
+    tables = list((state.get("intent") or {}).get("tables") or [])
     return {
         **state,
         "wait_user": False,
         "current_stage": "SCHEMA_PREVIEW",
+        "table_schema": {
+            "tables": tables,
+            "schema_mode": "new_table",
+            "schema_preview_text": str(schema_response or "").strip(),
+        },
         "output": {
             "type": "schema_preview",
             "message": schema_response,
@@ -294,12 +300,31 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
     effective_message = str(intent.get("resolved_query") or state.get("user_message", ""))
     operation = str(intent.get("operation", "CREATE")).upper()
 
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": get_create_table_system_prompt(db_type)},
+    ]
+    ts = state.get("table_schema") or {}
+    preview_text = str(ts.get("schema_preview_text") or "").strip()
+    if preview_text:
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "User-approved table definition (generate CREATE TABLE SQL that matches this):\n\n"
+                    + preview_text
+                ),
+            }
+        )
+    messages.append(
+        {
+            "role": "user",
+            "content": f"Operation: {operation}\nTables: {intent.get('tables')}\nRequest: {effective_message}",
+        }
+    )
+
     response = llm.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": get_create_table_system_prompt(db_type)},
-            {"role": "user", "content": f"Operation: {operation}\nTables: {intent.get('tables')}\nRequest: {effective_message}"},
-        ],
+        messages=messages,
         temperature=0,
     )
 

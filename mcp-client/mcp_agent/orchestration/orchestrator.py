@@ -584,6 +584,9 @@ class Orchestrator:
         self,
         session_id: str,
         approved: bool = True,
+        *,
+        sql: str | None = None,
+        lang: str = "en",
     ) -> Dict[str, Any]:
         """Resume workflow after user approval via LangGraph Command(resume=).
 
@@ -620,6 +623,7 @@ class Orchestrator:
             }
 
         output = workflow_state.get("output", {})
+        output_type = output.get("type", "") if isinstance(output, dict) else ""
         if isinstance(output, dict):
             response = output.get("message", str(output))
         else:
@@ -627,6 +631,16 @@ class Orchestrator:
 
         current_stage = workflow_state.get("current_stage", "")
         pending_workflow_resume = current_stage in ("SCHEMA_PREVIEW", "SCHEMA_APPROVAL", "SQL_PREVIEW")
+
+        # Workflow already ended at DONE with preview only (e.g. stale error routing) — run SQL directly.
+        if approved and output_type == "sql_preview" and not pending_workflow_resume:
+            sql_to_run = (sql or workflow_state.get("sql") or "").strip()
+            if sql_to_run:
+                logger.warning(
+                    "[Orchestrator] Resume returned sql_preview at stage=%s; executing SQL directly",
+                    current_stage,
+                )
+                return await self.execute_sql(sql_to_run, lang=lang)
 
         return {
             "response": response,

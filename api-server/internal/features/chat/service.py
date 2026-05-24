@@ -1205,7 +1205,12 @@ class ChatService:
             if hasattr(agent, 'approve_and_execute'):
                 session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
                 current_session_id = session_info.get("session_id") if session_info else None
-                result = await agent.approve_and_execute(session_id=current_session_id, approved=True)
+                result = await agent.approve_and_execute(
+                    session_id=current_session_id,
+                    approved=True,
+                    sql=query,
+                    lang=lang,
+                )
 
                 # Approval preview state is stored in SessionManager (persisted).
                 # If the server reloaded or state is missing, fallback to executing the SQL
@@ -1213,10 +1218,28 @@ class ChatService:
                 approve_result_text = str(result.get("response", "")) if isinstance(result, dict) else str(result)
                 approve_missing_state = approve_result_text.strip().startswith("Session ") and " not found" in approve_result_text
                 approve_no_sql = (approve_result_text.strip() == "No SQL to execute")
-                if approve_missing_state or approve_no_sql:
+                ws_output = {}
+                if isinstance(result, dict):
+                    ws = result.get("workflow_state") or {}
+                    if isinstance(ws, dict):
+                        ws_output = ws.get("output") or {}
+                still_preview = (
+                    isinstance(ws_output, dict)
+                    and ws_output.get("type") == "sql_preview"
+                    and not any(
+                        (e or {}).get("type") == "sql_execution"
+                        for e in (result.get("tool_events") or [])
+                        if isinstance(e, dict)
+                    )
+                )
+                if approve_missing_state or approve_no_sql or still_preview:
                     logger.warning(
                         "UseCase: approval path unusable (%s), falling back to direct execute_sql. session_id=%s",
-                        "no session" if approve_missing_state else "no pending sql",
+                        (
+                            "no session"
+                            if approve_missing_state
+                            else ("still preview" if still_preview else "no pending sql")
+                        ),
                         current_session_id,
                     )
                     result = await agent.execute_sql(query, lang=lang)

@@ -212,43 +212,99 @@ Return JSON."""
 
 
 async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
-    """Discover schema for relevant tables."""
-    tables = list((state.get("intent") or {}).get("tables") or [])
-    logger.info(f"[Mutation] Schema discovery for: {tables}")
+    """Load schema context by operation: existing rows, ALTER (existing + new cols), or CREATE (new table)."""
+    intent = state.get("intent") or {}
+    operation = str(intent.get("operation", "INSERT")).strip().upper()
+    tables = list(intent.get("tables") or [])
+    logger.info(f"[Mutation] Schema discovery for: {tables} (operation={operation})")
 
     if not agent:
         return {**state, "table_schema": {}}
 
+    from mcp_agent.graph.database_utils import parse_table_names_from_list_tools
+
     log_lines: list[str] = []
+    tables_result = ""
     try:
         tables_result = await _call_tool(agent, "list_tables", {})
         log_lines.append(f"list_tables: {tables_result}")
     except Exception as e:
         log_lines.append(f"list_tables error: {e}")
 
+    all_tables = parse_table_names_from_list_tools(tables_result)
+    all_lower = {t.lower() for t in all_tables}
+    tables_work = [str(t).strip() for t in tables if str(t).strip()]
+
+    # CREATE TABLE via mutation (prefer db_create_table workflow): table must not exist yet.
+    if operation == "CREATE":
+        already = [t for t in tables_work if t.lower() in all_lower]
+        if already:
+            names = ", ".join(f"`{t}`" for t in already)
+            msg = (
+                f"**Table already exists:** {names}\n\n"
+                "Use INSERT/UPDATE on this table, or pick a new name for CREATE TABLE.\n\n"
+                f"**Existing tables:** {', '.join(f'`{t}`' for t in all_tables[:40])}"
+            )
+            return {
+                **state,
+                "schema_discovery_failed": True,
+                "error": f"Table(s) already exist: {', '.join(already)}",
+                "output": {"type": "error", "message": msg},
+                "table_schema": {
+                    "tables": tables_work,
+                    "all_tables": list(all_tables),
+                    "descriptions": {},
+                    "schema_mode": "new_table",
+                },
+            }
+        log_block = "\n".join(log_lines)
+        logger.info("[Mutation] CREATE — skip describe_table (new table)")
+        return {
+            **state,
+            "intent": {**intent, "tables": tables_work},
+            "table_schema": {
+                "tables": tables_work,
+                "all_tables": list(all_tables),
+                "descriptions": {},
+                "schema_mode": "new_table",
+            },
+        }
+
     missing: list[str] = []
-    for t in tables:
-        name = str(t).strip()
-        if not name:
-            continue
+    descriptions: dict[str, str] = {}
+    schema_mode = "alter_table" if operation == "ALTER" else "existing_table"
+
+    for name in list(dict.fromkeys(tables_work)):
         try:
             d = await _call_tool(agent, "describe_table", {"table_name": name})
             log_lines.append(f"describe_table({name}): {d}")
-            if not _describe_table_succeeded(d):
+            if _describe_table_succeeded(d):
+                descriptions[name] = str(d).strip()
+            elif name in tables_work:
                 missing.append(name)
         except Exception as e:
             log_lines.append(f"describe_table({name}) error: {e}")
-            missing.append(name)
+            if name in tables_work:
+                missing.append(name)
 
     log_block = "\n".join(log_lines)
     logger.info(f"[Mutation] Schema discovery response: {log_block[:500]}...")
 
+    table_schema = {
+        "tables": tables_work,
+        "all_tables": list(all_tables),
+        "descriptions": descriptions,
+        "schema_mode": schema_mode,
+    }
+
     if missing:
         miss_fmt = ", ".join(f"{m}" for m in missing)
+        available = ", ".join(f"`{t}`" for t in all_tables[:40]) if all_tables else "(none)"
         msg = (
             f"**Unknown table(s):** {miss_fmt}\n\n"
             "Those tables are not in the connected database. "
             "Fix the table name or create the table before continuing.\n\n"
+            f"**Available tables:** {available}\n\n"
             "**Discovery log:**\n\n\n"
             f"{log_block[:8000]}\n\n"
         )
@@ -260,12 +316,14 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
                 "type": "error",
                 "message": msg,
             },
-            "table_schema": {"tables": tables, "missing": missing},
+            "table_schema": {**table_schema, "missing": missing},
         }
 
+    intent_patch = {**(state.get("intent") or {}), "tables": tables_work}
     return {
         **state,
-        "table_schema": {"tables": tables},
+        "intent": intent_patch,
+        "table_schema": table_schema,
     }
 
 
@@ -282,23 +340,38 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
             "output": {"type": "error", "message": "No agent available"},
         }
 
-    from mcp_agent.graph.database_utils import detect_db_type, get_sql_system_prompt
-    # db_type = detect_db_type(agent)
-    db_type = "postgres"
+    from mcp_agent.graph.database_utils import (
+        detect_db_type,
+        get_sql_system_prompt,
+        build_mutation_schema_context_block,
+    )
+    db_type = detect_db_type(agent)
 
-    # Generate SQL
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": get_sql_system_prompt(db_type, operation=operation)},
+    ]
+    schema_block = build_mutation_schema_context_block(
+        state.get("table_schema") or {},
+        operation=operation,
+    )
+    if schema_block:
+        messages.append({"role": "system", "content": schema_block})
+        logger.info("[Mutation] SQL generation schema context (%d chars)", len(schema_block))
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                f"Operation: {operation}\n"
+                f"Target tables: {intent.get('tables')}\n"
+                f"Filters: {intent.get('filters')}\n"
+                f"Request: {effective_message}"
+            ),
+        }
+    )
+
     response = llm.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": get_sql_system_prompt(db_type),
-            },
-            {
-                "role": "user",
-                "content": f"Operation: {operation}\nTables: {intent.get('tables')}\nFilters: {intent.get('filters')}\nRequest: {effective_message}"
-            }
-        ],
+        messages=messages,
         temperature=0,
     )
 
@@ -354,6 +427,9 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
     return {
         **state,
         "sql": sql,
+        "error": None,
+        "schema_discovery_failed": False,
+        "current_stage": "SQL_PREVIEW",
         "wait_user": False,
         "output": out,
     }
@@ -534,6 +610,7 @@ async def sql_approval(state: AgentState, _llm, _agent) -> AgentState:
     return {
         **state,
         "approved": True,
+        "current_stage": "SQL_PREVIEW",
         "wait_user": False,
     }
 
@@ -683,9 +760,16 @@ class MutationWorkflow:
         async def done_handler(state):
             return {**state, "current_stage": StageType.DONE.value}
 
+        def route_after_schema(state):
+            """Stop before SQL generation when schema discovery failed."""
+            out = state.get("output") or {}
+            if state.get("schema_discovery_failed") or out.get("type") == "error":
+                return StageType.DONE.value
+            return "SQL_PREVIEW"
+
         def route_after_preview(state):
-            """Skip approval when sql_preview already returned an error."""
-            if state.get("error") or (state.get("output") or {}).get("type") == "error":
+            """Skip approval only when sql_preview returned an error output."""
+            if (state.get("output") or {}).get("type") == "error":
                 return StageType.DONE.value
             return "SQL_APPROVAL"
 
@@ -698,7 +782,11 @@ class MutationWorkflow:
 
         workflow.set_entry_point("INTENT_PARSE")
         workflow.add_edge("INTENT_PARSE", "SCHEMA_DISCOVERY")
-        workflow.add_edge("SCHEMA_DISCOVERY", "SQL_PREVIEW")
+        workflow.add_conditional_edges(
+            "SCHEMA_DISCOVERY",
+            route_after_schema,
+            {"SQL_PREVIEW": "SQL_PREVIEW", StageType.DONE.value: StageType.DONE.value},
+        )
         workflow.add_conditional_edges(
             "SQL_PREVIEW",
             route_after_preview,
@@ -736,8 +824,19 @@ class MutationWorkflow:
         }
         if resume is not None:
             raw = await graph.ainvoke(Command(resume=resume), cfg, version=GRAPH_INVOKE_VERSION)
-            # Always read authoritative full state from checkpointer after resume.
-            hydrated = await _read_state_from_checkpoint(graph, cfg)
+            normalized = _normalize_graph_result(raw)
+            hydrated = await _hydrate_from_checkpoint(graph, cfg, normalized)
+            try:
+                snap = await graph.aget_state(cfg)
+                tasks = getattr(snap, "tasks", None) if snap else None
+                if isinstance(tasks, list):
+                    for t in tasks:
+                        interrupts = getattr(t, "interrupts", None)
+                        if interrupts:
+                            hydrated["__interrupt__"] = interrupts
+                            break
+            except Exception:
+                pass
         else:
             state = create_initial_state(session_id, user_message, "database")
             raw = await graph.ainvoke(state, cfg, version=GRAPH_INVOKE_VERSION)

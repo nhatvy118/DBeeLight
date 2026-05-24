@@ -37,19 +37,124 @@ def detect_db_type(agent) -> str:
     return "postgresql"
 
     
-def get_sql_system_prompt(db_type: str) -> str:
+def parse_table_names_from_list_tools(text: str) -> list[str]:
+    """Parse MCP ``list_tables`` text like ``Tables in database: a, b``."""
+    s = (text or "").strip()
+    if not s:
+        return []
+    m = re.search(r"tables?\s+in\s+database:\s*(.+?)(?:\n|$)", s, re.I | re.DOTALL)
+    if not m:
+        return []
+    rest = m.group(1).strip()
+    return [t.strip() for t in re.split(r"[\s,]+", rest) if t.strip()]
+
+
+def build_mutation_schema_context_block(
+    table_schema: dict[str, Any],
+    *,
+    operation: str = "",
+) -> str:
+    """Format schema context for mutation SQL generation (operation-aware)."""
+    if not table_schema:
+        return ""
+
+    schema_mode = str(table_schema.get("schema_mode") or "existing_table").strip()
+    op = str(operation or "").strip().upper()
+    if op == "CREATE":
+        schema_mode = "new_table"
+    elif op == "ALTER":
+        schema_mode = "alter_table"
+
+    target_tables = [
+        str(t).strip()
+        for t in (table_schema.get("tables") or [])
+        if str(t).strip()
+    ]
+    descriptions = table_schema.get("descriptions") or {}
+    if not isinstance(descriptions, dict):
+        descriptions = {}
+
+    if schema_mode == "new_table":
+        if not target_tables:
+            return (
+                "NEW TABLE — no existing table schema. "
+                "Define the full CREATE TABLE statement from the user request."
+            )
+        names = ", ".join(f"`{t}`" for t in target_tables)
+        return (
+            f"NEW TABLE — `{names}` does not exist yet.\n"
+            "Define all columns and types from the user request. "
+            "Do not copy column names from other tables unless the user asked."
+        )
+
+    if not target_tables:
+        return ""
+
+    lines: list[str] = []
+    if schema_mode == "alter_table":
+        lines.extend(
+            [
+                "ALTER TABLE — below are EXISTING columns on the target table(s).",
+                "The user may ADD or RENAME columns; those new names are NOT listed below.",
+                "Use existing names when referencing current columns; use the user request for new names/types.",
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "TARGET TABLE SCHEMA — use ONLY the table name(s) and columns listed below.",
+                "Do NOT invent column names.",
+                "",
+            ]
+        )
+
+    for t in target_tables:
+        desc = descriptions.get(t)
+        if not isinstance(desc, str) or not desc.strip():
+            continue
+        lines.append(f"Table `{t}` existing columns:")
+        lines.append(desc.strip())
+        lines.append("")
+
+    if len(lines) <= 3:
+        return ""
+    return "\n".join(lines).strip()
+
+
+def get_sql_system_prompt(db_type: str, *, operation: str = "") -> str:
     """Return SQL generation system prompt for the given database type."""
+    op = str(operation or "").strip().upper()
+    if op == "CREATE":
+        schema_rule = (
+            "You are creating a new table. Column names and types come from the user request "
+            "(and NEW TABLE notes if present), not from existing tables. "
+            "Return ONLY the SQL, no markdown."
+        )
+    elif op == "ALTER":
+        schema_rule = (
+            "An ALTER TABLE SCHEMA section lists existing columns only. "
+            "New or renamed columns are defined in the user request. "
+            "Return ONLY the SQL, no markdown."
+        )
+    else:
+        schema_rule = (
+            "A TARGET TABLE SCHEMA section lists existing columns on the target table. "
+            "Use ONLY those exact table and column names. "
+            "For INSERT, include every NOT NULL column that has no DEFAULT unless it is auto-generated. "
+            "Return ONLY the SQL, no markdown."
+        )
     if db_type == "postgresql":
         return (
             "You are a PostgreSQL expert. Generate SQL query using PostgreSQL syntax. "
             "Use SERIAL or BIGSERIAL for auto-increment primary keys, not AUTOINCREMENT. "
-            "Return ONLY the SQL, no markdown."
+            + schema_rule
         )
     # Default to SQLite
     return (
         "You are a SQLite expert. Generate SQL query using SQLite syntax. "
         "Use INTEGER PRIMARY KEY AUTOINCREMENT for auto-increment primary keys. "
-        "Return ONLY the SQL, no markdown."
+        + schema_rule
     )
 
 

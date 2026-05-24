@@ -32,9 +32,8 @@ class AgentState(TypedDict):
     orchestrator_intent: NotRequired[Optional[Dict[str, Any]]]
 
     # Database-specific state
-    # table_schema  — {"tables": [...targeted for this query...], "all_tables": [...all physical...]}
-    #                 "tables"     set by schema_discovery (refined from intent["tables"])
-    #                 "all_tables" populated by schema_discovery from list_tables output
+    # table_schema  — tables, all_tables, descriptions, schema_mode:
+    #                 existing_table | alter_table | new_table (controls LLM schema block)
     table_schema: Dict[str, Any]
     sql: Optional[str]
     query_result: Optional[Any]
