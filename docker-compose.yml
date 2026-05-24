@@ -1,5 +1,14 @@
-# Docker Compose for mcp-server
-# Usage: docker compose up -d
+# Local dev stack — postgres, redis, api-server, frontend.
+#
+# Usage:
+#   1. cp api-server/.env.example api-server/.env  (fill OPENAI_API_KEY, GOOGLE_*, SESSION_SECRET)
+#   2. docker compose up --build
+#   3. Open http://localhost:8080
+#
+# Migrations: docker compose exec api-server make migrate-up
+#
+# In production (EC2): DB_URL points at RDS, REDIS_URL may point at ElastiCache,
+# uploads should go to S3 — override via .env, not by editing this file.
 
 x-common: &common
   logging:
@@ -9,15 +18,76 @@ x-common: &common
   restart: unless-stopped
 
 services:
-  # Redis for mcp-server sessions
+  postgres:
+    <<: *common
+    image: postgres:16-alpine
+    container_name: dbeelight-postgres
+    environment:
+      POSTGRES_USER: dbeelight
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: dbeelight_app
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbeelight -d dbeelight_app"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     <<: *common
     image: redis:7-alpine
-    container_name: redis
+    container_name: dbeelight-redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api-server:
+    <<: *common
+    build:
+      # Build from monorepo root so mcp-client (local editable dep) is visible.
+      context: .
+      dockerfile: api-server/Dockerfile
+    container_name: dbeelight-api
+    env_file:
+      - ./api-server/.env
+    # Compose env wins over .env — wire service DNS for inter-container calls.
+    environment:
+      DB_URL: postgres://dbeelight:postgres@postgres:5432/dbeelight_app?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "5001:5001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Persist user-uploaded files across container restarts (MVP).
+      # In prod swap with S3 storage backend.
+      - ./api-server/file_handle:/app/api-server/file_handle
+
+  frontend:
+    <<: *common
+    build:
+      context: ./frontend
+      args:
+        # Same-origin: nginx in the frontend container proxies /api → api-server.
+        VITE_API_URL: ""
+    container_name: dbeelight-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - api-server
 
 volumes:
+  postgres_data:
   redis_data:

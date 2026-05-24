@@ -57,11 +57,15 @@ def create_app() -> FastAPI:
 
     # Session cookie (used for OAuth login state + user session)
     # IMPORTANT: set SESSION_SECRET in production.
+    # Cross-origin frontend (e.g. Vercel) requires SameSite=None + Secure,
+    # otherwise the browser drops the session cookie on /api/* requests.
+    session_same_site = os.getenv("SESSION_SAME_SITE", "lax").lower()
+    session_https_only = bool(os.getenv("SESSION_HTTPS_ONLY", "").strip())
     app.add_middleware(
         SessionMiddleware,
         secret_key=os.getenv("SESSION_SECRET", "dev-session-secret-change-me"),
-        same_site="lax",
-        https_only=bool(os.getenv("SESSION_HTTPS_ONLY", "").strip()),
+        same_site=session_same_site,
+        https_only=session_https_only,
     )
 
     # CORS

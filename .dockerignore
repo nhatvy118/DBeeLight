@@ -1,0 +1,42 @@
+# VCS
+.git
+.gitignore
+
+# Python
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/venv
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+
+# Node
+**/node_modules
+**/dist
+**/build
+**/.vite
+
+# Env files — never bake secrets into images; mount via env_file/secrets at runtime
+**/.env
+**/.env.local
+**/.env.production
+**/.env.development
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.swp
+
+# User-uploaded data (mounted as volume in dev; lives in S3 in prod)
+api-server/file_handle
+api-server/temp_dbs
+
+# CI / test scratch
+test_file
+**/tests/__pycache__
+
+# Local Docker artifacts
+docker-compose.override.yml
