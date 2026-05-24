@@ -20,7 +20,7 @@ x-common: &common
 services:
   postgres:
     <<: *common
-    image: pgvector/pgvector:pg17
+    image: postgres:17-alpine
     container_name: dbeelight-postgres
     environment:
       POSTGRES_USER: dbeelight
@@ -75,18 +75,18 @@ services:
       # In prod swap with S3 storage backend.
       - ./api-server/file_handle:/app/api-server/file_handle
 
-  # frontend:
-  #   <<: *common
-  #   build:
-  #     context: ./frontend
-  #     args:
-  #       # Same-origin: nginx in the frontend container proxies /api → api-server.
-  #       VITE_API_URL: ""
-  #   container_name: dbeelight-frontend
-  #   ports:
-  #     - "8080:80"
-  #   depends_on:
-  #     - api-server
+  frontend:
+    <<: *common
+    build:
+      context: ./frontend
+      args:
+        # Same-origin: nginx in the frontend container proxies /api → api-server.
+        VITE_API_URL: ""
+    container_name: dbeelight-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - api-server
 
 volumes:
   postgres_data:
