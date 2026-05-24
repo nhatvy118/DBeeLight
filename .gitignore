@@ -14,10 +14,10 @@ wheels/
 *.dylib
 
 # Virtual environments
-.venv/
-venv/
-ENV/
-env/
+**/.venv/
+**/venv/
+**/ENV/
+**/env/
 .env
 .env.local
 .env.*.local
