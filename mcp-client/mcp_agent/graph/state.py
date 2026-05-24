@@ -84,7 +84,6 @@ class AgentContext(BaseModel):
 
     # Intent
     intent: Dict[str, Any] = Field(default_factory=dict)
-    detected_language: str = "en"
 
     # Database context
     tables: List[str] = Field(default_factory=list)

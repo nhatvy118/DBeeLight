@@ -18,7 +18,7 @@ class ChartAgent(BaseAgent):
 
     def __init__(
         self,
-        model: str = "gpt-4o-mini",
+        model: str = "gpt-5.2",
         session_manager: Optional[SessionManager] = None,
         agent_id: str = "chart",
     ):
@@ -32,10 +32,6 @@ class ChartAgent(BaseAgent):
 
     def _build_system_prompt(self) -> str:
         return r"""You are a Chart Agent. You help users visualize data from the active project's database with interactive Vega-Lite v5 charts.
-
-## Language Rule
-
-Default to English. Switch to Vietnamese ONLY if the user's LATEST message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "biểu đồ", "danh sách", "doanh thu"). Do not switch based on prior turns or mixed-language input.
 
 ## Active Database
 

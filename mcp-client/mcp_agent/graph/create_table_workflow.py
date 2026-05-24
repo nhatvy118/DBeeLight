@@ -169,14 +169,13 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
     recent_context = await _get_recent_session_context(agent)
 
     response = llm.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5.2",
         messages=[
             {
                 "role": "system",
                 "content": """Analyze the database request and extract:
 - operation: CREATE, SELECT, INSERT, UPDATE, DELETE, etc.
 - tables: list of every table name referenced
-- detected_language: "en" by default. Use "vi" ONLY if the LATEST user message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "truy vấn", "kết nối", "danh sách"). Ignore conversation history. Short English-keyword queries like "list tables" → "en".
 - resolved_query: rewrite latest user message into a self-contained request
 
 Return JSON."""
@@ -203,14 +202,12 @@ Return JSON."""
     safe_intent = {
         "operation": operation,
         "tables": intent.get("tables", []),
-        "detected_language": intent.get("detected_language", "en"),
         "resolved_query": str(intent.get("resolved_query") or user_message).strip(),
     }
 
     return {
         **state,
         "intent": safe_intent,
-        "detected_language": safe_intent.get("detected_language", "en"),
         "followup_context": recent_context,
     }
 
@@ -230,7 +227,6 @@ async def schema_preview(state: AgentState, llm, agent) -> AgentState:
         schema_response = _generate_create_table_clarification(
             llm=llm,
             user_message=user_message,
-            detected_language=str(state.get("detected_language") or "en"),
             reason=str(e),
         )
 
@@ -323,7 +319,7 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
     )
 
     response = llm.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5.2",
         messages=messages,
         temperature=0,
     )
@@ -473,7 +469,7 @@ async def _call_tool(agent, tool_name: str, args: dict) -> str:
 async def _extract_create_table_args(llm, user_message: str) -> dict:
     """Extract create-table tool args from user request as JSON."""
     resp = llm.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5.2",
         messages=[
             {
                 "role": "system",
@@ -508,14 +504,12 @@ async def _extract_create_table_args(llm, user_message: str) -> dict:
 def _generate_create_table_clarification(
     llm,
     user_message: str,
-    detected_language: str,
     reason: str = "",
 ) -> str:
     """Generate user-facing clarification when CREATE TABLE args are incomplete."""
-    lang_hint = "Vietnamese" if (detected_language or "").lower() == "vi" else "English"
     try:
         resp = llm.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5.2",
             messages=[
                 {
                     "role": "system",
@@ -524,7 +518,8 @@ def _generate_create_table_clarification(
                         "Ask a short, plain-language follow-up: what to name the table, what columns they need, "
                         "and what kind of data each column holds (text, whole number, decimal, date, yes/no). "
                         "Mention they can say which column should be the unique ID if they want one. "
-                        "Avoid jargon like VARCHAR or SERIAL; use everyday words. Reply only in the target language."
+                        "Avoid jargon like VARCHAR or SERIAL; use everyday words. "
+                        "Reply in the same language the user wrote in."
                     ),
                 },
                 {
@@ -532,7 +527,6 @@ def _generate_create_table_clarification(
                     "content": (
                         f"User message: {user_message}\n"
                         f"Reason: {reason}\n"
-                        f"Target language: {lang_hint}\n"
                         "Output only the final user-facing message."
                     ),
                 },
@@ -544,13 +538,6 @@ def _generate_create_table_clarification(
             return out
     except Exception:
         pass
-    if lang_hint == "Vietnamese":
-        return (
-            "Để tạo bảng giúp bạn, mình cần thêm vài chi tiết đơn giản:\n"
-            "• Bạn muốn đặt tên bảng là gì?\n"
-            "• Bảng cần những cột nào, mỗi cột lưu loại thông tin gì (ví dụ: chữ, số nguyên, số thập phân, ngày tháng)?\n"
-            "• Nếu có một cột dùng làm mã định danh duy nhất cho mỗi dòng (như mã số), hãy cho mình biết tên cột đó."
-        )
     return (
         "To set up your table, I need a bit more detail in everyday terms:\n"
         "• What would you like to name the table?\n"

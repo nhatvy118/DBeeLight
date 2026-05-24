@@ -35,7 +35,7 @@ class AgentRepository:
 
     def __init__(
         self,
-        model: str = "gpt-4o-mini",
+        model: str = "gpt-5.2",
     ):
         # Which bundled MCP servers each agent connects to. Excel agent
         # connects to BOTH the local-xlsx server and the Google-Sheets

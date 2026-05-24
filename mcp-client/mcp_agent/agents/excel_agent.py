@@ -15,7 +15,7 @@ class ExcelAgent(BaseAgent):
 
     def __init__(
         self,
-        model: str = "gpt-4o-mini",
+        model: str = "gpt-5.2",
         session_manager: Optional[SessionManager] = None,
         agent_id: str = "excel",
     ):
@@ -33,10 +33,6 @@ class ExcelAgent(BaseAgent):
 
 - A path under ``file_handle`` (e.g. ``.../file_handle/.../excel_mcp/.../*.xlsx``) or markers ``[UPLOADED_EXCEL_PATH_*]`` → use the **local Excel tools** (workbook/range ops below).
 - A Google Sheets URL (``https://docs.google.com/spreadsheets/d/<ID>/...``) or words like "google sheet", "drive sheet" → use the **Google Sheets tools**.
-
-## Language Rule
-
-Default to English. Switch to Vietnamese ONLY if the user's LATEST message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "tóm tắt", "biểu đồ", "công thức"). Do not switch based on prior turns or mixed-language input — short English keyword queries reply in English.
 
 ## File Path Rules
 

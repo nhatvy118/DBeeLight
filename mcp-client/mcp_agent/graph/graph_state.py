@@ -27,7 +27,6 @@ class AgentState(TypedDict):
     # Intent parsing
     intent: Dict[str, Any]
     execution_plan: Dict[str, Any]
-    detected_language: str
     # Set by ReadOnlyWorkflow when the orchestrator passes top-level intent (e.g. nl_query).
     orchestrator_intent: NotRequired[Optional[Dict[str, Any]]]
 
@@ -88,7 +87,6 @@ def create_initial_state(
         "allowed_db_uri": allowed_db_uri,
         "intent": {},
         "execution_plan": {},
-        "detected_language": "en",
 
         # Database
         "table_schema": {},

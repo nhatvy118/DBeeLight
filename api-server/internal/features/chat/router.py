@@ -121,7 +121,6 @@ async def execute_sql(
         req.action_id,
         req.session_id,
         req.project_id,
-        req.lang,
         req.lock_only or False,
         req.lock_state,
     )

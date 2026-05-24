@@ -8,7 +8,6 @@ Falls back to general-purpose agent if no workflow matches.
 import json
 import logging
 import os
-import re
 from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from openai import OpenAI
@@ -23,16 +22,6 @@ from mcp_agent.orchestration.workflow_registry import (
 logger = logging.getLogger(__name__)
 
 _VALID_FALLBACK_AGENTS = frozenset({"database", "excel", "chart"})
-
-_VI_MARKER_RE = re.compile(r"[ăâđêôơưĂÂĐÊÔƠƯ]|[Ạ-ỹ]")
-
-
-def detect_user_lang(text: str) -> str:
-    """Return 'vi' if the text contains Vietnamese-specific diacritics, else 'en'.
-
-    Conservative: ASCII-only English (e.g. "list tables") returns 'en'.
-    """
-    return "vi" if _VI_MARKER_RE.search(text or "") else "en"
 
 # Six orchestrator branches at the same level: three DB LangGraphs + three agents.
 OrchestratorRoute = Literal[

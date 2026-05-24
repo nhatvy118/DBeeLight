@@ -171,7 +171,7 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
     recent_context = await _get_recent_session_context(agent)
 
     response = llm.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5.2",
         messages=[
             {
                 "role": "system",
@@ -185,7 +185,6 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
 - tables: list of every table name referenced (required for ALTER/INSERT/UPDATE/DELETE/DROP/SELECT), e.g. "add column to table bicycle" -> ["bicycle"]
 - filters: WHERE conditions
 - exports: if user wants to export to Excel
-- detected_language: "en" by default. Use "vi" ONLY if the LATEST user message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "truy vấn", "kết nối", "danh sách"). Ignore conversation history. Short English-keyword queries like "list tables" → "en".
 - resolved_query: rewrite latest user message into a self-contained request by resolving context references.
   **Preserve** row numbers and ranges for exports (e.g. "rows 10 to 20", "10-20") verbatim — do not drop them.
 
@@ -215,7 +214,6 @@ Return JSON."""
         "operation": operation,
         "tables": intent.get("tables", []),
         "filters": intent.get("filters", {}),
-        "detected_language": intent.get("detected_language", "en"),
         "resolved_query": resolved_query,
     }
     raw_um = str(state.get("user_message") or "")
@@ -242,7 +240,6 @@ Return JSON."""
     return {
         **state,
         "intent": safe_intent,
-        "detected_language": safe_intent.get("detected_language", "en"),
         "followup_context": recent_context,
     }
 
@@ -624,7 +621,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
             messages.append({"role": "system", "content": attached})
         messages.append({"role": "user", "content": effective_message})
         sel_resp = llm.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5.2",
             messages=messages,
             temperature=0,
         )

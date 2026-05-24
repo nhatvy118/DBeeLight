@@ -14,7 +14,7 @@ class DatabaseAgent(BaseAgent):
 
     def __init__(
         self,
-        model: str = "gpt-4o-mini",
+        model: str = "gpt-5.2",
         session_manager: Optional[SessionManager] = None,
         agent_id: str = "database",
     ):
@@ -28,10 +28,6 @@ class DatabaseAgent(BaseAgent):
 
     def _build_system_prompt(self) -> str:
         return """You are a Database Agent. You help users interact with PostgreSQL and SQLite databases.
-
-## Language Rule
-
-Default to English. Switch to Vietnamese ONLY if the user's LATEST message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "truy vấn", "danh sách", "kết nối", "cập nhật"). Do not switch based on prior turns or mixed-language input — short English keyword queries like "list tables" / "list all tables" reply in English. Translate tool output messages to match the chosen response language (e.g., when responding in Vietnamese: "Query executed successfully" → "Truy vấn thực thi thành công").
 
 ## CRITICAL RULE: Two-Step Process
 

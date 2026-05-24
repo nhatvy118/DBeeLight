@@ -39,7 +39,7 @@ class AgentWorkflow:
     def __init__(
         self,
         llm: Optional[OpenAI] = None,
-        model: str = "gpt-4o-mini",
+        model: str = "gpt-5.2",
         agents: Dict[str, Any] = None,
     ):
         self.llm = llm or OpenAI()

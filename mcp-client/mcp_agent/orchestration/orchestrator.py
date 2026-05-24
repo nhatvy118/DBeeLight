@@ -10,7 +10,7 @@ from langgraph.graph import END, StateGraph
 
 from mcp_agent.agents.base_agent import BaseAgent
 from mcp_agent.session.session_manager import SessionManager
-from mcp_agent.orchestration.intent_service import IntentService, detect_user_lang
+from mcp_agent.orchestration.intent_service import IntentService
 from mcp_agent.progress import emit as _progress_emit
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ class Orchestrator:
         self,
         agents: List[BaseAgent],
         session_manager: SessionManager,
-        router_model: str = "gpt-4o-mini",
+        router_model: str = "gpt-5.2",
     ):
         if not agents:
             raise ValueError("At least one agent is required")
@@ -170,13 +170,7 @@ class Orchestrator:
         intent_result = state.get("intent_result") or {}
         q = str(intent_result.get("clarification_question") or "").strip()
         if not q:
-            lang = str(intent_result.get("detected_language") or "").lower() \
-                or detect_user_lang(str(state.get("user_message") or ""))
-            q = (
-                "Bạn có thể nói rõ yêu cầu của bạn hơn được không?"
-                if lang == "vi"
-                else "Could you clarify your request?"
-            )
+            q = "Could you clarify your request?"
         return {
             **state,
             "agent_id": "orchestrator",
@@ -661,7 +655,7 @@ class Orchestrator:
         """Alias for approve_and_execute. Resume LangGraph workflow after user decision."""
         return await self.approve_and_execute(session_id=session_id, approved=approved)
 
-    async def execute_sql(self, sql: str, lang: str = "en") -> Dict[str, Any]:
+    async def execute_sql(self, sql: str) -> Dict[str, Any]:
         """Execute SQL directly (bypasses LangGraph workflow). Used for fallback."""
         db_agent = self._agents.get("database")
         if not db_agent:
@@ -679,9 +673,8 @@ class Orchestrator:
                 else:
                     result_text = str(result_content)
 
-                translated = self._translate_message(result_text, lang)
                 return {
-                    "response": translated,
+                    "response": result_text,
                     "tool_events": [{
                         "tool": "execute_query",
                         "type": "sql_execution",
@@ -692,27 +685,6 @@ class Orchestrator:
                 continue
 
         return {"response": "Failed to execute query", "tool_events": []}
-
-    def _translate_message(self, text: str, lang: str) -> str:
-        """Translate message to target language."""
-        if lang != "vi":
-            return text
-        try:
-            client = OpenAI()
-            response = client.chat.completions.create(
-                model=self._router_model,
-                messages=[
-                    {"role": "system", "content": "Translate to Vietnamese. Keep formatting."},
-                    {"role": "user", "content": text},
-                ],
-                temperature=0.3,
-            )
-            translated = response.choices[0].message.content
-            if translated:
-                return translated
-        except Exception:
-            pass
-        return text
 
     async def get_chat_graph(self):
         """Compiled chat graph: ingest → summarize → orchestrate (checkpoint-isolated)."""

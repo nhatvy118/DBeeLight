@@ -490,7 +490,6 @@ export async function executeSql(
   actionId: string | null,
   sessionId: string | null = null,
   projectId: string | null = null,
-  lang: string = 'en',
   lockOnly: boolean = false,
   lockState: 'executed' | 'cancelled' | null = null,
 ): Promise<ExecuteSqlResponse> {
@@ -498,7 +497,7 @@ export async function executeSql(
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sql, action_id: actionId, session_id: sessionId, project_id: projectId, lang, lock_only: lockOnly, lock_state: lockState }),
+    body: JSON.stringify({ sql, action_id: actionId, session_id: sessionId, project_id: projectId, lock_only: lockOnly, lock_state: lockState }),
   });
 
   const data = (await response.json()) as ExecuteSqlResponse & { error?: string };

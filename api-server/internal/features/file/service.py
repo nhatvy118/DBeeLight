@@ -836,7 +836,7 @@ class FileService:
         summary_input = self._build_richer_summary_input(parsed)
         client = AsyncOpenAI()
         resp = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5.2",
             messages=[
                 {
                     "role": "system",

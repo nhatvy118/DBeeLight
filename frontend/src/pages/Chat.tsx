@@ -42,15 +42,6 @@ const STORAGE_LAST_SESSION_ID = 'lastSessionId';
 const STORAGE_LAST_SESSION_PROJECT = 'lastSessionIdForProject';
 
 
-// Detect language from text (simple heuristic)
-function detectLanguage(text: string): string {
-  const vietnameseChars = /[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]/i;
-  if (vietnameseChars.test(text)) {
-    return 'vi';
-  }
-  return 'en';
-}
-
 function saveLastSession(sessionId: string | null, projectId: string | null) {
   if (sessionId) {
     localStorage.setItem(STORAGE_LAST_SESSION_ID, sessionId);
@@ -1038,11 +1029,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       return updated;
     });
 
-    // Detect language from user's last message
-    const userMessages = messages.filter(m => m.isUser);
-    const lastUserMsg = userMessages[userMessages.length - 1];
-    const lang = lastUserMsg ? detectLanguage(lastUserMsg.text) : 'en';
-
     setIsLoading(true);
     try {
       const fallbackActionId =
@@ -1052,7 +1038,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           msg.sqlToExecute,
           Math.max(0, messages.slice(0, aiIndex + 1).filter((m) => !!m.sqlToExecute).length - 1),
         );
-      const res = await executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, lang, false, null);
+      const res = await executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, false, null);
       if (res.success) {
         setMessages((prev) => {
           const updated = [...prev];
@@ -1526,7 +1512,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       {/* Project Chat History - Show when project has history, right below chatbox */}
       {
         projectHasHistory && (
-          <div className="flex-1 overflow-y-auto px-8 pb-8 border-2 border-green-500">
+          <div className="flex-1 overflow-y-auto px-8 pb-8">
             <div className="max-w-4xl mx-auto">
               <div className="space-y-0">
                 {projectSessions.map((session, index) => (

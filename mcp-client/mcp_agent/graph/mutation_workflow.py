@@ -156,7 +156,7 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
     recent_context = await _get_recent_session_context(agent)
 
     response = llm.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5.2",
         messages=[
             {
                 "role": "system",
@@ -164,7 +164,6 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
 - operation: SELECT, INSERT, UPDATE, DELETE, ALTER, DROP, etc.
 - tables: list of every table name referenced (required for mutations)
 - filters: WHERE conditions
-- detected_language: "en" by default. Use "vi" ONLY if the LATEST user message contains Vietnamese diacritics (à á ả ạ ă â đ ê ô ơ ư …) or unambiguous Vietnamese words ("bảng", "truy vấn", "kết nối", "danh sách"). Ignore conversation history. Short English-keyword queries like "list tables" → "en".
 - resolved_query: rewrite latest user message into a self-contained request
 
 Return JSON."""
@@ -193,7 +192,6 @@ Return JSON."""
         "operation": operation,
         "tables": intent.get("tables", []),
         "filters": intent.get("filters", {}),
-        "detected_language": intent.get("detected_language", "en"),
         "resolved_query": resolved_query,
     }
 
@@ -206,7 +204,6 @@ Return JSON."""
     return {
         **state,
         "intent": safe_intent,
-        "detected_language": safe_intent.get("detected_language", "en"),
         "followup_context": recent_context,
     }
 
@@ -370,7 +367,7 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
     )
 
     response = llm.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5.2",
         messages=messages,
         temperature=0,
     )

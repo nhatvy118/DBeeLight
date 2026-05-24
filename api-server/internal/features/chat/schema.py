@@ -26,7 +26,6 @@ class ExecuteSqlRequest(BaseModel):
     action_id: Optional[str] = None
     session_id: Optional[str] = None
     project_id: Optional[str] = None
-    lang: Optional[str] = "en"  # Language for translation
     lock_only: Optional[bool] = False
     lock_state: Optional[str] = None
 

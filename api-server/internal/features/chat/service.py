@@ -259,7 +259,7 @@ class ChatService:
             return None, (time.perf_counter() - t0) * 1000.0
 
         client = AsyncOpenAI()
-        model = os.getenv("FILE_INTENT_MODEL", "gpt-4o-mini")
+        model = os.getenv("FILE_INTENT_MODEL", "gpt-5.2")
         timeout_s = max(0.5, float(os.getenv("FILE_INTENT_TIMEOUT_S", "3.0")))
         prompt = (
             "Decide if the user message needs data from an uploaded file in this chat session. "
@@ -1043,7 +1043,6 @@ class ChatService:
         action_id: str | None,
         session_id: str | None,
         project_id: str | None = None,
-        lang: str = "en",
         lock_only: bool = False,
         lock_state: str | None = None,
     ) -> tuple[str, str | None, list[dict], bool, list[dict], bool]:
@@ -1242,10 +1241,10 @@ class ChatService:
                         ),
                         current_session_id,
                     )
-                    result = await agent.execute_sql(query, lang=lang)
+                    result = await agent.execute_sql(query)
             else:
                 # Legacy: call execute_sql directly
-                result = await agent.execute_sql(query, lang=lang)
+                result = await agent.execute_sql(query)
                 session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
                 current_session_id = session_info.get("session_id") if session_info else None
 

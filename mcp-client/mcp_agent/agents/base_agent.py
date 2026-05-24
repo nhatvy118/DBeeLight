@@ -102,7 +102,7 @@ class BaseAgent(ABC):
     def __init__(
         self,
         agent_id: str,
-        model: str = "gpt-4o-mini",
+        model: str = "gpt-5.2",
         session_manager: Optional[SessionManager] = None,
     ):
         self.agent_id = agent_id
