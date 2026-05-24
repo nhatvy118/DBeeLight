@@ -1,8 +1,9 @@
 import beeLogo from '../assets/icons/bee.png';
+import { url } from '../services/api';
 
 export default function Login() {
   const handleLoginWithGoogle = () => {
-    window.location.href = `/api/auth/google/login?next=${encodeURIComponent('/chat')}`;
+    window.location.href = url(`/api/auth/google/login?next=${encodeURIComponent('/chat')}`);
   };
 
   return (

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { url } from '../services/api';
 
 type AuthUser = {
   name?: string;
@@ -26,7 +27,7 @@ export default function Account() {
     const load = async () => {
       try {
         setIsLoading(true);
-        const res = await fetch('/api/auth/me', { method: 'GET', credentials: 'include' });
+        const res = await fetch(url('/api/auth/me'), { method: 'GET', credentials: 'include' });
         const data = (await res.json()) as { authenticated: boolean; user?: AuthUser | null };
         setUser(data.authenticated ? (data.user ?? null) : null);
       } catch {

@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { url } from '../services/api';
 
 export type AuthUser = {
   // Stable Google identifier — used for cross-tab identity comparison.
@@ -68,7 +69,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const loadMe = useCallback(async () => {
     try {
       setIsLoading(true);
-      const res = await fetch('/api/auth/me', {
+      const res = await fetch(url('/api/auth/me'), {
         method: 'GET',
         credentials: 'include',
       });
@@ -107,7 +108,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const onVisibility = async () => {
       if (document.visibilityState !== 'visible') return;
       try {
-        const res = await fetch('/api/auth/me', { credentials: 'include' });
+        const res = await fetch(url('/api/auth/me'), { credentials: 'include' });
         const data = (await res.json()) as {
           authenticated: boolean;
           user?: AuthUser | null;

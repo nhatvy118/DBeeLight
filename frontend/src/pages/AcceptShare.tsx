@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   acceptShare,
   previewShare,
+  url,
   type SharePermission,
   type SharePreview,
 } from '../services/api';
@@ -46,7 +47,7 @@ export default function AcceptShare({ token }: Props) {
 
   function handleLogin() {
     const next = `/share/accept/${encodeURIComponent(token)}`;
-    window.location.href = `/api/auth/google/login?next=${encodeURIComponent(next)}`;
+    window.location.href = url(`/api/auth/google/login?next=${encodeURIComponent(next)}`);
   }
 
   async function handleAccept() {
@@ -124,7 +125,7 @@ export default function AcceptShare({ token }: Props) {
             <button
               type="button"
               onClick={async () => {
-                await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+                await fetch(url('/api/auth/logout'), { method: 'POST', credentials: 'include' });
                 handleLogin();
               }}
               className="w-full px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"

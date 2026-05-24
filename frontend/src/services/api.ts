@@ -51,7 +51,7 @@ export type GetSessionResponse =
 
 export type HealthResponse = { status: 'ok'; agent_initialized: boolean };
 
-function url(path: string) {
+export function url(path: string) {
   return API_BASE_URL.startsWith('http') ? `${API_BASE_URL}${path}` : path;
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { url } from '../../services/api';
 import { useTheme } from '../../context/ThemeContext';
 import ShareSessionModal from '../modals/ShareSessionModal';
 import StorageModal from '../modals/StorageModal';
@@ -156,7 +157,7 @@ export default function Header() {
 
   const handleLogin = () => {
     const next = window.location.pathname === '/' ? '/chat' : window.location.pathname;
-    window.location.href = `/api/auth/google/login?next=${encodeURIComponent(next)}`;
+    window.location.href = url(`/api/auth/google/login?next=${encodeURIComponent(next)}`);
   };
 
   const handleSignUp = () => {
@@ -166,7 +167,7 @@ export default function Header() {
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      await fetch(url('/api/auth/logout'), { method: 'POST', credentials: 'include' });
     } finally {
       setUser(null);
       try {
