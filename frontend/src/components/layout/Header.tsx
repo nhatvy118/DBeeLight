@@ -6,7 +6,6 @@ import ShareSessionModal from '../modals/ShareSessionModal';
 import StorageModal from '../modals/StorageModal';
 import settingsIcon from '../../assets/icons/Settings.svg';
 import logoutIcon from '../../assets/icons/Logout.svg';
-import userIcon from '../../assets/icons/User.svg';
 import shareIcon from '../../assets/icons/Share.svg';
 import folderIcon from '../../assets/icons/Folder.svg';
 import beeLogo from '../../assets/icons/bee.png';
@@ -155,16 +154,6 @@ export default function Header() {
     window.open(target, '_blank', 'noopener');
   };
 
-  const handleLogin = () => {
-    const next = window.location.pathname === '/' ? '/chat' : window.location.pathname;
-    window.location.href = url(`/api/auth/google/login?next=${encodeURIComponent(next)}`);
-  };
-
-  const handleSignUp = () => {
-    // Same as login for Google OAuth
-    handleLogin();
-  };
-
   const handleLogout = async () => {
     try {
       await fetch(url('/api/auth/logout'), { method: 'POST', credentials: 'include' });
@@ -195,8 +184,7 @@ export default function Header() {
 
   const isHomePage = path === '/';
   const isLoginPage = path === '/login';
-  const isSignUpPage = path === '/signup';
-  const showLogo = (isHomePage || isLoginPage || isSignUpPage) && !user;
+  const showLogo = (isHomePage || isLoginPage) && !user;
 
   return (
     <div className="w-full flex justify-between items-center px-6 py-4">
@@ -392,34 +380,18 @@ export default function Header() {
           </>
         ) : (
           <>
-            {!isLoginPage && !isSignUpPage && (
-              <>
-                <button
-                  type="button"
-                  disabled={isLoading}
-                  onClick={() => {
-                    window.history.pushState({}, '', '/login');
-                    window.dispatchEvent(new PopStateEvent('popstate'));
-                  }}
-                  className="px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed font-medium text-sm"
-                >
-                  Log in
-                </button>
-                <button
-                  type="button"
-                  disabled={isLoading}
-                  onClick={() => {
-                    window.history.pushState({}, '', '/signup');
-                    window.dispatchEvent(new PopStateEvent('popstate'));
-                  }}
-                  className="px-4 py-2 bg-white border-2 border-gray-300 text-gray-900 rounded-lg hover:bg-gray-50 hover:border-gray-400 transition-colors disabled:opacity-60 disabled:cursor-not-allowed font-medium text-sm"
-                >
-                  Sign up
-                </button>
-                <button className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center transition-colors">
-                  <img src={userIcon} alt="User" className="w-5 h-5" />
-                </button>
-              </>
+            {!isLoginPage && (
+              <button
+                type="button"
+                disabled={isLoading}
+                onClick={() => {
+                  window.history.pushState({}, '', '/login');
+                  window.dispatchEvent(new PopStateEvent('popstate'));
+                }}
+                className="px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed font-medium text-sm"
+              >
+                Log in
+              </button>
             )}
           </>
         )}
