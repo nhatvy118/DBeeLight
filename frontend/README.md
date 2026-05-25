@@ -30,8 +30,9 @@ Hiện tại project dùng **routing tối thiểu (không dùng react-router)**
 - `GET /chat` → `src/pages/Chat.tsx`
 - Các path khác → `src/pages/NotFound.tsx`
 
-> Nếu deploy lên hosting “static” (không phải Vite dev server), bạn có thể cần cấu hình **SPA fallback**
-> để các deep link như `/chat` vẫn trả về `index.html`.
+> Nếu deploy lên Vercel (hoặc hosting static khác), cần **SPA fallback** để deep link
+> như `/login`, `/chat` không bị 404. Project đã có ``frontend/vercel.json`` (rewrite → ``index.html``).
+> Tương tự nginx: ``try_files $uri $uri/ /index.html`` trong ``nginx.conf``.
 
 ## Kết nối Backend (API)
 
