@@ -6,6 +6,7 @@ on:
     paths:
       - "api-server/**"
       - "mcp-client/**"
+      - "docker-compose.yml"
       - ".github/workflows/deploy-api-server.yml"
   workflow_dispatch: {}
 
@@ -60,11 +61,11 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          script_stop: true
           envs: IMAGE,SHA_TAG
           script: |
             set -euo pipefail
             cd "${{ secrets.EC2_DEPLOY_PATH }}"
+            git pull --ff-only
             docker compose pull api-server
             docker compose up -d --no-build api-server
             docker image prune -f
