@@ -31,11 +31,20 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  // Chưa đăng nhập vào bất kỳ trang nào (trừ /login, /signup, /share) -> chuyển /login
+  // Land on / → /login immediately (matches dev UX).
+  useEffect(() => {
+    if (window.location.pathname === '/') {
+      window.history.replaceState({}, '', '/login');
+      setPath('/login');
+    }
+  }, []);
+
+  // Chưa đăng nhập vào bất kỳ trang nào (trừ /login, /share) -> chuyển /login
   useEffect(() => {
     if (isLoading) return;
     if (user) return;
     const isPublic =
+      path === '/' ||
       path === '/login' ||
       path.startsWith('/share/');
     if (!isPublic) {
@@ -84,11 +93,15 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
     return <AcceptShare token={decodeURIComponent(token)} />;
   }
 
-  // Auth gate for everything below. While the /api/auth/me check is in flight
-  // we render nothing — prevents a flash of the Chat empty state for users
-  // who turn out to be logged out. Once the check resolves and there's no
-  // user, fall through to <Login /> (the useEffect above also rewrites the URL).
-  if (isLoading) return null;
+  // Auth gate for everything below. On marketing/login paths, keep showing
+  // <Login> while /api/auth/me loads so production (/) never looks blank if
+  // the API is slow or down. On /chat* we still render nothing to avoid a
+  // flash of the empty chat shell for logged-out users.
+  if (isLoading) {
+    const isMarketingPath = path === '/' || path === '/login';
+    if (isMarketingPath) return <Login />;
+    return null;
+  }
   if (!user) return <Login />;
 
   // Print-friendly view of a chat session: ``/chat/.../print``. Used as the

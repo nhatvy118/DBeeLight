@@ -69,10 +69,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const loadMe = useCallback(async () => {
     try {
       setIsLoading(true);
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 10_000);
       const res = await fetch(url('/api/auth/me'), {
         method: 'GET',
         credentials: 'include',
+        signal: controller.signal,
       });
+      window.clearTimeout(timeout);
       const data = (await res.json()) as {
         authenticated: boolean;
         user?: AuthUser | null;
