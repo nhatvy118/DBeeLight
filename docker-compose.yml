@@ -52,6 +52,9 @@ services:
 
   api-server:
     <<: *common
+    # Production EC2 pulls this prebuilt image (pushed by GitHub Actions).
+    # Local dev still works via `docker compose up --build` which rebuilds from source.
+    image: ghcr.io/nhatvy118/dbeelight-api:${API_IMAGE_TAG:-latest}
     build:
       # Build from monorepo root so mcp-client (local editable dep) is visible.
       context: .
