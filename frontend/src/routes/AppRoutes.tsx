@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import AcceptShare from '../pages/AcceptShare';
 import Account from '../pages/Account';
@@ -39,17 +39,15 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
     }
   }, []);
 
-  // Chưa đăng nhập vào bất kỳ trang nào (trừ /login, /share) -> chuyển /login
-  useEffect(() => {
-    if (isLoading) return;
-    if (user) return;
+  // Chưa đăng nhập: đưa về /login ngay (replaceState, không để URL /chat).
+  useLayoutEffect(() => {
+    if (isLoading || user) return;
+    const pathname = window.location.pathname;
     const isPublic =
-      path === '/' ||
-      path === '/login' ||
-      path.startsWith('/share/');
+      pathname === '/' || pathname === '/login' || pathname.startsWith('/share/');
     if (!isPublic) {
-      window.history.pushState({}, '', '/login');
-      window.dispatchEvent(new PopStateEvent('popstate'));
+      window.history.replaceState({}, '', '/login');
+      setPath('/login');
     }
   }, [path, user, isLoading]);
 
@@ -86,8 +84,10 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
     return { projectId: null, sessionId: null };
   };
 
+  const pathname = window.location.pathname;
+
   // Public routes — render regardless of auth state.
-  if (path === '/login') return <Login />;
+  if (path === '/login' || pathname === '/login') return <Login />;
   if (path.startsWith('/share/accept/')) {
     const token = path.slice('/share/accept/'.length);
     return <AcceptShare token={decodeURIComponent(token)} />;
@@ -102,7 +102,13 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
     if (isMarketingPath) return <Login />;
     return null;
   }
-  if (!user) return <Login />;
+  if (!user) {
+    // Đồng bộ URL trước khi paint (phòng deploy cũ / race sau logout).
+    if (pathname !== '/login' && !pathname.startsWith('/share/')) {
+      window.history.replaceState({}, '', '/login');
+    }
+    return <Login />;
+  }
 
   // Print-friendly view of a chat session: ``/chat/.../print``. Used as the
   // PDF export path — the page auto-triggers ``window.print()`` and the user

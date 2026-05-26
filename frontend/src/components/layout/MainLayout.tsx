@@ -20,8 +20,9 @@ export default function MainLayout({ children, currentSessionId, onSessionSelect
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  // Sidebar: chỉ hiện khi đã đăng nhập và đang ở /chat* (không hiện ở "/" - chat đơn giản cho khách)
+  // Sidebar + header chỉ khi đã đăng nhập — khách chỉ thấy trang Login, không chat/header cũ.
   const showSidebar = path.startsWith('/chat') && user !== null && !isLoading;
+  const showHeader = user !== null;
 
   return (
     <div className="flex h-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-gray-100">
@@ -32,7 +33,7 @@ export default function MainLayout({ children, currentSessionId, onSessionSelect
         />
       )}
       <div className="flex flex-col min-w-0" style={{ flex: '4 1 85%' }}>
-        <Header />
+        {showHeader && <Header />}
 
         <div className="flex-1 min-h-0 relative">{children}</div>
       </div>

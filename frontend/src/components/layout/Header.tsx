@@ -17,7 +17,7 @@ type Project = {
 };
 
 export default function Header() {
-  const { user, isLoading, setUser } = useAuth();
+  const { user } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
@@ -157,33 +157,34 @@ export default function Header() {
   const handleLogout = async () => {
     try {
       await fetch(url('/api/auth/logout'), { method: 'POST', credentials: 'include' });
-    } finally {
-      setUser(null);
-      try {
-        localStorage.removeItem('projects');
-        localStorage.removeItem('lastSessionId');
-        localStorage.removeItem('lastSessionIdForProject');
-      } catch {
-        // ignore if storage is blocked
-      }
-      // Hard navigation — fully unmount the Chat tree so no stale React state
-      // (open sessions, pending requests, cached project data) leaks across
-      // user identities. Cheaper and safer than reconciling everything.
-      window.location.assign('/login');
+    } catch {
+      // still leave the app — cookie may already be cleared
     }
+    try {
+      localStorage.removeItem('projects');
+      localStorage.removeItem('lastSessionId');
+      localStorage.removeItem('lastSessionIdForProject');
+    } catch {
+      // ignore if storage is blocked
+    }
+    // Full navigation to /login — avoid setUser(null) first (prevents a flash of
+    // guest chat UI on /chat before redirect, especially on production builds).
+    window.location.replace('/login');
   };
 
-  // Check if we're on the home page
-  const [path, setPath] = useState<string>(() => window.location.pathname);
-
+  // Read pathname from the URL on every render — AppRoutes uses replaceState/pushState
+  // without always firing popstate, so a cached path state can stay on "/" while the
+  // real URL is already "/login" and wrongly show the header "Log in" button.
+  const [, setNavTick] = useState(0);
   useEffect(() => {
-    const onPopState = () => setPath(window.location.pathname);
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
+    const onNav = () => setNavTick((n) => n + 1);
+    window.addEventListener('popstate', onNav);
+    return () => window.removeEventListener('popstate', onNav);
   }, []);
 
-  const isHomePage = path === '/';
-  const isLoginPage = path === '/login';
+  const pathname = window.location.pathname;
+  const isHomePage = pathname === '/';
+  const isLoginPage = pathname === '/login';
   const showLogo = (isHomePage || isLoginPage) && !user;
 
   return (
@@ -191,10 +192,7 @@ export default function Header() {
       {/* Left Section - Logo or Project */}
       <div className="flex items-center gap-2">
         {showLogo ? (
-          <div className="flex items-center gap-2">
-            <img src={beeLogo} alt="" className="h-8 w-auto object-contain" />
-            <span className="text-xl font-semibold text-gray-900 tracking-tight">LightDBee</span>
-          </div>
+          <img src={beeLogo} alt="LightDBee" className="h-8 w-auto object-contain" />
         ) : selectedProject ? (
           <div className="flex items-center gap-3">
             <img src={folderIcon} alt="Folder" className="w-7 h-7" />
@@ -378,23 +376,7 @@ export default function Header() {
               )}
             </div>
           </>
-        ) : (
-          <>
-            {!isLoginPage && (
-              <button
-                type="button"
-                disabled={isLoading}
-                onClick={() => {
-                  window.history.pushState({}, '', '/login');
-                  window.dispatchEvent(new PopStateEvent('popstate'));
-                }}
-                className="px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed font-medium text-sm"
-              >
-                Log in
-              </button>
-            )}
-          </>
-        )}
+        ) : null}
       </div>
 
       {/* Share Modal */}
