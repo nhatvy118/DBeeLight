@@ -580,7 +580,6 @@ class Orchestrator:
         approved: bool = True,
         *,
         sql: str | None = None,
-        lang: str = "en",
     ) -> Dict[str, Any]:
         """Resume workflow after user approval via LangGraph Command(resume=).
 
@@ -634,7 +633,7 @@ class Orchestrator:
                     "[Orchestrator] Resume returned sql_preview at stage=%s; executing SQL directly",
                     current_stage,
                 )
-                return await self.execute_sql(sql_to_run, lang=lang)
+                return await self.execute_sql(sql_to_run)
 
         return {
             "response": response,
