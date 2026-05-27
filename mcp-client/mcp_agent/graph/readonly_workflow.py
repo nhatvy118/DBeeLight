@@ -283,6 +283,7 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
         log_lines.append(f"[fallback] no table hint → using sole DB table `{tables_work[0]}`")
 
     missing: list[str] = []
+    descriptions: dict[str, str] = {}
     for t in tables_work:
         name = str(t).strip()
         if not name:
@@ -290,7 +291,9 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
         try:
             d = await _call_tool(agent, "describe_table", {"table_name": name})
             log_lines.append(f"describe_table({name}): {d}")
-            if not _describe_table_succeeded(d):
+            if _describe_table_succeeded(d):
+                descriptions[name] = str(d).strip()
+            else:
                 missing.append(name)
         except Exception as e:
             log_lines.append(f"describe_table({name}) error: {e}")
@@ -305,6 +308,7 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
             if _describe_table_succeeded(d):
                 missing = []
                 tables_work = [only]
+                descriptions = {only: str(d).strip()}
         except Exception as e:
             log_lines.append(f"describe_table fallback error: {e}")
 
@@ -328,14 +332,23 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
                 "type": "error",
                 "message": msg,
             },
-            "table_schema": {"tables": tables_work, "missing": missing, "all_tables": list(actual_tables)},
+            "table_schema": {
+                "tables": tables_work,
+                "missing": missing,
+                "all_tables": list(actual_tables),
+                "descriptions": descriptions,
+            },
         }
 
     intent_patch = {**(state.get("intent") or {}), "tables": tables_work}
     return {
         **state,
         "intent": intent_patch,
-        "table_schema": {"tables": tables_work, "all_tables": list(actual_tables)},
+        "table_schema": {
+            "tables": tables_work,
+            "all_tables": list(actual_tables),
+            "descriptions": descriptions,
+        },
     }
 
 
@@ -567,11 +580,15 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
             json_query_rows_to_markdown_table,
             detect_db_type,
             get_select_system_prompt,
+            build_readonly_schema_context_block,
             extract_attached_files_context_block,
         )
         db_type = detect_db_type(agent)
         attached = extract_attached_files_context_block(user_message)
         messages = [{"role": "system", "content": get_select_system_prompt(db_type)}]
+        schema_block = build_readonly_schema_context_block(state.get("table_schema") or {})
+        if schema_block:
+            messages.append({"role": "system", "content": schema_block})
 
         # --- Allowed tables injection ---
         # all_tables: every table returned by list_tables during schema_discovery.
@@ -619,7 +636,15 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
 
         if attached:
             messages.append({"role": "system", "content": attached})
-        messages.append({"role": "user", "content": effective_message})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"Target tables: {(state.get('table_schema') or {}).get('tables') or intent.get('tables') or []}\n"
+                    f"Request: {effective_message}"
+                ),
+            }
+        )
         sel_resp = llm.chat.completions.create(
             model="gpt-5.2",
             messages=messages,

@@ -122,6 +122,43 @@ def build_mutation_schema_context_block(
     return "\n".join(lines).strip()
 
 
+def build_readonly_schema_context_block(
+    table_schema: dict[str, Any],
+) -> str:
+    """Format target table + column constraints for read-only SQL generation."""
+    if not table_schema:
+        return ""
+
+    target_tables = [
+        str(t).strip()
+        for t in (table_schema.get("tables") or [])
+        if str(t).strip()
+    ]
+    descriptions = table_schema.get("descriptions") or {}
+    if not isinstance(descriptions, dict):
+        descriptions = {}
+
+    if not target_tables:
+        return ""
+
+    lines: list[str] = [
+        "TARGET TABLES + COLUMNS (READ-ONLY) — generate SELECT using ONLY names below.",
+        "Do NOT invent table/column names. Prefer these tables over system metadata tables.",
+        "",
+    ]
+    for t in target_tables:
+        desc = descriptions.get(t)
+        if not isinstance(desc, str) or not desc.strip():
+            continue
+        lines.append(f"Table `{t}` columns:")
+        lines.append(desc.strip())
+        lines.append("")
+
+    if len(lines) <= 3:
+        return ""
+    return "\n".join(lines).strip()
+
+
 def get_sql_system_prompt(db_type: str, *, operation: str = "") -> str:
     """Return SQL generation system prompt for the given database type."""
     op = str(operation or "").strip().upper()
@@ -677,6 +714,26 @@ def is_execute_query_error_response(text: str) -> bool:
     if "syntax error" in t:
         return True
     return False
+
+
+def parse_mutation_rows_affected(text: str) -> Optional[int]:
+    """Parse affected-row count from mutation tool responses."""
+    s = (text or "").strip()
+    if not s:
+        return None
+
+    patterns = (
+        r"rows?\s+affected:\s*(-?\d+)",
+        r"\b(?:insert|update|delete)\s+(-?\d+)\b",
+    )
+    for pat in patterns:
+        m = re.search(pat, s, re.IGNORECASE)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                return None
+    return None
 
 
 def friendly_mutation_preview_error(raw: str) -> str:

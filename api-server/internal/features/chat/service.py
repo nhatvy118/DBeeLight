@@ -1208,7 +1208,7 @@ class ChatService:
                     session_id=current_session_id,
                     approved=True,
                     sql=query,
-                    lang=lang,
+                    lang="en",
                 )
 
                 # Approval preview state is stored in SessionManager (persisted).

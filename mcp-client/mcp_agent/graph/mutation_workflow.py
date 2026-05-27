@@ -366,12 +366,6 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
         }
     )
 
-    response = llm.chat.completions.create(
-        model="gpt-5.2",
-        messages=messages,
-        temperature=0,
-    )
-
     from mcp_agent.graph.database_utils import (
         strip_sql_fences,
         is_execute_query_error_response,
@@ -382,33 +376,109 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
         alter_sql_to_select_preview,
         insert_into_select_preview_sql,
     )
-    sql = strip_sql_fences(response.choices[0].message.content or "")
+    max_attempts = 3
+    sql = ""
+    last_error = ""
+    final_out: Dict | None = None
 
-    out: Dict = {
-        "type": "sql_preview",
-        "sql": sql,
-        "message": "Please review and click Execute",
-    }
+    def _looks_missing_info(err: str) -> bool:
+        e = (err or "").lower()
+        hints = (
+            "ambiguous",
+            "could not determine",
+            "more than one",
+            "missing",
+            "requires",
+            "not enough",
+            "unknown column",
+            "column does not exist",
+        )
+        return any(h in e for h in hints)
 
-    # Attach preview for affected rows
-    out = await _enrich_mutation_preview(agent, operation, sql, out)
+    retry_messages = list(messages)
+    for attempt in range(1, max_attempts + 1):
+        response = llm.chat.completions.create(
+            model="gpt-5.2",
+            messages=retry_messages,
+            temperature=0,
+        )
+        sql = strip_sql_fences(response.choices[0].message.content or "")
 
-    if out.get("mutation_preview_fatal"):
-        logger.warning("[Mutation] SQL preview fatal for op=%s", operation)
-        err_raw = str(out.pop("mutation_preview_error_raw", "") or "")
-        out.pop("mutation_preview_fatal", None)
-        from mcp_agent.graph.database_utils import friendly_mutation_preview_error
-        friendly = friendly_mutation_preview_error(err_raw)
+        # Pre-check syntax/objects before asking user to approve execution.
+        try:
+            validation = await _call_tool(agent, "validate_sql", {"sql": sql})
+        except Exception as e:
+            validation = f"SQL validation error: {e}"
+        vtxt = str(validation or "").strip()
+        if vtxt and ("error" in vtxt.lower() or "invalid" in vtxt.lower()):
+            last_error = vtxt
+            if attempt < max_attempts:
+                retry_messages.extend(
+                    [
+                        {"role": "assistant", "content": sql},
+                        {
+                            "role": "system",
+                            "content": (
+                                "The previous SQL failed validation. "
+                                "Generate a corrected SQL statement only.\n"
+                                f"Validation error: {vtxt}"
+                            ),
+                        },
+                    ]
+                )
+                continue
+            break
+
+        out: Dict = {
+            "type": "sql_preview",
+            "sql": sql,
+            "message": "Please review and click Execute",
+        }
+        out = await _enrich_mutation_preview(agent, operation, sql, out)
+        if out.get("mutation_preview_fatal"):
+            last_error = str(out.get("mutation_preview_error_raw") or "Preview failed")
+            if attempt < max_attempts:
+                retry_messages.extend(
+                    [
+                        {"role": "assistant", "content": sql},
+                        {
+                            "role": "system",
+                            "content": (
+                                "The previous SQL failed when running preview. "
+                                "Generate a corrected SQL statement only.\n"
+                                f"Preview error: {last_error}"
+                            ),
+                        },
+                    ]
+                )
+                continue
+            break
+
+        final_out = out
+        break
+
+    if final_out is None:
+        clarify = (
+            "I cannot generate a runnable SQL yet. Please provide more details "
+            "(exact table/column names, conditions, and required values)."
+            if _looks_missing_info(last_error)
+            else "I cannot generate a runnable SQL yet. Please refine your request and try again."
+        )
         return {
             **state,
             "sql": None,
             "wait_user": False,
-            "error": "Mutation preview query failed",
+            "error": "SQL generation/validation failed",
             "output": {
                 "type": "error",
-                "message": friendly,
+                "message": (
+                    f"{clarify}\n\n"
+                    f"Last validation/preview error:\n{last_error or '(unknown error)'}"
+                ),
             },
         }
+
+    out = final_out
 
     # Put SQL + preview into message so the frontend can render the Execute affordance
     # (frontend currently extracts sql blocks from response text).
@@ -473,7 +543,7 @@ async def _enrich_mutation_preview(agent, operation: str, sql: str, out: Dict) -
         sel = insert_into_select_preview_sql(sql)
         if sel:
             return await _mutation_preview_run_select(
-                agent, out, "Rows that would be inserted (from SELECT, preview)", sel
+                agent, out, "Rows that would be inserted (preview)", sel
             )
         from mcp_agent.graph.database_utils import insert_values_preview_markdown
         out["mutation_preview_markdown"] = await insert_values_preview_markdown(agent, sql, _call_tool)
@@ -642,9 +712,22 @@ async def sql_execution(state: AgentState, llm, agent) -> AgentState:
     except Exception as e:
         response = f"Error executing SQL: {e}"
 
-    from mcp_agent.graph.database_utils import is_execute_query_error_response
+    from mcp_agent.graph.database_utils import (
+        is_execute_query_error_response,
+        parse_mutation_rows_affected,
+    )
     is_err = is_execute_query_error_response(str(response))
-    message = str(response).strip() if is_err else "Successfully executed the SQL."
+    rows_affected = parse_mutation_rows_affected(str(response))
+    if is_err:
+        message = str(response).strip()
+    elif rows_affected == 0:
+        message = (
+            "SQL executed successfully, but 0 rows were affected "
+        )
+    elif rows_affected is not None:
+        message = f"Successfully executed the SQL. Rows affected: {rows_affected}."
+    else:
+        message = "Successfully executed the SQL."
     output_type = "error" if is_err else "execution_complete"
 
     return {
