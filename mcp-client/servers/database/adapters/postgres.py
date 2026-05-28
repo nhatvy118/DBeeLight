@@ -439,10 +439,11 @@ class PostgresAdapter(DatabaseAdapter):
             return f"SQL validation error: {str(e)}"
 
     async def explain_sql(self, sql: str) -> str:
+        # EXPLAIN only (no ANALYZE) — safe for mutations; does not execute the statement.
         try:
             pool = await self._get_pool()
             async with pool.acquire() as conn:
-                rows = await conn.fetch(f"EXPLAIN ANALYZE {sql}")
+                rows = await conn.fetch(f"EXPLAIN {sql}")
             plan_lines = [str(row[0]) for row in rows]
             return "Execution plan:\n" + "\n".join(plan_lines)
         except Exception as e:

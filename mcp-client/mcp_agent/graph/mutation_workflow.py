@@ -2,14 +2,36 @@
 
 import json
 import logging
+import re
 from typing import Dict
 
 from openai import OpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
-from mcp_agent.graph.langgraph_checkpointer import get_async_checkpointer
+from mcp_agent.graph.database_utils import (
+    alter_sql_to_select_preview,
+    build_mutation_schema_context_block,
+    build_sql_preview_message,
+    delete_sql_to_select_preview,
+    detect_db_type,
+    drop_sql_to_select_preview,
+    format_mutation_preview_markdown,
+    get_sql_system_prompt,
+    insert_into_select_preview_sql,
+    insert_values_preview_markdown,
+    is_execute_query_error_response,
+    markdown_table_from_rows,
+    parse_describe_table_column_names,
+    parse_mutation_rows_affected,
+    parse_table_names_from_list_tools,
+    sql_generation_failure_message,
+    strip_sql_fences,
+    update_sql_to_select_preview,
+    validate_explain_and_summarize,
+)
 from mcp_agent.graph.graph_state import AgentState, create_initial_state
+from mcp_agent.graph.langgraph_checkpointer import get_async_checkpointer
 from mcp_agent.graph.state import StageType
 
 logger = logging.getLogger(__name__)
@@ -155,6 +177,18 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
     logger.info(f"[Mutation] Intent parse: {user_message[:50]}...")
     recent_context = await _get_recent_session_context(agent)
 
+    orch_intent = state.get("orchestrator_intent") if isinstance(state.get("orchestrator_intent"), dict) else {}
+    orch_nl = str((orch_intent or {}).get("nl_query") or "").strip()
+    orch_table_hint = str((orch_intent or {}).get("table_hint") or "").strip()
+
+    orch_block = ""
+    if orch_nl or orch_table_hint:
+        orch_block = (
+            "Orchestrator (authoritative hints from top-level router):\n"
+            f"- nl_query: {orch_nl or '(none)'}\n"
+            f"- table_hint: {orch_table_hint or '(none)'}\n"
+        )
+
     response = llm.chat.completions.create(
         model="gpt-5.2",
         messages=[
@@ -162,7 +196,9 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
                 "role": "system",
                 "content": """Analyze the database request and extract:
 - operation: SELECT, INSERT, UPDATE, DELETE, ALTER, DROP, etc.
-- tables: list of every table name referenced (required for mutations)
+- tables: list of every table name referenced (required for mutations).
+  If the user says "this table" and orchestrator table_hint is set, use that table name.
+  If nl_query names a table (e.g. schedule), include it in tables.
 - filters: WHERE conditions
 - resolved_query: rewrite latest user message into a self-contained request
 
@@ -172,6 +208,7 @@ Return JSON."""
                 "role": "user",
                 "content": (
                     f"Latest user message: {user_message}\n\n"
+                    f"{orch_block}\n"
                     f"Recent conversation context:\n{recent_context or '(none)'}"
                 ),
             }
@@ -186,11 +223,28 @@ Return JSON."""
         intent = {}
 
     operation = str(intent.get("operation", "INSERT")).strip().upper()
-    resolved_query = str(intent.get("resolved_query") or user_message).strip() or user_message
+    resolved_query = (
+        str(intent.get("resolved_query") or "").strip()
+        or orch_nl
+        or user_message
+    )
+
+    merged_tables: list = list(intent.get("tables") or [])
+    raw_um = str(state.get("user_message") or "")
+    if "AVAILABLE SQLITE TABLES" in raw_um:
+        for t in re.findall(r"table:\s*`([^`]+)`", raw_um):
+            if t and t not in merged_tables:
+                merged_tables.append(t)
+
+    if orch_table_hint:
+        forced = [t.strip() for t in orch_table_hint.split(",") if t.strip()]
+        if forced:
+            merged_tables = forced
+            logger.info("[Mutation] orchestrator table_hint overrides tables → %s", merged_tables)
 
     safe_intent = {
         "operation": operation,
-        "tables": intent.get("tables", []),
+        "tables": merged_tables,
         "filters": intent.get("filters", {}),
         "resolved_query": resolved_query,
     }
@@ -217,8 +271,6 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
 
     if not agent:
         return {**state, "table_schema": {}}
-
-    from mcp_agent.graph.database_utils import parse_table_names_from_list_tools
 
     log_lines: list[str] = []
     tables_result = ""
@@ -337,11 +389,6 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
             "output": {"type": "error", "message": "No agent available"},
         }
 
-    from mcp_agent.graph.database_utils import (
-        detect_db_type,
-        get_sql_system_prompt,
-        build_mutation_schema_context_block,
-    )
     db_type = detect_db_type(agent)
 
     messages: list[dict[str, str]] = [
@@ -366,34 +413,10 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
         }
     )
 
-    from mcp_agent.graph.database_utils import (
-        strip_sql_fences,
-        is_execute_query_error_response,
-        format_mutation_preview_markdown,
-        delete_sql_to_select_preview,
-        update_sql_to_select_preview,
-        drop_sql_to_select_preview,
-        alter_sql_to_select_preview,
-        insert_into_select_preview_sql,
-    )
     max_attempts = 3
     sql = ""
     last_error = ""
     final_out: Dict | None = None
-
-    def _looks_missing_info(err: str) -> bool:
-        e = (err or "").lower()
-        hints = (
-            "ambiguous",
-            "could not determine",
-            "more than one",
-            "missing",
-            "requires",
-            "not enough",
-            "unknown column",
-            "column does not exist",
-        )
-        return any(h in e for h in hints)
 
     retry_messages = list(messages)
     for attempt in range(1, max_attempts + 1):
@@ -404,14 +427,16 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
         )
         sql = strip_sql_fences(response.choices[0].message.content or "")
 
-        # Pre-check syntax/objects before asking user to approve execution.
-        try:
-            validation = await _call_tool(agent, "validate_sql", {"sql": sql})
-        except Exception as e:
-            validation = f"SQL validation error: {e}"
-        vtxt = str(validation or "").strip()
-        if vtxt and ("error" in vtxt.lower() or "invalid" in vtxt.lower()):
-            last_error = vtxt
+        ok, explain_err, explain_summary = await validate_explain_and_summarize(
+            agent,
+            llm,
+            _call_tool,
+            sql=sql,
+            operation=operation,
+            request=effective_message,
+        )
+        if not ok:
+            last_error = explain_err
             if attempt < max_attempts:
                 retry_messages.extend(
                     [
@@ -419,9 +444,9 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
                         {
                             "role": "system",
                             "content": (
-                                "The previous SQL failed validation. "
+                                "The previous SQL failed validation or EXPLAIN. "
                                 "Generate a corrected SQL statement only.\n"
-                                f"Validation error: {vtxt}"
+                                f"Error: {explain_err}"
                             ),
                         },
                     ]
@@ -434,6 +459,8 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
             "sql": sql,
             "message": "Please review and click Execute",
         }
+        if explain_summary:
+            out["explain_summary"] = explain_summary
         out = await _enrich_mutation_preview(agent, operation, sql, out)
         if out.get("mutation_preview_fatal"):
             last_error = str(out.get("mutation_preview_error_raw") or "Preview failed")
@@ -458,38 +485,29 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
         break
 
     if final_out is None:
-        clarify = (
-            "I cannot generate a runnable SQL yet. Please provide more details "
-            "(exact table/column names, conditions, and required values)."
-            if _looks_missing_info(last_error)
-            else "I cannot generate a runnable SQL yet. Please refine your request and try again."
-        )
+        msg = sql_generation_failure_message(last_error)
+        if "preview" in (last_error or "").lower():
+            msg = (
+                f"{msg}\n\n"
+                f"Last preview error:\n{last_error}"
+            )
         return {
             **state,
             "sql": None,
             "wait_user": False,
             "error": "SQL generation/validation failed",
-            "output": {
-                "type": "error",
-                "message": (
-                    f"{clarify}\n\n"
-                    f"Last validation/preview error:\n{last_error or '(unknown error)'}"
-                ),
-            },
+            "output": {"type": "error", "message": msg},
         }
 
     out = final_out
 
-    # Put SQL + preview into message so the frontend can render the Execute affordance
-    # (frontend currently extracts sql blocks from response text).
+    # SQL + EXPLAIN summary + row preview for frontend Execute affordance.
     preview_md = out.get("mutation_preview_markdown")
-    msg_parts: list[str] = []
-    if sql and str(sql).strip():
-        msg_parts.append(f"```sql\n{sql}\n```")
-    if isinstance(preview_md, str) and preview_md.strip():
-        msg_parts.append(preview_md.strip())
-    msg_parts.append("Please review and click Execute")
-    out["message"] = "\n\n".join(p for p in msg_parts if p).strip()
+    out["message"] = build_sql_preview_message(
+        sql,
+        explain_summary=out.get("explain_summary"),
+        preview_md=preview_md if isinstance(preview_md, str) else None,
+    )
 
     return {
         **state,
@@ -503,21 +521,11 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
 
 
 async def _enrich_mutation_preview(agent, operation: str, sql: str, out: Dict) -> Dict:
-    """Prefer showing affected rows via read-only SELECT."""
+    """Attach row preview: VALUES table for INSERT, derived SELECT for UPDATE/DELETE, etc."""
     out = dict(out)
     op = str(operation).upper()
     if not agent:
         return out
-
-    from mcp_agent.graph.database_utils import (
-        delete_sql_to_select_preview,
-        update_sql_to_select_preview,
-        drop_sql_to_select_preview,
-        alter_sql_to_select_preview,
-        insert_into_select_preview_sql,
-        format_mutation_preview_markdown,
-        is_execute_query_error_response,
-    )
 
     if op == "DELETE":
         preview_q = delete_sql_to_select_preview(sql)
@@ -540,12 +548,29 @@ async def _enrich_mutation_preview(agent, operation: str, sql: str, out: Dict) -
         }
 
     if op == "INSERT":
+        # INSERT ... VALUES → markdown table of tuples (what will be inserted).
+        if re.search(r"\bVALUES\b", sql, re.IGNORECASE):
+            out["mutation_preview_markdown"] = await insert_values_preview_markdown(
+                agent, sql, _call_tool
+            )
+            return out
+        # INSERT ... SELECT → run subquery read-only; label so UI is not confused with a lone SELECT.
         sel = insert_into_select_preview_sql(sql)
         if sel:
-            return await _mutation_preview_run_select(
-                agent, out, "Rows that would be inserted (preview)", sel
+            out = await _mutation_preview_run_select(
+                agent,
+                out,
+                "Source rows for INSERT … SELECT (read-only preview)",
+                sel,
             )
-        from mcp_agent.graph.database_utils import insert_values_preview_markdown
+            mp = out.get("mutation_preview_markdown")
+            if isinstance(mp, str) and mp.strip():
+                out["mutation_preview_markdown"] = (
+                    "_Full statement is `INSERT … SELECT` in the SQL block above. "
+                    "The table below previews only the **SELECT** subquery (not executed as INSERT yet)._\n\n"
+                    + mp.strip()
+                )
+            return out
         out["mutation_preview_markdown"] = await insert_values_preview_markdown(agent, sql, _call_tool)
         return out
 
@@ -590,12 +615,6 @@ async def _mutation_preview_run_select(
     try:
         logger.info("[Mutation] Preview SELECT: %s", select_sql[:300])
         preview_raw = await _call_tool(agent, "execute_query", {"query": select_sql})
-        from mcp_agent.graph.database_utils import (
-            is_execute_query_error_response,
-            format_mutation_preview_markdown,
-            parse_describe_table_column_names,
-            markdown_table_from_rows,
-        )
         if is_execute_query_error_response(preview_raw):
             logger.warning("[Mutation] Preview SELECT failed: %s", (preview_raw or "")[:300])
             out["mutation_preview_fatal"] = True
@@ -608,7 +627,6 @@ async def _mutation_preview_run_select(
         if "no rows returned" in low or "no data found" in low:
             table_name = None
             try:
-                import re
                 m = re.search(r"\bfrom\s+([a-zA-Z0-9_\"`\.]+)", select_sql, flags=re.IGNORECASE)
                 if m:
                     table_name = m.group(1).strip().strip("`").strip('"')
@@ -647,14 +665,15 @@ async def sql_approval(state: AgentState, _llm, _agent) -> AgentState:
     mp = prev_out.get("mutation_preview_markdown")
     if isinstance(mp, str) and mp.strip():
         wait_output["mutation_preview_markdown"] = mp.strip()
-    # Mirror sql_preview formatting: include SQL + preview inside message for UI rendering.
-    msg_parts: list[str] = []
-    if isinstance(sql, str) and sql.strip():
-        msg_parts.append(f"```sql\n{sql}\n```")
-    if isinstance(mp, str) and mp.strip():
-        msg_parts.append(mp.strip())
-    msg_parts.append("Please review the SQL and click Execute to run")
-    wait_output["message"] = "\n\n".join(p for p in msg_parts if p).strip()
+    es = prev_out.get("explain_summary")
+    if isinstance(es, str) and es.strip():
+        wait_output["explain_summary"] = es.strip()
+    wait_output["message"] = build_sql_preview_message(
+        sql or "",
+        explain_summary=es if isinstance(es, str) else None,
+        preview_md=mp if isinstance(mp, str) else None,
+        footer="Please review the SQL and click Execute to run",
+    )
 
     logger.info("[Mutation] SQL approval interrupt")
     ok = interrupt(
@@ -712,10 +731,6 @@ async def sql_execution(state: AgentState, llm, agent) -> AgentState:
     except Exception as e:
         response = f"Error executing SQL: {e}"
 
-    from mcp_agent.graph.database_utils import (
-        is_execute_query_error_response,
-        parse_mutation_rows_affected,
-    )
     is_err = is_execute_query_error_response(str(response))
     rows_affected = parse_mutation_rows_affected(str(response))
     if is_err:
@@ -891,6 +906,7 @@ class MutationWorkflow:
         *,
         resume=None,
         thread_id: str = None,
+        orchestrator_intent: Dict | None = None,
     ) -> AgentState:
         """Run or resume the mutation workflow."""
         graph = await self._get_compiled_graph()
@@ -919,6 +935,8 @@ class MutationWorkflow:
                 pass
         else:
             state = create_initial_state(session_id, user_message, "database")
+            if orchestrator_intent:
+                state = {**state, "orchestrator_intent": orchestrator_intent}
             raw = await graph.ainvoke(state, cfg, version=GRAPH_INVOKE_VERSION)
             normalized = _normalize_graph_result(raw)
             hydrated = await _hydrate_from_checkpoint(graph, cfg, normalized)

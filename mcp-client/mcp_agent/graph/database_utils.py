@@ -6,7 +6,7 @@ Shared utilities for all database workflows (readonly, create_table, mutation).
 import json
 import logging
 import re
-from typing import Any, Optional, List
+from typing import Any, Awaitable, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -175,10 +175,18 @@ def get_sql_system_prompt(db_type: str, *, operation: str = "") -> str:
             "Return ONLY the SQL, no markdown."
         )
     else:
+        insert_values_rule = ""
+        if op == "INSERT":
+            insert_values_rule = (
+                "For INSERT that adds new/sample rows, use INSERT INTO ... VALUES with one row per tuple "
+                "(e.g. 10 rows → 10 value tuples). Do NOT use INSERT ... SELECT unless the user explicitly "
+                "asks to copy rows from another query. "
+            )
         schema_rule = (
             "A TARGET TABLE SCHEMA section lists existing columns on the target table. "
             "Use ONLY those exact table and column names. "
-            "For INSERT, include every NOT NULL column that has no DEFAULT unless it is auto-generated. "
+            + insert_values_rule
+            + "For INSERT, include every NOT NULL column that has no DEFAULT unless it is auto-generated. "
             "Return ONLY the SQL, no markdown."
         )
     if db_type == "postgresql":
@@ -806,3 +814,172 @@ async def insert_values_preview_markdown(agent, insert_sql: str, _call_tool) -> 
         table, explicit_cols, values_blob, schema_order
     )
     return md if md else insert_sql_review_markdown(insert_sql)
+
+
+def is_sql_tool_error(text: str) -> bool:
+    """True when validate_sql / explain_sql MCP tools report failure."""
+    s = (text or "").strip().lower()
+    if not s:
+        return True
+    if s.startswith("error explaining"):
+        return True
+    if "sql validation error" in s:
+        return True
+    if "error" in s or "invalid" in s:
+        return not s.startswith("sql query is valid")
+    return False
+
+
+def looks_like_missing_sql_info(err: str) -> bool:
+    """Heuristic: failure may be fixed if the user supplies more detail."""
+    e = (err or "").lower()
+    hints = (
+        "ambiguous",
+        "could not determine",
+        "more than one",
+        "missing",
+        "requires",
+        "not enough",
+        "unknown column",
+        "column does not exist",
+    )
+    return any(h in e for h in hints)
+
+
+def build_sql_preview_message(
+    sql: str,
+    *,
+    explain_summary: str | None = None,
+    preview_md: str | None = None,
+    footer: str = "Please review and click Execute",
+) -> str:
+    msg_parts: list[str] = []
+    if sql and str(sql).strip():
+        msg_parts.append(f"```sql\n{sql}\n```")
+    if isinstance(explain_summary, str) and explain_summary.strip():
+        msg_parts.append(explain_summary.strip())
+    if isinstance(preview_md, str) and preview_md.strip():
+        msg_parts.append(preview_md.strip())
+    if footer.strip():
+        msg_parts.append(footer.strip())
+    return "\n\n".join(p for p in msg_parts if p).strip()
+
+
+def build_query_result_message(
+    sql: str,
+    *,
+    explain_summary: str | None = None,
+    result_md: str | None = None,
+) -> str:
+    """Assemble readonly SELECT response: SQL block + EXPLAIN summary + result table."""
+    msg_parts: list[str] = []
+    if sql and str(sql).strip():
+        msg_parts.append(f"```sql\n{sql}\n```")
+    if isinstance(explain_summary, str) and explain_summary.strip():
+        msg_parts.append(explain_summary.strip())
+    if isinstance(result_md, str) and result_md.strip():
+        msg_parts.append(result_md.strip())
+    return "\n\n".join(p for p in msg_parts if p).strip()
+
+
+async def describe_explain_plan_naturally(
+    llm,
+    *,
+    operation: str,
+    request: str,
+    sql: str,
+    explain_raw: str,
+) -> str:
+    """Turn internal EXPLAIN check into plain-language summary (no jargon for end users)."""
+    response = llm.chat.completions.create(
+        model="gpt-5.2",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You write a short confirmation for a non-technical user before they approve "
+                    "a database change. You are given SQL and internal planner notes—use them only "
+                    "to infer what will happen; do NOT quote or name planner terms.\n\n"
+                    "Rules:\n"
+                    "- 2–4 short sentences, friendly and clear.\n"
+                    "- Say what will happen in everyday words (e.g. add rows, update records, "
+                    "remove rows, read data, create a table).\n"
+                    "- Name the table(s) if known from the SQL.\n"
+                    "- End with a simple OK line (e.g. 'Looks good to run' / 'Có vẻ ổn để thực hiện').\n"
+                    "- NEVER use: EXPLAIN, execution plan, scan, index, constant rows, lookup, "
+                    "subquery, planner, valid plan, syntax check, or similar jargon.\n"
+                    "- Do not invent specific cell values; row counts are OK only if obvious from SQL.\n"
+                    "- Match the user's language (Vietnamese if the request is Vietnamese, else English)."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Operation type: {operation}\n"
+                    f"User request: {request}\n\n"
+                    f"SQL (for your eyes only—describe in plain language):\n{sql}\n\n"
+                    f"Internal planner notes (do not repeat verbatim):\n{explain_raw}\n\n"
+                    "Write the user-facing summary."
+                ),
+            },
+        ],
+        temperature=0,
+    )
+    return (response.choices[0].message.content or "").strip()
+
+
+async def validate_explain_and_summarize(
+    agent,
+    llm,
+    call_tool: Callable[..., Awaitable[str]],
+    *,
+    sql: str,
+    operation: str,
+    request: str,
+) -> tuple[bool, str, str]:
+    """EXPLAIN validate → fetch plan → natural-language summary.
+
+    Returns (success, error_message, explain_summary).
+    """
+    try:
+        validation = await call_tool(agent, "validate_sql", {"sql": sql})
+    except Exception as e:
+        validation = f"SQL validation error: {e}"
+    vtxt = str(validation or "").strip()
+    if is_sql_tool_error(vtxt):
+        return False, vtxt, ""
+
+    try:
+        explain_raw = await call_tool(agent, "explain_sql", {"sql": sql})
+    except Exception as e:
+        explain_raw = f"Error explaining SQL: {e}"
+    etxt = str(explain_raw or "").strip()
+    if is_sql_tool_error(etxt):
+        return False, etxt, ""
+
+    explain_summary = ""
+    try:
+        explain_summary = await describe_explain_plan_naturally(
+            llm,
+            operation=operation,
+            request=request,
+            sql=sql,
+            explain_raw=etxt,
+        )
+    except Exception as e:
+        logger.warning("EXPLAIN natural-language summary failed: %s", e)
+
+    return True, "", explain_summary
+
+
+def sql_generation_failure_message(last_error: str) -> str:
+    clarify = (
+        "I cannot generate a runnable SQL yet. Please provide more details "
+        "(exact table/column names, conditions, and required values)."
+        if looks_like_missing_sql_info(last_error)
+        else "I cannot generate a runnable SQL yet. Please refine your request and try again."
+    )
+    return (
+        f"{clarify}\n\n"
+        f"Last validation error:\n{last_error or '(unknown error)'}"
+    )

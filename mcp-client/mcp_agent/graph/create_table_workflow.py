@@ -7,8 +7,17 @@ from openai import OpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
-from mcp_agent.graph.langgraph_checkpointer import get_async_checkpointer
+from mcp_agent.graph.database_utils import (
+    build_sql_preview_message,
+    detect_db_type,
+    get_create_table_system_prompt,
+    is_execute_query_error_response,
+    sql_generation_failure_message,
+    strip_sql_fences,
+    validate_explain_and_summarize,
+)
 from mcp_agent.graph.graph_state import AgentState, create_initial_state
+from mcp_agent.graph.langgraph_checkpointer import get_async_checkpointer
 from mcp_agent.graph.state import StageType
 
 logger = logging.getLogger(__name__)
@@ -289,7 +298,6 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
             "error": "No agent available",
         }
 
-    from mcp_agent.graph.database_utils import detect_db_type, get_create_table_system_prompt
     db_type = detect_db_type(agent)
 
     intent = state.get("intent", {})
@@ -318,29 +326,70 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
         }
     )
 
-    response = llm.chat.completions.create(
-        model="gpt-5.2",
-        messages=messages,
-        temperature=0,
-    )
+    max_attempts = 3
+    sql = ""
+    explain_summary = ""
+    last_error = ""
+    retry_messages = list(messages)
 
-    from mcp_agent.graph.database_utils import strip_sql_fences
-    sql = strip_sql_fences(response.choices[0].message.content or "")
+    for attempt in range(1, max_attempts + 1):
+        response = llm.chat.completions.create(
+            model="gpt-5.2",
+            messages=retry_messages,
+            temperature=0,
+        )
+        sql = strip_sql_fences(response.choices[0].message.content or "")
 
-    msg_parts: list[str] = []
-    if sql.strip():
-        msg_parts.append(f"```sql\n{sql}\n```")
-    msg_parts.append("Please review and click Execute")
+        ok, explain_err, explain_summary = await validate_explain_and_summarize(
+            agent,
+            llm,
+            _call_tool,
+            sql=sql,
+            operation=operation,
+            request=effective_message,
+        )
+        if not ok:
+            last_error = explain_err
+            if attempt < max_attempts:
+                retry_messages.extend(
+                    [
+                        {"role": "assistant", "content": sql},
+                        {
+                            "role": "system",
+                            "content": (
+                                "The previous SQL failed validation or EXPLAIN. "
+                                "Generate a corrected CREATE TABLE statement only.\n"
+                                f"Error: {explain_err}"
+                            ),
+                        },
+                    ]
+                )
+                continue
+            return {
+                **state,
+                "current_stage": "SQL_PREVIEW",
+                "sql": None,
+                "error": "SQL generation/validation failed",
+                "output": {
+                    "type": "error",
+                    "message": sql_generation_failure_message(last_error),
+                },
+            }
+        break
+
+    out = {
+        "type": "sql_preview",
+        "sql": sql,
+        "message": build_sql_preview_message(sql, explain_summary=explain_summary or None),
+    }
+    if explain_summary:
+        out["explain_summary"] = explain_summary
 
     return {
         **state,
         "current_stage": "SQL_PREVIEW",
         "sql": sql,
-        "output": {
-            "type": "sql_preview",
-            "sql": sql,
-            "message": "\n\n".join(msg_parts).strip(),
-        },
+        "output": out,
     }
 
 
@@ -348,12 +397,18 @@ async def sql_approval(state: AgentState, _llm, _agent) -> AgentState:
     """Second gate: user must approve the final CREATE TABLE SQL."""
     sql = state.get("sql")
     out = state.get("output") if isinstance(state.get("output"), dict) else {}
-    msg = out.get("message") if isinstance(out, dict) else None
+    es = out.get("explain_summary")
     wait_output = {
         "type": "sql_preview",
         "sql": sql,
-        "message": (msg if isinstance(msg, str) and msg.strip() else "Please review the SQL and click Execute to run"),
+        "message": build_sql_preview_message(
+            sql or "",
+            explain_summary=es if isinstance(es, str) else None,
+            footer="Please review the SQL and click Execute to run",
+        ),
     }
+    if isinstance(es, str) and es.strip():
+        wait_output["explain_summary"] = es.strip()
     ok = interrupt({"stage": "SQL_PREVIEW", "output": wait_output})
     if not ok:
         return {
@@ -388,7 +443,6 @@ async def sql_execution(state: AgentState, llm, agent) -> AgentState:
             "error": "No agent available"
         }
 
-    from mcp_agent.graph.database_utils import is_execute_query_error_response
     sql = str(state.get("sql") or "").strip()
     if not sql:
         return {

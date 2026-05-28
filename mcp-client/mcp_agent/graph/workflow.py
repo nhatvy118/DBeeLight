@@ -171,7 +171,11 @@ class AgentWorkflow:
             self._session_workflow_map[session_id] = "mutation"
             logger.info("[Workflow] database_route=mutation → MutationWorkflow")
             return await workflow.run(
-                session_id, user_message, resume=resume, thread_id=thread_id
+                session_id,
+                user_message,
+                resume=resume,
+                thread_id=thread_id,
+                orchestrator_intent=orchestrator_intent,
             )
 
         # No orchestrator route — local classify (legacy / direct callers)

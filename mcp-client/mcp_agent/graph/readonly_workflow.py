@@ -8,6 +8,18 @@ from typing import Dict, Any
 from openai import OpenAI
 from langgraph.graph import END, StateGraph
 
+from mcp_agent.graph.database_utils import (
+    build_query_result_message,
+    build_readonly_schema_context_block,
+    detect_db_type,
+    extract_attached_files_context_block,
+    get_select_system_prompt,
+    is_execute_query_error_response,
+    json_query_rows_to_markdown_table,
+    sql_generation_failure_message,
+    strip_sql_fences,
+    validate_explain_and_summarize,
+)
 from mcp_agent.graph.graph_state import AgentState, create_initial_state
 from mcp_agent.graph.state import StageType
 
@@ -574,15 +586,6 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
 
     # Generate and execute SELECT
     if agent:
-        from mcp_agent.graph.database_utils import (
-            strip_sql_fences,
-            is_execute_query_error_response,
-            json_query_rows_to_markdown_table,
-            detect_db_type,
-            get_select_system_prompt,
-            build_readonly_schema_context_block,
-            extract_attached_files_context_block,
-        )
         db_type = detect_db_type(agent)
         attached = extract_attached_files_context_block(user_message)
         messages = [{"role": "system", "content": get_select_system_prompt(db_type)}]
@@ -645,33 +648,83 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                 ),
             }
         )
-        sel_resp = llm.chat.completions.create(
-            model="gpt-5.2",
-            messages=messages,
-            temperature=0,
-        )
-        select_sql = strip_sql_fences(sel_resp.choices[0].message.content or "")
+
+        max_attempts = 3
+        select_sql = ""
+        explain_summary = ""
+        last_error = ""
+        retry_messages = list(messages)
+
+        for attempt in range(1, max_attempts + 1):
+            sel_resp = llm.chat.completions.create(
+                model="gpt-5.2",
+                messages=retry_messages,
+                temperature=0,
+            )
+            select_sql = strip_sql_fences(sel_resp.choices[0].message.content or "")
+
+            ok, explain_err, explain_summary = await validate_explain_and_summarize(
+                agent,
+                llm,
+                _call_tool,
+                sql=select_sql,
+                operation=operation,
+                request=effective_message,
+            )
+            if not ok:
+                last_error = explain_err
+                if attempt < max_attempts:
+                    retry_messages.extend(
+                        [
+                            {"role": "assistant", "content": select_sql},
+                            {
+                                "role": "system",
+                                "content": (
+                                    "The previous SQL failed validation or EXPLAIN. "
+                                    "Generate a corrected SELECT only.\n"
+                                    f"Error: {explain_err}"
+                                ),
+                            },
+                        ]
+                    )
+                    continue
+                return {
+                    **state,
+                    "sql": None,
+                    "query_result": None,
+                    "output": {
+                        "type": "error",
+                        "message": sql_generation_failure_message(last_error),
+                    },
+                }
+            break
+
         try:
             query_result = await _call_tool(agent, "execute_query", {"query": select_sql})
         except Exception as e:
             query_result = f"Error executing SELECT: {e}"
 
-        # Keep SQL block unchanged, and format result for better markdown rendering:
-        # - JSON rows -> markdown table
-        # - non-JSON / parse-fail -> fenced text block (avoid long inline text)
         result_markdown = json_query_rows_to_markdown_table(query_result)
         rendered_result = result_markdown if result_markdown else f"```text\n{query_result}\n```"
 
-        response = (
-            f"```sql\n{select_sql}\n```\n\n"
-            f"{rendered_result}"
+        response = build_query_result_message(
+            select_sql,
+            explain_summary=explain_summary or None,
+            result_md=rendered_result,
         )
         output_type = "error" if is_execute_query_error_response(query_result) else "query_result"
+        out: Dict[str, Any] = {
+            "type": output_type,
+            "data": response,
+            "message": response,
+        }
+        if explain_summary:
+            out["explain_summary"] = explain_summary
         return {
             **state,
             "sql": select_sql,
             "query_result": response,
-            "output": {"type": output_type, "data": response, "message": response}
+            "output": out,
         }
 
     return {
