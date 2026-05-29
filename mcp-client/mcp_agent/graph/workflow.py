@@ -229,7 +229,7 @@ class AgentWorkflow:
                 },
             }
         try:
-            text = await agent.process_query(user_message, verbose=False, persist_history=True)
+            text = await agent.process_query(user_message, verbose=False, persist_history=False)
         except Exception as e:
             logger.exception("[Workflow] BaseAgent.process_query failed: %s", e)
             base = create_initial_state(session_id, user_message, "database")
@@ -284,7 +284,7 @@ class AgentWorkflow:
             logger.warning("[Workflow] resume/thread_id ignored for agent_type=%s", agent_type)
         logger.info(f"[Workflow] Delegating {agent_type} to agent tool loop for session {session_id}")
         try:
-            response = await agent.process_query(user_message, verbose=False)
+            response = await agent.process_query(user_message, verbose=False, persist_history=False)
         except Exception as e:
             logger.exception("[Workflow] %s agent error: %s", agent_type, e)
             return {
