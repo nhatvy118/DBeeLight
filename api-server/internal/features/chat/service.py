@@ -867,6 +867,10 @@ class ChatService:
 
         async def run_chat_task() -> None:
             token = set_progress_callback(progress_cb)
+            # Pin this user's orchestrator for the whole turn so the LRU/TTL
+            # eviction sweep never tears down its subprocesses mid-request
+            # (covers client-disconnect cancellation too — finally still runs).
+            self._agent_repo.mark_in_use(user_key)
             try:
                 response_text, sid, tool_events, pending, warnings, success = await self.chat(
                     user_key, message, session_id, project_id, active_file_ids
@@ -888,6 +892,7 @@ class ChatService:
                 logger.exception("chat_stream: chat task failed: %s", e)
                 await queue.put({"type": "error", "status_code": 500, "message": str(e)})
             finally:
+                self._agent_repo.mark_done(user_key)
                 reset_progress_callback(token)
                 await queue.put(None)  # sentinel: end of stream
 

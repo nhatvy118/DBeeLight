@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +11,17 @@ from mcp_agent.agents import ChartAgent
 from mcp_agent.orchestration import Orchestrator
 
 logger = logging.getLogger("internal")
+
+# LRU/TTL bounds for the per-user orchestrator cache. Each orchestrator holds
+# ~3 MCP subprocesses (~190 MB total), so an unbounded cache leaks RAM as users
+# accumulate. We evict idle/least-recently-used orchestrators to cap live
+# subprocesses at MAX_ORCHESTRATORS × 3. Evicted users transparently re-init on
+# their next request (history lives in Postgres, not the orchestrator).
+MAX_ORCHESTRATORS = 5
+ORCHESTRATOR_TTL_SECONDS = 600  # evict orchestrators idle longer than 10 minutes
+# Never evict (for over-capacity trimming) an orchestrator used within this
+# window — guards short in-flight requests that don't hold a refcount.
+_EVICT_RECENT_GUARD_SECONDS = 120
 
 # api-server owns the SQLite data directories. Pass them explicitly to the
 # chart-server subprocess so it doesn't have to guess workspace layout.
@@ -49,6 +61,9 @@ class AgentRepository:
         # Per-user orchestrators (each has its own SessionManager and agents)
         self._orchestrators: dict[str, Orchestrator] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        # LRU/refcount bookkeeping for cache eviction.
+        self._last_used: dict[str, float] = {}   # user_key -> monotonic timestamp
+        self._inflight: dict[str, int] = {}      # user_key -> active request count
 
     def set_db_pool(self, db_pool) -> None:
         self._db_pool = db_pool
@@ -57,6 +72,74 @@ class AgentRepository:
         if user_key not in self._locks:
             self._locks[user_key] = asyncio.Lock()
         return self._locks[user_key]
+
+    def mark_in_use(self, user_key: str) -> None:
+        """Pin a user's orchestrator while a request is actively using it, so
+        the eviction sweep never tears down its subprocesses mid-request."""
+        user_key = (user_key or "anonymous").strip() or "anonymous"
+        self._inflight[user_key] = self._inflight.get(user_key, 0) + 1
+        self._last_used[user_key] = time.monotonic()
+
+    def mark_done(self, user_key: str) -> None:
+        """Release a pin set by ``mark_in_use`` (call in a ``finally``)."""
+        user_key = (user_key or "anonymous").strip() or "anonymous"
+        if user_key in self._inflight:
+            self._inflight[user_key] = max(0, self._inflight[user_key] - 1)
+        self._last_used[user_key] = time.monotonic()
+
+    def _detach_evictable(self, exclude_user: str) -> list[Orchestrator]:
+        """Synchronously (no ``await``) pick + remove orchestrators to evict and
+        return them so the caller can ``await cleanup()`` outside any lock.
+
+        Never evicts: the current user, in-use agents (``inflight > 0``), or —
+        for over-capacity trimming — agents touched within the recent guard
+        window. Idle-past-TTL agents are always evicted. Being await-free, the
+        selection is atomic w.r.t. other coroutines on the event loop."""
+        now = time.monotonic()
+        detached: list[Orchestrator] = []
+
+        def _pop(uk: str) -> Optional[Orchestrator]:
+            self._last_used.pop(uk, None)
+            self._inflight.pop(uk, None)
+            return self._orchestrators.pop(uk, None)
+
+        # 1) Evict anything idle longer than the TTL.
+        for uk in list(self._orchestrators.keys()):
+            if uk == exclude_user or self._inflight.get(uk, 0) > 0:
+                continue
+            if now - self._last_used.get(uk, 0.0) > ORCHESTRATOR_TTL_SECONDS:
+                orch = _pop(uk)
+                if orch is not None:
+                    detached.append(orch)
+
+        # 2) Trim to capacity by LRU so adding the current user stays <= MAX.
+        while len(self._orchestrators) > MAX_ORCHESTRATORS - 1:
+            candidates = [
+                uk for uk in self._orchestrators
+                if uk != exclude_user
+                and self._inflight.get(uk, 0) == 0
+                and now - self._last_used.get(uk, 0.0) > _EVICT_RECENT_GUARD_SECONDS
+            ]
+            if not candidates:
+                break  # everyone is busy/recent → allow temporary over-capacity
+            lru = min(candidates, key=lambda uk: self._last_used.get(uk, 0.0))
+            orch = _pop(lru)
+            if orch is not None:
+                detached.append(orch)
+        return detached
+
+    async def shutdown(self) -> None:
+        """Tear down every cached orchestrator (kills all MCP subprocesses).
+        Call from the app's lifespan shutdown."""
+        orchestrators = list(self._orchestrators.values())
+        self._orchestrators.clear()
+        self._last_used.clear()
+        self._inflight.clear()
+        for orch in orchestrators:
+            try:
+                await orch.cleanup()
+            except Exception as e:
+                logger.warning("AgentRepository.shutdown: cleanup failed: %s", e)
 
     async def get_agent(self, user_key: str = "anonymous") -> Orchestrator:
         """
@@ -73,10 +156,21 @@ class AgentRepository:
         async with self._user_lock(user_key):
             existing = self._orchestrators.get(user_key)
             if existing is not None and existing.sessions:
+                self._last_used[user_key] = time.monotonic()
                 return existing
 
             if user_key != "anonymous" and self._db_pool is None:
                 raise RuntimeError("Database pool is not initialized. Sessions require Postgres storage.")
+
+            # Make room before adding a new orchestrator: evict idle/LRU ones
+            # (never the current user, never in-use agents) and kill their
+            # subprocesses to free RAM.
+            for evicted in self._detach_evictable(exclude_user=user_key):
+                try:
+                    await evicted.cleanup()
+                    logger.info("Evicted an idle orchestrator and cleaned up its subprocesses")
+                except Exception as e:
+                    logger.warning("Eviction cleanup failed: %s", e)
 
             logger.info("Initializing hybrid orchestrator...")
             session_manager = SessionManager(
@@ -129,4 +223,5 @@ class AgentRepository:
                 logger.info(f"  {agent.agent_id} sessions: {list(agent.sessions.keys())}")
 
             self._orchestrators[user_key] = orchestrator
+            self._last_used[user_key] = time.monotonic()
             return orchestrator

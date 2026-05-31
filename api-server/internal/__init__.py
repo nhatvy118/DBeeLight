@@ -44,6 +44,11 @@ async def lifespan(app: FastAPI):
     await init_redis_client()
     yield
     # Shutdown
+    try:
+        from internal.features.chat.dependencies import _agent_repository_singleton
+        await _agent_repository_singleton().shutdown()
+    except Exception as e:
+        logger.warning("Agent repository shutdown failed: %s", e)
     await close_db(app)
     await close_redis_client()
 
