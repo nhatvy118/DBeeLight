@@ -1,14 +1,12 @@
 """Shared LangGraph checkpointer: Postgres (durable) or in-memory fallback.
 
-Set one of:
-  - LANGGRAPH_CHECKPOINT_DB_URL — dedicated DB for graph checkpoints (optional)
-  - DATABASE_URL or DB_URL — same as api-server (`internal/db.py`)
+Uses DB_URL — same as api-server (`internal/db.py`).
 
 Example:
   postgresql://postgres:postgres@localhost:5442/postgres?sslmode=disable
 
 First successful Postgres init runs AsyncPostgresSaver.setup() (checkpoint tables).
-If no URI is set, MemorySaver is used (dev / tests).
+If DB_URL is not set, MemorySaver is used (dev / tests).
 """
 
 from __future__ import annotations
@@ -28,15 +26,7 @@ _pool: Any = None
 
 
 def _resolve_postgres_uri() -> str | None:
-    for key in (
-        "LANGGRAPH_CHECKPOINT_DB_URL",
-        "DATABASE_URL",
-        "DB_URL",
-    ):
-        v = (os.getenv(key) or "").strip()
-        if v:
-            return v
-    return None
+    return (os.getenv("DB_URL") or "").strip() or None
 
 
 def _get_lock() -> asyncio.Lock:
@@ -57,8 +47,7 @@ async def get_async_checkpointer() -> Any:
         uri = _resolve_postgres_uri()
         if not uri:
             logger.debug(
-                "No LANGGRAPH_CHECKPOINT_DB_URL / DATABASE_URL / DB_URL; "
-                "using MemorySaver for LangGraph checkpoints"
+                "No DB_URL set; using MemorySaver for LangGraph checkpoints"
             )
             _cp = MemorySaver()
             return _cp

@@ -1295,7 +1295,6 @@ class ChatService:
             logger.error(f"UseCase: Error executing SQL: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to execute SQL: {str(e)}") from e
 
-
     async def connect_external_db(
         self,
         user_key: str,

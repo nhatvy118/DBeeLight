@@ -51,6 +51,13 @@ class AuthService:
         logger.info(f"UseCase: Processing Google OAuth callback, code={'present' if code else 'missing'}, state={'present' if state else 'missing'}")
         expected_state = request.session.get("google_oauth_state")
         if not expected_state or not state or state != expected_state:
+            # Soft path: a refresh / back-button replay of the callback URL loses the
+            # one-shot state (it is popped after a successful login). If the user is
+            # already authenticated, don't show a 400 — just send them to the app.
+            if request.session.get("user"):
+                next_path = request.session.get("google_oauth_next") or "/chat"
+                logger.info(f"UseCase: Callback replay with no state but user already logged in, redirecting to {next_path}")
+                return RedirectResponse(url=f"{self._frontend_url}{next_path}")
             logger.warning(f"UseCase: Invalid OAuth state. Expected: {expected_state}, Got: {state}")
             raise HTTPException(status_code=400, detail="Invalid OAuth state")
         if not code:

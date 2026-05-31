@@ -11,14 +11,13 @@ logger = logging.getLogger("internal")
 
 
 def _get_database_url() -> str:
-    # Prefer DB_URL (convenient for Makefile) then standard DATABASE_URL
-    return (os.getenv("DB_URL") or os.getenv("DATABASE_URL") or "").strip()
+    return (os.getenv("DB_URL") or "").strip()
 
 
 async def init_db(app: FastAPI) -> None:
     db_url = _get_database_url()
     if not db_url:
-        logger.warning("DATABASE_URL/DB_URL is not set. DB-backed features will be disabled.")
+        logger.warning("DB_URL is not set. DB-backed features will be disabled.")
         app.state.db_pool = None
         return
 
