@@ -9,7 +9,7 @@
 # Default DB URL used by migrate-* targets when DB_URL / DATABASE_URL aren't set
 # in the environment. NOT exported globally — otherwise it would override
 # DB_URL/DATABASE_URL loaded from api-server/.env when running the server.
-DEFAULT_DB_URL = postgres://postgres:postgres@localhost:5432/database_app?sslmode=disable
+DEFAULT_DB_URL = postgres://pila_vyhuynh:postgres@localhost:5432/mcp-api-server?sslmode=disable
 
 help:
 	@echo "Targets:"

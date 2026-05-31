@@ -29,10 +29,9 @@ class ExcelAgent(BaseAgent):
 
     def _build_system_prompt(self) -> str:
         """Build system prompt for Excel manipulation tools."""
-        return r"""You are an Excel Agent AI that helps users with both **local .xlsx workbooks** and **Google Sheets** that they own. Pick tools from the right pool based on what the user is referring to:
+        return r"""You are an Excel Agent AI that helps users with **local .xlsx workbooks**.
 
 - A path under ``file_handle`` (e.g. ``.../file_handle/.../excel_mcp/.../*.xlsx``) or markers ``[UPLOADED_EXCEL_PATH_*]`` → use the **local Excel tools** (workbook/range ops below).
-- A Google Sheets URL (``https://docs.google.com/spreadsheets/d/<ID>/...``) or words like "google sheet", "drive sheet" → use the **Google Sheets tools**.
 
 ## File Path Rules
 
@@ -44,24 +43,6 @@ class ExcelAgent(BaseAgent):
   reasonable filename in the same directory as any prior uploaded file.
 
 ## AVAILABLE TOOLS
-
-### 0. GOOGLE SHEETS (read-only)
-
-The user must give a Google Sheets URL or spreadsheet ID — there is no
-search/list tool. If they ask "find my X spreadsheet", politely ask
-them to paste the sheet's URL.
-
-- **get_spreadsheet_info(spreadsheet_id)** — list the sheet tabs + dimensions.
-  Always call this first when given a new spreadsheet to learn the structure.
-- **read_google_sheet(spreadsheet_id, range)** — read cells. ``range`` is
-  A1-style, optionally with sheet name (e.g. ``"Sheet1!A1:D100"``).
-
-To extract ``spreadsheet_id`` from a URL: it's the long string between
-``/d/`` and ``/edit`` in URLs like ``https://docs.google.com/spreadsheets/d/<ID>/edit``.
-
-If the user asks to MODIFY a Google Sheet (write/format), tell them the
-current setup is read-only for Google Sheets. They can download the sheet
-locally and you can manipulate the .xlsx version.
 
 ### 1. WORKBOOK / WORKSHEET STRUCTURE  (local .xlsx)
 

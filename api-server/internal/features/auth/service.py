@@ -148,18 +148,10 @@ class AuthService:
 
         logger.info(f"UseCase: Persisting user to database, google_sub={google_sub}, name={display_name}, email={email_value}")
         try:
-            # Persist Google tokens too so MCP servers (gsheets-server) can
-            # call Google APIs on behalf of this user. ``refresh_token`` is
-            # only present on consent flow; subsequent logins without consent
-            # omit it — UserRepository COALESCEs to keep the existing one.
             db_user = await self._user_repo.upsert_user(
                 google_sub=google_sub,
                 name=display_name,
                 email=email_value,
-                access_token=token_resp.get("access_token"),
-                refresh_token=token_resp.get("refresh_token"),
-                expires_in=int(token_resp.get("expires_in") or 0) or None,
-                scope=token_resp.get("scope"),
             )
             user_id = db_user.get("id")
             request.session["user_id"] = user_id

@@ -12,7 +12,6 @@ SERVERS_DIR: Path = Path(__file__).resolve().parent.parent / "servers"
 SERVER_SCRIPTS: dict[str, Path] = {
     "database": SERVERS_DIR / "database" / "database.py",
     "excel": SERVERS_DIR / "excel-server" / "excel_server.py",
-    "gsheets": SERVERS_DIR / "gsheets-server" / "gsheets_server.py",
     "chart": SERVERS_DIR / "chart-server" / "chart_server.py",
 }
 

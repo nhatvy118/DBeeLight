@@ -37,18 +37,12 @@ class AgentRepository:
         self,
         model: str = "gpt-5.2",
     ):
-        # Which bundled MCP servers each agent connects to. Excel agent
-        # connects to BOTH the local-xlsx server and the Google-Sheets
-        # server, so the agent picks tools from either pool based on whether
-        # the user references a local file or a Sheets URL.
+        # Which bundled MCP servers each agent connects to.
         self._agent_servers: dict[str, list[str]] = {
             "database": ["database"],
-            "excel": ["excel", "gsheets"],
+            "excel": ["excel"],
             "chart": ["chart"],
         }
-        # Servers whose subprocess needs the *current app user's* google_sub
-        # injected via env (so they can act on that user's Google data).
-        self._per_user_google_servers: set[str] = {"gsheets"}
         self._model = model
         self._db_pool = None
 
@@ -105,16 +99,8 @@ class AgentRepository:
                     if not full_path.exists():
                         logger.warning(f"Server not found: {full_path}")
                         continue
-                    # Inject per-user / per-server env. For "anonymous" users
-                    # we skip Google servers — they have no Google account.
+                    # Inject per-server env.
                     extra_env: dict[str, str] = {}
-                    if server_id in self._per_user_google_servers:
-                        if user_key == "anonymous":
-                            logger.info(
-                                f"Skipping {server_id} for anonymous user (no Google identity)"
-                            )
-                            continue
-                        extra_env["USER_GOOGLE_SUB"] = user_key
                     if server_id == "chart":
                         # chart-server validates that incoming SQLite db_urls
                         # live under one of these dirs (defense in depth).

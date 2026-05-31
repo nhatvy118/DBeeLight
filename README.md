@@ -40,23 +40,6 @@ uv sync  # Tạo .venv và cài đặt excel-mcp-server
 
 **Tools (24):** create_workbook, create_worksheet, get_workbook_metadata, read_data_from_excel, write_data_to_excel, copy_worksheet, delete_worksheet, rename_worksheet, copy_range, delete_range, validate_excel_range, get_data_validation_info, insert_rows, insert_columns, delete_sheet_rows, delete_sheet_columns, apply_formula, validate_formula_syntax, format_range, merge_cells, unmerge_cells, get_merged_cells, create_chart, create_pivot_table, create_table.
 
-### 2b. Google Sheets Server (`mcp-client/servers/gsheets-server/`)
-Per-user Google Sheets / Drive read access. Mỗi user app login Google → tokens (access + refresh) được lưu encrypted vào `users` table → server này dùng để đọc Sheets thay user.
-
-**Cài đặt:**
-```bash
-cd mcp-client/servers/gsheets-server
-uv sync
-```
-
-**Yêu cầu env (trong `api-server/.env`):**
-- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (đã có cho login)
-- `TOKEN_ENCRYPTION_KEY`: Fernet key — generate bằng `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Dev có thể bỏ qua (token lưu plaintext + log warning).
-
-**Tools (2):** `get_spreadsheet_info`, `read_google_sheet`. Read-only. User phải paste URL/ID của sheet (không có Drive search vì cố tình tránh `drive.readonly` restricted scope).
-
-**Lưu ý:** User đã login từ trước phải logout + login lại để consent thêm Sheets scope.
-
 ### 3. Excel UI (`excel-ui/`)
 Web UI để upload Excel files và thao tác workbook qua MCP excel-server tools.
 

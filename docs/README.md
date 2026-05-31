@@ -191,13 +191,11 @@ mcp-server/
         │       └── factory.py    # DatabaseAdapterFactory
         ├── excel-server/
         │   └── excel_server.py   # Stdio adapter cho excel-mcp-server (haris-musa)
-        ├── gsheets-server/
-        │   └── gsheets_server.py # Per-user Google Sheets read access
         └── chart-server/
             └── chart_server.py   # Chart-rendering server
 ```
 
-> Path resolution: `api-server` không hardcode workspace layout — nó gọi `mcp_agent.server_script("database" | "excel" | "gsheets" | "chart")` để lấy đường dẫn tuyệt đối của server đã bundle.
+> Path resolution: `api-server` không hardcode workspace layout — nó gọi `mcp_agent.server_script("database" | "excel" | "chart")` để lấy đường dẫn tuyệt đối của server đã bundle.
 
 ---
 

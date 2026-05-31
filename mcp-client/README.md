@@ -120,7 +120,6 @@ mcp-client/
 ├── servers/                      # Bundled MCP server projects
 │   ├── database/                 # PostgreSQL / SQLite server
 │   ├── excel-server/             # Local xlsx server
-│   ├── gsheets-server/           # Google Sheets server (per-user)
 │   └── chart-server/             # Chart-rendering server
 └── pyproject.toml                # Package configuration
 ```

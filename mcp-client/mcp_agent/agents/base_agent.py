@@ -134,9 +134,8 @@ class BaseAgent(ABC):
             server_script_path: Path to server script (.py or .js).
             env: Extra env vars to pass into the spawned subprocess. Merged on
                 top of the current process env so the child still inherits
-                ``PATH``, ``DATABASE_URL``, etc. Use this for per-user
-                context (e.g. ``USER_GOOGLE_SUB``) when the server needs to
-                act on behalf of a specific app user.
+                ``PATH``, ``DATABASE_URL``, etc. Use this for per-server
+                context the subprocess needs at startup.
         """
         is_python = server_script_path.endswith(".py")
         is_js = server_script_path.endswith(".js")

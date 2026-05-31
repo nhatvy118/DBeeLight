@@ -83,10 +83,9 @@ servers.py       Path resolution cho 4 MCP server subprocesses
 
 #### `mcp-client/servers/` — MCP Servers (subprocess)
 
-4 server chạy độc lập, mỗi cái có venv riêng:
+3 server chạy độc lập, mỗi cái có venv riêng:
 - `database/` — kết nối SQLite/PostgreSQL, thực thi SQL
 - `excel-server/` — đọc/ghi file Excel
-- `gsheets-server/` — Google Sheets API
 - `chart-server/` — render Vega-Lite charts
 
 ---

@@ -10,21 +10,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Scopes requested at login. ``openid`` + ``email`` + ``profile`` are required
-# for app identity; ``spreadsheets.readonly`` lets the gsheets MCP server read
-# any sheet the user provides a URL/ID for.
-#
-# We deliberately AVOID ``drive.readonly`` — that's a *restricted* scope that
-# triggers Google's CASA security audit before publishing. With only
-# ``spreadsheets.readonly`` (sensitive, not restricted) we still need users
-# to be in the OAuth test users list during development, but the verification
-# path to "Production" is much lighter (no security audit).
-#
-# Trade-off: cannot list/search the user's Sheets via Drive — the user has
-# to paste a Google Sheets URL or spreadsheet_id explicitly.
-DEFAULT_SCOPES = (
-    "openid email profile "
-    "https://www.googleapis.com/auth/spreadsheets.readonly"
-)
+# for app identity (Google sign-in only).
+DEFAULT_SCOPES = "openid email profile"
 
 
 class GoogleOAuthRepository:
