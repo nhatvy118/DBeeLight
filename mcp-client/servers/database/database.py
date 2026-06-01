@@ -895,10 +895,12 @@ async def run_mutation(sql: str) -> str:
 
 @mcp.tool()
 async def validate_sql(sql: str) -> str:
-    """Validate SQL syntax without executing it.
+    """Validate DDL (CREATE/ALTER/DROP/TRUNCATE) via dry-run + rollback.
+
+    For SELECT/INSERT/UPDATE/DELETE use ``explain_sql`` instead.
 
     Args:
-        sql: SQL query to validate
+        sql: DDL statement to validate
     """
     if _primary_adapter is not None and _session_adapter is not None:
         table_name = _first_table_name_from_sql(sql)

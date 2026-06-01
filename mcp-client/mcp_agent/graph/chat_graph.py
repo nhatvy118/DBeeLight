@@ -24,10 +24,13 @@ logger = logging.getLogger(__name__)
 # Namespace for chat checkpoints — keep distinct from default (workflow) namespace.
 CHAT_CHECKPOINT_NS = "chat"
 # Summarization tuning for summary + recent turns routing (.env configurable).
-SUMMARY_MODEL_MAX_TOKENS = max(32, int(os.getenv("CHAT_SUMMARY_MODEL_MAX_TOKENS", "96")))
-SUMMARY_TRIGGER_TOKENS = max(128, int(os.getenv("CHAT_SUMMARY_TRIGGER_TOKENS", "384")))
-SUMMARY_INPUT_MAX_TOKENS = max(128, int(os.getenv("CHAT_SUMMARY_INPUT_MAX_TOKENS", "384")))
-SUMMARY_MAX_TOKENS = max(32, int(os.getenv("CHAT_SUMMARY_MAX_TOKENS", "96")))
+SUMMARY_MODEL_MAX_TOKENS = max(64, int(os.getenv("CHAT_SUMMARY_MODEL_MAX_TOKENS", "256")))
+SUMMARY_TRIGGER_TOKENS = max(512, int(os.getenv("CHAT_SUMMARY_TRIGGER_TOKENS", "6000")))
+SUMMARY_INPUT_MAX_TOKENS = max(
+    SUMMARY_TRIGGER_TOKENS,
+    int(os.getenv("CHAT_SUMMARY_INPUT_MAX_TOKENS", "8000")),
+)
+SUMMARY_MAX_TOKENS = max(64, int(os.getenv("CHAT_SUMMARY_MAX_TOKENS", "512")))
 CHAT_HISTORY_HARD_CAP_TOKENS = max(4096, int(os.getenv("CHAT_HISTORY_HARD_CAP_TOKENS", "20000")))
 
 # Override langmem's default final prompt: skip the ``SystemMessage`` that wraps

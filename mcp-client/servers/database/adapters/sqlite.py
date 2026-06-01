@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime, date
 import aiosqlite
 
-from adapters.base import DatabaseAdapter
+from adapters.base import DatabaseAdapter, is_ddl_statement
 
 
 def _normalize_value(value: Any) -> Any:
@@ -409,26 +409,46 @@ class SQLiteAdapter(DatabaseAdapter):
             return "Database not connected."
         try:
             async with aiosqlite.connect(self._db_path) as conn:
-                cursor = await conn.execute(sql)
-                rowcount = cursor.rowcount
+                await conn.execute(sql)
                 await conn.commit()
-            return f"Mutation executed successfully. Rows affected: {rowcount}"
+            return "Mutation executed successfully."
         except Exception as e:
             return f"Error running mutation: {str(e)}"
 
     async def validate_sql(self, sql: str) -> str:
-        # SQLite uses EXPLAIN to validate
+        """DDL only (dry-run + rollback). Use explain_sql for SELECT/DML."""
+        if not self._db_path:
+            return "Database not connected."
+        if not is_ddl_statement(sql):
+            return (
+                "Error: validate_sql is for DDL only (CREATE/ALTER/DROP/TRUNCATE). "
+                "Use explain_sql for SELECT, INSERT, UPDATE, or DELETE."
+            )
+        return await self._validate_ddl(sql)
+
+    async def _validate_ddl(self, sql: str) -> str:
+        """Tier 3: dry-run DDL, then rollback (SQLite)."""
         if not self._db_path:
             return "Database not connected."
         try:
             async with aiosqlite.connect(self._db_path) as conn:
-                await conn.execute(f"EXPLAIN {sql}")
+                await conn.execute("BEGIN")
+                try:
+                    await conn.execute(sql)
+                except Exception as e:
+                    await conn.rollback()
+                    return f"SQL validation error: {str(e)}"
+                await conn.rollback()
             return "SQL query is valid."
         except Exception as e:
             return f"SQL validation error: {str(e)}"
 
+    @staticmethod
+    def _explain_query_plan_sql(sql: str) -> str:
+        return f"EXPLAIN QUERY PLAN {sql}"
+
     async def explain_sql(self, sql: str) -> str:
-        query = f"EXPLAIN QUERY PLAN {sql}"
+        query = self._explain_query_plan_sql(sql)
         rows, error = await self._run(query)
         if error:
             return f"Error explaining SQL: {error}"

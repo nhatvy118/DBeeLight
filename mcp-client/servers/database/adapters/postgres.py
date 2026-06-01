@@ -7,7 +7,7 @@ from uuid import UUID
 import json
 import asyncpg
 
-from adapters.base import DatabaseAdapter
+from adapters.base import DatabaseAdapter, is_ddl_statement
 
 
 def _normalize_value(value: Any) -> Any:
@@ -382,17 +382,29 @@ class PostgresAdapter(DatabaseAdapter):
         try:
             pool = await self._get_pool()
             async with pool.acquire() as conn:
-                query_upper = query.strip().upper()
-                if query_upper.startswith("SELECT"):
-                    rows = await conn.fetch(query)
-                    if not rows:
-                        return "Query executed successfully. No rows returned."
-                    results = [dict(row) for row in rows]
-                    return json.dumps(results, default=_json_safe)
-                result = await conn.execute(query)
-                return f"Query executed successfully. Result: {result}"
+                return await self._execute_on_connection(conn, query)
         except Exception as e:
-            return f"Error executing query: {str(e)}"
+            err = str(e)
+            if "cached statement plan is invalid" in err.lower():
+                try:
+                    pool = await self._get_pool()
+                    async with pool.acquire() as conn:
+                        await self._discard_prepared_statements(conn)
+                        return await self._execute_on_connection(conn, query)
+                except Exception as retry_e:
+                    return f"Error executing query: {retry_e}"
+            return f"Error executing query: {err}"
+
+    async def _execute_on_connection(self, conn, query: str) -> str:
+        query_upper = query.strip().upper()
+        if query_upper.startswith("SELECT"):
+            rows = await conn.fetch(query)
+            if not rows:
+                return "Query executed successfully. No rows returned."
+            results = [dict(row) for row in rows]
+            return json.dumps(results, default=_json_safe)
+        await conn.execute(query)
+        return "Query executed successfully."
 
     async def stream_query(self, query: str, chunk_size: int = 5000):
         pool = await self._get_pool()
@@ -424,16 +436,44 @@ class PostgresAdapter(DatabaseAdapter):
         try:
             pool = await self._get_pool()
             async with pool.acquire() as conn:
-                result = await conn.execute(sql)
-            return f"Mutation executed successfully. {result}"
+                await conn.execute(sql)
+            return "Mutation executed successfully."
         except Exception as e:
             return f"Error running mutation: {str(e)}"
 
     async def validate_sql(self, sql: str) -> str:
+        """DDL only (dry-run + rollback). Use explain_sql for SELECT/DML."""
+        if not is_ddl_statement(sql):
+            return (
+                "Error: validate_sql is for DDL only (CREATE/ALTER/DROP/TRUNCATE). "
+                "Use explain_sql for SELECT, INSERT, UPDATE, or DELETE."
+            )
+        return await self._validate_ddl(sql)
+
+    @staticmethod
+    async def _discard_prepared_statements(conn) -> None:
+        """Clear asyncpg/PostgreSQL cached plans after DDL (even rolled back)."""
+        try:
+            await conn.execute("DISCARD ALL")
+        except Exception:
+            pass
+
+    async def _validate_ddl(self, sql: str) -> str:
+        """Tier 3: dry-run DDL inside a transaction, then rollback (PostgreSQL)."""
         try:
             pool = await self._get_pool()
             async with pool.acquire() as conn:
-                await conn.fetch(f"EXPLAIN {sql}")
+                tr = conn.transaction()
+                await tr.start()
+                try:
+                    await conn.execute(sql)
+                except Exception as e:
+                    await tr.rollback()
+                    await self._discard_prepared_statements(conn)
+                    return f"SQL validation error: {str(e)}"
+                await tr.rollback()
+                # DDL dry-run invalidates prepared plans on this pooled connection.
+                await self._discard_prepared_statements(conn)
             return "SQL query is valid."
         except Exception as e:
             return f"SQL validation error: {str(e)}"

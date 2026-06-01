@@ -17,8 +17,18 @@ import os
 from typing import Any, Optional
 
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 logger = logging.getLogger(__name__)
+
+# langmem stores RunningSummary in chat graph checkpoint state["context"].
+_LANGMEM_CHECKPOINT_ALLOWED_MODULES = [
+    ("langmem.short_term.summarization", "RunningSummary"),
+]
+
+
+def _checkpoint_serde() -> JsonPlusSerializer:
+    return JsonPlusSerializer(allowed_msgpack_modules=_LANGMEM_CHECKPOINT_ALLOWED_MODULES)
 
 _cp: Any = None
 _cp_lock: Optional[asyncio.Lock] = None
@@ -49,7 +59,7 @@ async def get_async_checkpointer() -> Any:
             logger.debug(
                 "No DB_URL set; using MemorySaver for LangGraph checkpoints"
             )
-            _cp = MemorySaver()
+            _cp = MemorySaver(serde=_checkpoint_serde())
             return _cp
 
         from psycopg.rows import dict_row
@@ -68,7 +78,7 @@ async def get_async_checkpointer() -> Any:
             max_size=10,
         )
         await _pool.open()
-        _cp = AsyncPostgresSaver(_pool)
+        _cp = AsyncPostgresSaver(_pool, serde=_checkpoint_serde())
         await _cp.setup()
         logger.info("LangGraph AsyncPostgresSaver initialized and setup() completed")
         return _cp

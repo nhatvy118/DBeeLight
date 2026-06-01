@@ -4,6 +4,14 @@ from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 
+def is_ddl_statement(sql: str) -> bool:
+    """True for CREATE/ALTER/DROP/TRUNCATE (not CREATE TABLE AS … SELECT)."""
+    s = (sql or "").strip().upper().lstrip()
+    if s.startswith("CREATE TABLE AS") or s.startswith("CREATE TEMP TABLE AS"):
+        return False
+    return s.startswith(("CREATE ", "ALTER ", "DROP ", "TRUNCATE "))
+
+
 class DatabaseAdapter(ABC):
     """
     Abstract base class defining the interface for all database adapters.
@@ -137,7 +145,7 @@ class DatabaseAdapter(ABC):
 
     @abstractmethod
     async def validate_sql(self, sql: str) -> str:
-        """Validate SQL syntax without executing."""
+        """Validate DDL via dry-run + rollback. SELECT/DML use explain_sql."""
         pass
 
     @abstractmethod

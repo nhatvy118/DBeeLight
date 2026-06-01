@@ -28,7 +28,7 @@ async def init_redis_client() -> Optional[aioredis.Redis]:
     global _redis_client
     
     if not REDIS_AVAILABLE:
-        logger.warning("⚠️  Redis not available (package not installed). Install with: uv add redis[hiredis]")
+        logger.warning("Redis not available (package not installed). Install with: uv add redis[hiredis]")
         return None
     
     if _redis_client is not None:

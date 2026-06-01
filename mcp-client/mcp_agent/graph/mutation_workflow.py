@@ -23,7 +23,6 @@ from mcp_agent.graph.database_utils import (
     is_execute_query_error_response,
     markdown_table_from_rows,
     parse_describe_table_column_names,
-    parse_mutation_rows_affected,
     parse_table_names_from_list_tools,
     sql_generation_failure_message,
     strip_sql_fences,
@@ -434,6 +433,7 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
             sql=sql,
             operation=operation,
             request=effective_message,
+            db_type=db_type,
         )
         if not ok:
             last_error = explain_err
@@ -732,15 +732,8 @@ async def sql_execution(state: AgentState, llm, agent) -> AgentState:
         response = f"Error executing SQL: {e}"
 
     is_err = is_execute_query_error_response(str(response))
-    rows_affected = parse_mutation_rows_affected(str(response))
     if is_err:
         message = str(response).strip()
-    elif rows_affected == 0:
-        message = (
-            "SQL executed successfully, but 0 rows were affected "
-        )
-    elif rows_affected is not None:
-        message = f"Successfully executed the SQL. Rows affected: {rows_affected}."
     else:
         message = "Successfully executed the SQL."
     output_type = "error" if is_err else "execution_complete"

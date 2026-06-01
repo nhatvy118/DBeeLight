@@ -10,6 +10,7 @@ dependencies = [
     "langgraph>=0.2.0",
     "langgraph-checkpoint-postgres>=3.0.0,<4",
     "langmem>=0.0.30",
+    "sqlglot>=26.0.0",
 ]
 
 [build-system]

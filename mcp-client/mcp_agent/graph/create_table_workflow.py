@@ -8,10 +8,12 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
 from mcp_agent.graph.database_utils import (
+    build_create_table_columns_sql,
     build_sql_preview_message,
     detect_db_type,
     get_create_table_system_prompt,
     is_execute_query_error_response,
+    parse_create_table_schema_json,
     sql_generation_failure_message,
     strip_sql_fences,
     validate_explain_and_summarize,
@@ -319,6 +321,20 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
                 ),
             }
         )
+        schema_json = parse_create_table_schema_json(preview_text)
+        if schema_json:
+            table_name, columns_sql = build_create_table_columns_sql(schema_json)
+            if table_name and columns_sql:
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            f"Required shape: CREATE TABLE {table_name} (\n"
+                            f"  {columns_sql.replace(', ', ',\n  ')}\n"
+                            ");"
+                        ),
+                    }
+                )
     messages.append(
         {
             "role": "user",
@@ -347,6 +363,7 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
             sql=sql,
             operation=operation,
             request=effective_message,
+            db_type=db_type,
         )
         if not ok:
             last_error = explain_err

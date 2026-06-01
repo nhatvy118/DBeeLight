@@ -259,6 +259,41 @@ def get_create_table_system_prompt(db_type: str) -> str:
     )
 
 
+def parse_create_table_schema_json(preview_text: str) -> dict[str, Any] | None:
+    """Extract structured schema from ``show_create_table_schema`` preview payload."""
+    m = re.search(
+        r"\[CREATE_TABLE_SCHEMA_JSON_START\]\s*([\s\S]*?)\s*\[CREATE_TABLE_SCHEMA_JSON_END\]",
+        preview_text or "",
+    )
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(1).strip())
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def build_create_table_columns_sql(schema_json: dict[str, Any]) -> tuple[str, str]:
+    """Return (table_name, comma-separated column defs) from schema JSON."""
+    table_name = str(schema_json.get("table_name") or "").strip()
+    parts: list[str] = []
+    for col in schema_json.get("columns") or []:
+        if not isinstance(col, dict):
+            continue
+        variable = str(col.get("variable") or "").strip()
+        dtype = str(col.get("type") or "").strip()
+        if variable and dtype:
+            parts.append(f"{variable} {dtype}")
+    pk = schema_json.get("primary_key")
+    if pk is not None:
+        pk_s = str(pk).strip()
+        if pk_s and pk_s.lower() not in {"(none)", "none"}:
+            if not any(p.lower().startswith(f"{pk_s.lower()} ") for p in parts):
+                parts.insert(0, f"{pk_s} INTEGER PRIMARY KEY AUTOINCREMENT")
+    return table_name, ", ".join(parts)
+
+
 # === SQL parsing utilities ===
 
 def strip_sql_fences(text: str) -> str:
@@ -905,11 +940,11 @@ async def describe_explain_plan_naturally(
                     "- Say what will happen in everyday words (e.g. add rows, update records, "
                     "remove rows, read data, create a table).\n"
                     "- Name the table(s) if known from the SQL.\n"
-                    "- End with a simple OK line (e.g. 'Looks good to run' / 'Có vẻ ổn để thực hiện').\n"
+                    "- End with a simple OK line in English (e.g. 'Looks good to run').\n"
                     "- NEVER use: EXPLAIN, execution plan, scan, index, constant rows, lookup, "
                     "subquery, planner, valid plan, syntax check, or similar jargon.\n"
                     "- Do not invent specific cell values; row counts are OK only if obvious from SQL.\n"
-                    "- Match the user's language (Vietnamese if the request is Vietnamese, else English)."
+                    "- Always write the entire summary in English, even if the user request is Vietnamese."
                 ),
             },
             {
@@ -936,40 +971,21 @@ async def validate_explain_and_summarize(
     sql: str,
     operation: str,
     request: str,
+    db_type: str | None = None,
 ) -> tuple[bool, str, str]:
-    """EXPLAIN validate → fetch plan → natural-language summary.
+    """4-tier verify: Tier1 sqlglot → Tier2 explain or Tier3 DDL rollback → NL summary."""
+    from mcp_agent.graph.sql_verification import verify_sql_for_preview
 
-    Returns (success, error_message, explain_summary).
-    """
-    try:
-        validation = await call_tool(agent, "validate_sql", {"sql": sql})
-    except Exception as e:
-        validation = f"SQL validation error: {e}"
-    vtxt = str(validation or "").strip()
-    if is_sql_tool_error(vtxt):
-        return False, vtxt, ""
-
-    try:
-        explain_raw = await call_tool(agent, "explain_sql", {"sql": sql})
-    except Exception as e:
-        explain_raw = f"Error explaining SQL: {e}"
-    etxt = str(explain_raw or "").strip()
-    if is_sql_tool_error(etxt):
-        return False, etxt, ""
-
-    explain_summary = ""
-    try:
-        explain_summary = await describe_explain_plan_naturally(
-            llm,
-            operation=operation,
-            request=request,
-            sql=sql,
-            explain_raw=etxt,
-        )
-    except Exception as e:
-        logger.warning("EXPLAIN natural-language summary failed: %s", e)
-
-    return True, "", explain_summary
+    result = await verify_sql_for_preview(
+        agent,
+        llm,
+        call_tool,
+        sql=sql,
+        operation=operation,
+        request=request,
+        db_type=db_type,
+    )
+    return result.as_tuple()
 
 
 def sql_generation_failure_message(last_error: str) -> str:

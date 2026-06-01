@@ -319,4 +319,4 @@ AI sẽ tự động phân tích và gọi các tools phù hợp để thực hi
 
 ## Lưu Ý
 
-⚠️ **Quan trọng:** Bạn phải kết nối database trước khi thực hiện bất kỳ thao tác nào. Nếu chưa kết nối, các tools sẽ báo lỗi và yêu cầu bạn gọi `connect_db` trước.
+ **Quan trọng:** Bạn phải kết nối database trước khi thực hiện bất kỳ thao tác nào. Nếu chưa kết nối, các tools sẽ báo lỗi và yêu cầu bạn gọi `connect_db` trước.

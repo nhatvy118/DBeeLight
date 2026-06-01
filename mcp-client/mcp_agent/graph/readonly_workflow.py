@@ -670,6 +670,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                 sql=select_sql,
                 operation=operation,
                 request=effective_message,
+                db_type=db_type,
             )
             if not ok:
                 last_error = explain_err
