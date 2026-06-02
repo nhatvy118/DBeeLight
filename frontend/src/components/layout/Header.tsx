@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { url } from '../../services/api';
 import { useTheme } from '../../context/ThemeContext';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import ShareSessionModal from '../modals/ShareSessionModal';
 import StorageModal from '../modals/StorageModal';
 import { Icons, BeeBadge } from '../../icons';
@@ -13,9 +14,15 @@ type Project = {
   createdAt: string;
 };
 
-export default function Header() {
+type HeaderProps = {
+  /** When provided (mobile + sidebar present), shows a hamburger that opens the drawer. */
+  onMenuClick?: () => void;
+};
+
+export default function Header({ onMenuClick }: HeaderProps) {
   const { user } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const isMobile = useIsMobile();
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
@@ -205,11 +212,26 @@ export default function Header() {
     <header
       style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '14px 24px', borderBottom: '1px solid var(--border)', flexShrink: 0, background: 'var(--bg)',
+        padding: isMobile ? '10px 12px' : '14px 24px', borderBottom: '1px solid var(--border)', flexShrink: 0, background: 'var(--bg)',
+        gap: 8,
       }}
     >
-      {/* Left Section - Logo or Project */}
+      {/* Left Section - Hamburger (mobile) + Logo or Project */}
       <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+        {onMenuClick && (
+          <button
+            type="button"
+            onClick={onMenuClick}
+            className="focusable"
+            title="Menu"
+            aria-label="Open menu"
+            style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', color: 'var(--text-soft)', background: 'transparent', border: 'none', flexShrink: 0 }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          >
+            <Icons.Sidebar size={21} />
+          </button>
+        )}
         {selectedProject ? (
           <>
             <span style={{ width: 30, height: 30, borderRadius: 9, display: 'grid', placeItems: 'center', background: 'var(--accent-soft)', color: 'var(--accent-ink)', flexShrink: 0 }}>
@@ -228,19 +250,19 @@ export default function Header() {
       </div>
 
       {/* Right Section */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 4 : 8, marginLeft: 'auto' }}>
         {user ? (
           <>
-            {/* Share */}
+            {/* Share — icon-only on mobile to save room */}
             <button
               type="button"
               onClick={handleShareClick}
               className="btn btn-outline"
-              style={{ padding: '8px 16px', fontSize: 13.5, opacity: hasSession ? 1 : 0.55 }}
+              style={{ padding: isMobile ? '8px 10px' : '8px 16px', fontSize: 13.5, opacity: hasSession ? 1 : 0.55 }}
               title="Share this chat"
             >
               <Icons.Share size={16} />
-              Share
+              {!isMobile && 'Share'}
             </button>
 
             {/* Export + dropdown */}
@@ -249,13 +271,13 @@ export default function Header() {
                 type="button"
                 onClick={() => setExportMenuOpen((o) => !o)}
                 className="btn btn-ghost"
-                style={{ fontSize: 13.5 }}
+                style={{ fontSize: 13.5, padding: isMobile ? '8px 10px' : undefined }}
                 title="Export this chat"
                 aria-haspopup="true"
                 aria-expanded={exportMenuOpen}
               >
                 <Icons.Export size={16} />
-                Export
+                {!isMobile && 'Export'}
               </button>
               {exportMenuOpen && (
                 <div
