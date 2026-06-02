@@ -10,13 +10,17 @@ import {
   connectExternalDb,
   disconnectExternalDb,
   getDbConnectionStatus,
+  url,
   type ReceivedShare,
   type SessionInfo,
 } from '../../services/api';
 import ProjectModal from '../modals/ProjectModal';
 import DatabaseConnectPopup, { type DatabaseConnectionData } from '../modals/DatabaseConnectPopup';
+import StorageModal from '../modals/StorageModal';
+import HelpModal from '../modals/HelpModal';
 import { encryptPassword, decryptPassword } from '../../utils/crypto';
 import { Icons, BeeBadge, type IconComponent } from '../../icons';
+import type { AuthUser } from '../../context/AuthContext';
 
 type Project = {
   id: string;
@@ -56,12 +60,12 @@ function NavItem({
         padding: collapsed ? 10 : '10px 12px', borderRadius: 'var(--r-sm)',
         fontSize: 14.5, fontWeight: 600, textAlign: 'left',
         color: accent ? 'var(--accent-ink)' : 'var(--text-soft)',
-        background: accent ? 'var(--accent-soft)' : 'transparent',
-        border: accent ? '1px solid var(--accent-soft-2)' : '1px solid transparent',
+        background: 'transparent',
+        border: '1px solid transparent',
         transition: 'all .14s',
       }}
       onMouseEnter={(e) => { e.currentTarget.style.background = accent ? 'var(--accent-soft)' : 'var(--surface-2)'; if (!accent) e.currentTarget.style.color = 'var(--text)'; }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = accent ? 'var(--accent-soft)' : 'transparent'; if (!accent) e.currentTarget.style.color = 'var(--text-soft)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (!accent) e.currentTarget.style.color = 'var(--text-soft)'; }}
     >
       <Icon size={19} />
       {!collapsed && <span>{label}</span>}
@@ -77,6 +81,121 @@ function SectionLabel({ children }: { children: ReactNode }) {
   );
 }
 
+/** A row inside the account popup menu. `danger` paints it red (Log out). */
+function MenuItem({
+  icon: Icon,
+  label,
+  onClick,
+  danger,
+}: {
+  icon: IconComponent;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="focusable"
+      style={{
+        width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '10px 12px',
+        borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14, fontWeight: 600,
+        color: danger ? 'oklch(0.58 0.19 25)' : 'var(--text-soft)',
+        background: 'transparent', border: 'none', transition: 'all .12s',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = danger ? 'oklch(0.95 0.05 25)' : 'var(--surface-2)';
+        if (!danger) e.currentTarget.style.color = 'var(--text)';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = 'transparent';
+        if (!danger) e.currentTarget.style.color = 'var(--text-soft)';
+      }}
+    >
+      <Icon size={18} />
+      {label}
+    </button>
+  );
+}
+
+/** Profile button + account popup menu (Account settings / Storage / Help /
+ *  Log out), ported from the Chat/ design prototype (sidebar.jsx ProfileMenu). */
+function ProfileMenu({
+  collapsed,
+  user,
+  onNavigate,
+  onOpenStorage,
+  onOpenHelp,
+  onLogout,
+}: {
+  collapsed: boolean;
+  user: AuthUser | null;
+  onNavigate: (path: string) => void;
+  onOpenStorage: () => void;
+  onOpenHelp: () => void;
+  onLogout: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const initial = (user?.name || user?.email || 'U').slice(0, 1).toUpperCase();
+  const name = user?.name || 'User';
+  const email = user?.email || '';
+
+  const Avatar = ({ size }: { size: number }) =>
+    user?.picture ? (
+      <img src={user.picture} alt={name} referrerPolicy="no-referrer"
+        style={{ width: size, height: size, borderRadius: 99, objectFit: 'cover', flexShrink: 0 }} />
+    ) : (
+      <div style={{ width: size, height: size, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'linear-gradient(145deg, var(--accent), var(--accent-strong))', color: 'var(--on-accent)', fontWeight: 800, fontSize: size * 0.42 }}>
+        {initial}
+      </div>
+    );
+
+  return (
+    <div style={{ borderTop: '1px solid var(--border)', padding: collapsed ? '12px 0' : '12px 14px', position: 'relative' }}>
+      {open && <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />}
+      {open && (
+        <div className="card pop-shadow scale-in"
+          style={{ position: 'absolute', bottom: 'calc(100% - 4px)', left: collapsed ? 8 : 14, right: collapsed ? 'auto' : 14, width: collapsed ? 224 : 'auto', zIndex: 41, borderRadius: 'var(--r)', padding: 8, transformOrigin: 'bottom' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '8px 10px 12px', borderBottom: '1px solid var(--border)', marginBottom: 6 }}>
+            <Avatar size={38} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</div>
+            </div>
+          </div>
+          <MenuItem icon={Icons.Settings} label="Account settings" onClick={() => { setOpen(false); onNavigate('/account'); }} />
+          <MenuItem icon={Icons.HardDrive} label="Storage" onClick={() => { setOpen(false); onOpenStorage(); }} />
+          <MenuItem icon={Icons.Question} label="Help & support" onClick={() => { setOpen(false); onOpenHelp(); }} />
+          <div style={{ height: 1, background: 'var(--border)', margin: '6px 4px' }} />
+          <MenuItem icon={Icons.Logout} label="Log out" danger onClick={() => { setOpen(false); onLogout(); }} />
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="focusable"
+        title={collapsed ? name : undefined}
+        style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, justifyContent: collapsed ? 'center' : 'flex-start', padding: collapsed ? 6 : '8px 10px', borderRadius: 'var(--r-sm)', background: open ? 'var(--surface-2)' : 'transparent', border: 'none' }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+        onMouseLeave={(e) => { if (!open) e.currentTarget.style.background = 'transparent'; }}
+      >
+        <Avatar size={36} />
+        {!collapsed && (
+          <>
+            <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+              <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</div>
+            </div>
+            <Icons.ChevronDown size={16} style={{ color: 'var(--text-muted)', transition: 'transform .15s', transform: open ? 'rotate(180deg)' : 'none' }} />
+          </>
+        )}
+      </button>
+    </div>
+  );
+}
+
 export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarProps) {
   const { user } = useAuth();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -85,6 +204,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
   const [projects, setProjects] = useState<Project[]>([]);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isDatabasePopupOpen, setIsDatabasePopupOpen] = useState(false);
+  const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
+  const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   const [connectedDb, setConnectedDb] = useState<DatabaseConnectionData | null>(null);
 
   const saveConnectedDb = async (data: DatabaseConnectionData) => {
@@ -343,12 +464,29 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
     window.dispatchEvent(new PopStateEvent('popstate'));
   };
 
+  // Logout mirrors Header.handleLogout: clear the server cookie + local state,
+  // then hard-navigate to /login so a logged-out shell never flashes.
+  const handleLogout = async () => {
+    try {
+      await fetch(url('/api/auth/logout'), { method: 'POST', credentials: 'include' });
+    } catch {
+      // cookie may already be gone — leave the app anyway
+    }
+    try {
+      localStorage.removeItem('projects');
+      localStorage.removeItem('lastSessionId');
+      localStorage.removeItem('lastSessionIdForProject');
+    } catch {
+      // storage blocked — ignore
+    }
+    window.location.replace('/login');
+  };
+
   const PERM: Record<string, { label: string; color: string }> = {
     view_only: { label: 'View', color: 'var(--text-muted)' },
     read_data: { label: 'Read', color: 'var(--info)' },
     edit_data: { label: 'Edit', color: 'var(--green-ink)' },
   };
-  const userInitial = (user?.name || user?.email || 'U').slice(0, 1).toUpperCase();
   const unassigned = getUnassignedSessions();
 
   return (
@@ -511,30 +649,15 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
           )}
         </div>
 
-        {/* user profile */}
-        <div style={{ borderTop: '1px solid var(--border)', padding: isCollapsed ? '12px 0' : '12px 14px' }}>
-          <button
-            type="button"
-            className="focusable"
-            onClick={() => { navigate('/account'); }}
-            title="Account settings"
-            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, justifyContent: isCollapsed ? 'center' : 'flex-start', padding: isCollapsed ? 6 : '8px 10px', borderRadius: 'var(--r-sm)', background: 'transparent', border: 'none' }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-          >
-            {user?.picture ? (
-              <img src={user.picture} alt={user.name || user.email || 'User'} style={{ width: 36, height: 36, borderRadius: 99, objectFit: 'cover', flexShrink: 0 }} referrerPolicy="no-referrer" />
-            ) : (
-              <div style={{ width: 36, height: 36, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'linear-gradient(145deg, var(--accent), var(--accent-strong))', color: 'var(--on-accent)', fontWeight: 800, fontSize: 15 }}>{userInitial}</div>
-            )}
-            {!isCollapsed && (
-              <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
-                <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.name || 'User'}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.email || ''}</div>
-              </div>
-            )}
-          </button>
-        </div>
+        {/* user profile + account menu */}
+        <ProfileMenu
+          collapsed={isCollapsed}
+          user={user}
+          onNavigate={navigate}
+          onOpenStorage={() => setIsStorageModalOpen(true)}
+          onOpenHelp={() => setIsHelpModalOpen(true)}
+          onLogout={() => { void handleLogout(); }}
+        />
       </aside>
 
       <ProjectModal
@@ -551,6 +674,10 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
         connectedDb={connectedDb}
         isInProject={!!selectedProjectId}
       />
+
+      <StorageModal open={isStorageModalOpen} onClose={() => setIsStorageModalOpen(false)} />
+
+      <HelpModal open={isHelpModalOpen} onClose={() => setIsHelpModalOpen(false)} />
     </>
   );
 }

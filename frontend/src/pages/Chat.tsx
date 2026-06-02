@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessageList, { type UiMessage, type SchemaPreviewData } from '../components/chat/MessageList';
 import DataSourceBar, { buildDataSources, getActiveFileIds, type DataSource } from '../components/chat/DataSourceBar';
+import AttachMenu from '../components/chat/AttachMenu';
 import {
   getSession,
   sendMessageWithStream,
@@ -72,7 +73,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   // the "load session" effect sees propSessionId set but sessionId null and fetches messages.
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [shareInfo, setShareInfo] = useState<SessionShareInfo | null>(null);
-  const [selectedProject, setSelectedProject] = useState<{ id: string; name: string } | null>(null);
+  const [selectedProject, setSelectedProject] = useState<{ id: string; name: string; description?: string } | null>(null);
   const [projectSessions, setProjectSessions] = useState<SessionInfo[]>([]);
   const [sessionPreviews, setSessionPreviews] = useState<Record<string, string>>({});
   const [inputKey, setInputKey] = useState(0);
@@ -135,7 +136,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       const projects = JSON.parse(localStorage.getItem('projects') || '[]');
       const project = projects.find((p: { id: string }) => p.id === propProjectId);
       if (project) {
-        setSelectedProject({ id: project.id, name: project.name });
+        setSelectedProject({ id: project.id, name: project.name, description: project.description });
         previousProjectIdRef.current = project.id;
       } else {
         // Project not found, clear selection
@@ -632,7 +633,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const doSend = async (text: string) => {
     setIsLoading(true);
     setIsAssistantTyping(false);
-    setStreamingStage('Processing...');
+    setStreamingStage('Processing');
     const controller = new AbortController();
     sendAbortControllerRef.current = controller;
     console.log('Sending message with sessionId:', sessionId);
@@ -748,9 +749,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const displayText = query.trim();
     const activeProjectId = selectedProject?.id || propProjectId;
 
-    // If there are staged files and we're inside a project → show message in chat
-    // immediately, then show storage choice question before uploading/sending
-    if (stagedFiles.length > 0 && activeProjectId) {
+    // Ask "save data vs Q&A only" when there are staged files AND there's a
+    // place to import into: inside a project always, or in a regular chat only
+    // while a database is connected. With no project and no DB connection there's
+    // nowhere to save, so skip the question and just do Q&A.
+    if (stagedFiles.length > 0 && (activeProjectId || connectedDbLabel)) {
       const attachmentsForUi = [
         ...inputAttachedFiles.map((f) => ({ name: f.filename, fileId: f.id })),
         ...stagedFiles.map((f) => ({ name: f.filename })),
@@ -818,6 +821,25 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     const sendPayload = buildChatMessageWithSessionFiles(displayText, allAttached);
     await doSend(sendPayload);
+  };
+
+  /** Start a fresh chat inside the current project (from the project view). */
+  const handleNewChatInProject = async () => {
+    const pid = selectedProject?.id || propProjectId;
+    if (!pid) return;
+    try {
+      const cr = await createSession(null, pid);
+      if (cr.success && cr.session_id) {
+        saveLastSession(cr.session_id, pid);
+        window.history.pushState({}, '', `/chat/${pid}/${cr.session_id}`);
+        window.dispatchEvent(new PopStateEvent('popstate'));
+        onSessionIdChange?.(cr.session_id);
+      } else {
+        window.alert('Failed to create new chat');
+      }
+    } catch {
+      window.alert('Failed to create new chat');
+    }
   };
 
   const handleRefreshResponse = async (aiIndex: number) => {
@@ -1120,7 +1142,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         msg.sqlToExecute,
         Math.max(0, messages.slice(0, aiIndex + 1).filter((m) => !!m.sqlToExecute).length - 1),
       );
-    void executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, 'en', true, 'cancelled');
+    void executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, true, 'cancelled');
   };
 
   // When switching to a *different* project: save current session for the project we're leaving, then clear UI.
@@ -1389,17 +1411,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            title="Attach a file"
-            className="focusable"
-            style={{ width: 36, height: 36, borderRadius: 10, display: 'grid', placeItems: 'center', color: 'var(--text-soft)', border: '1px solid var(--border)', background: 'transparent', flexShrink: 0 }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-          >
-            <Icons.Plus size={19} />
-          </button>
+          <AttachMenu
+            onUploadDevice={() => fileInputRef.current?.click()}
+            disabled={isViewOnlyShare || isUploadingExcel}
+          />
           {/* Data source selector */}
           {(() => {
             const sources = buildDataSources(sessionFiles, connectedDbLabel);
@@ -1546,9 +1561,29 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
       {/* Project chat history */}
       {projectHasHistory && (
-        <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px 32px' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '44px 24px 40px' }}>
           <div style={{ maxWidth: 760, margin: '0 auto' }}>
-            <div style={{ fontSize: 12.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)', marginBottom: 12 }}>
+            {/* Project header */}
+            <div className="fade-up" style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+              <div style={{ width: 52, height: 52, borderRadius: 15, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>
+                <Icons.Folder size={26} />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <h1 style={{ fontSize: 30, fontWeight: 800, letterSpacing: '-.02em', lineHeight: 1.15 }}>{selectedProject?.name}</h1>
+                {selectedProject?.description && (
+                  <p style={{ fontSize: 15.5, color: 'var(--text-soft)', marginTop: 6, lineHeight: 1.5 }}>{selectedProject.description}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="fade-up" style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 22, animationDelay: '.05s' }}>
+              <button type="button" onClick={() => void handleNewChatInProject()} className="btn btn-primary" style={{ padding: '11px 18px' }}>
+                <Icons.NewChat size={16} />
+                New chat in this project
+              </button>
+            </div>
+
+            <div style={{ fontSize: 12.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)', margin: '34px 0 12px' }}>
               {projectSessions.length} chats
             </div>
             <div className="card" style={{ overflow: 'hidden' }}>

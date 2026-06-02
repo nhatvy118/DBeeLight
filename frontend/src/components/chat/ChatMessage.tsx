@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
-import 'highlight.js/styles/github-dark.css';
 import VegaLiteChart from './VegaLiteChart';
 import { Icons } from '../../icons';
+import { CodeBlockCard, ResultTableCard } from './RichResponse';
 
 // Tolerate the agent occasionally wrapping the marker block in a markdown
 // code fence (it copies the format from its system-prompt example). The
@@ -126,10 +125,8 @@ export default function ChatMessage({
 }: ChatMessageProps) {
   const [displayedText, setDisplayedText] = useState<string>('');
   const [isTyping, setIsTyping] = useState<boolean>(false);
-  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentIndexRef = useRef<number>(0);
-  const codeBlockIndexRef = useRef<number>(0);
   const lastHandledStopSignalRef = useRef<number>(typingStopSignal);
 
   useEffect(() => {
@@ -239,22 +236,6 @@ export default function ChatMessage({
     );
   }
 
-  // Copy code to clipboard
-  const handleCopyCode = async (code: string, index: number) => {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopiedIndex(index);
-      setTimeout(() => setCopiedIndex(null), 2000);
-    } catch (err) {
-      console.error('Failed to copy code:', err);
-    }
-  };
-
-  // Reset code block index when message changes
-  useEffect(() => {
-    codeBlockIndexRef.current = 0;
-  }, [message]);
-
   // -------------------------
   // AI MESSAGE — full width, no bubble, no avatar (ChatGPT style).
   // Hierarchy comes from spacing (handled by MessageList's space-y-6),
@@ -282,8 +263,8 @@ export default function ChatMessage({
               <ReactMarkdown
                 key={i}
                 remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeHighlight]}
                 components={{
+                  table: ({ node }) => <ResultTableCard node={node} />,
                   code: ({ className, children, ...props }) => {
                     const isInline = !className;
                     if (isInline) {
@@ -309,46 +290,17 @@ export default function ChatMessage({
                       );
                     }
 
-                    // Block code — header bar with language label + copy button.
-                    const codeBlockIndex = codeBlockIndexRef.current++;
+                    // Block code — on-theme card. SQL gets the "Query
+                    // executed" / "SQL query" header; other languages get a
+                    // neutral language label. (See RichResponse.CodeBlockCard.)
                     const codeString = extractCodeText(children).replace(/\n$/, '');
-                    const isCopied = copiedIndex === codeBlockIndex;
                     const langMatch = /language-([\w-]+)/.exec(className || '');
                     const language = langMatch ? langMatch[1] : 'text';
 
                     return (
-                      <div className="my-3 not-prose rounded-lg overflow-hidden border border-gray-800">
-                        <div className="flex items-center justify-between px-3 py-1.5 bg-gray-800 text-gray-300 text-xs">
-                          <span className="font-mono lowercase">{language}</span>
-                          <button
-                            type="button"
-                            onClick={() => handleCopyCode(codeString, codeBlockIndex)}
-                            className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-gray-700 text-gray-300 hover:text-white transition-colors"
-                            aria-label="Copy code"
-                          >
-                            {isCopied ? (
-                              <>
-                                <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                </svg>
-                                Copied
-                              </>
-                            ) : (
-                              <>
-                                <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                                </svg>
-                                Copy
-                              </>
-                            )}
-                          </button>
-                        </div>
-                        <pre className="bg-gray-900 m-0 p-4 overflow-x-auto">
-                          <code className={`${className} text-gray-100 text-sm font-mono block leading-relaxed`} {...props}>
-                            {children}
-                          </code>
-                        </pre>
-                      </div>
+                      <CodeBlockCard language={language} codeString={codeString} codeProps={{ className, ...props }}>
+                        {children}
+                      </CodeBlockCard>
                     );
                   },
                 }}

@@ -118,7 +118,7 @@ class Orchestrator:
         query = str(state.get("user_message") or "").strip()
         conversation_context = state.get("conversation_context") or []
         conversation_summary = str(state.get("conversation_summary") or "").strip()
-        await _progress_emit("classify", "running", "Analyzing request...")
+        await _progress_emit("classify", "running", "Analyzing request")
         intent_result = await self._intent_service.classify(
             query,
             list(self._agents.keys()),
@@ -188,7 +188,7 @@ class Orchestrator:
         message = str(state.get("user_message") or intent_result.get("nl_query") or "")
         agent_type = self._agent_key_to_type(agent_key)
         self._session_agent_map[session_id] = agent_type
-        await _progress_emit("agent", "running", f"Routing to {agent_type} agent...")
+        await _progress_emit("agent", "running", f"Routing to {agent_type} agent")
         try:
             workflow_state = await self.workflow.run(
                 session_id=session_id,
