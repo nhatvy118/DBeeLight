@@ -9,6 +9,7 @@ import {
   type SharePermission,
   type ShareRecipientCreated,
 } from '../../services/api';
+import { Icons } from '../../icons';
 
 type Props = {
   sessionId: string;
@@ -162,17 +163,27 @@ export default function ShareSessionModal({ sessionId, open, onClose }: Props) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg shadow-xl p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900">Share this chat</h3>
+    <div className="backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div
+        className="card pop-shadow scale-in"
+        style={{ width: '100%', maxWidth: 640, maxHeight: '90vh', overflowY: 'auto', borderRadius: 'var(--r-lg)', padding: 26 }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ width: 40, height: 40, borderRadius: 12, display: 'grid', placeItems: 'center', background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>
+              <Icons.Share size={20} />
+            </span>
+            <h3 style={{ fontSize: 19, fontWeight: 700 }}>Share this chat</h3>
+          </div>
           <button
             type="button"
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+            className="focusable"
+            style={{ width: 34, height: 34, borderRadius: 9, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none' }}
             aria-label="Close"
           >
-            ×
+            <Icons.Close size={18} />
           </button>
         </div>
 
@@ -226,22 +237,23 @@ export default function ShareSessionModal({ sessionId, open, onClose }: Props) {
           </div>
         ) : (
           <>
-            <div className="space-y-2 mb-3">
+            <label className="field-label">Invite by email</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
               {drafts.map((d, idx) => (
-                <div key={idx} className="flex items-center gap-2">
+                <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input
                     type="email"
                     value={d.email}
                     onChange={(e) => updateDraft(idx, { email: e.target.value })}
-                    placeholder="recipient@example.com"
-                    className="flex-1 px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    placeholder="colleague@pila.vn"
+                    className="field focusable"
+                    style={{ flex: 1 }}
                   />
                   <select
                     value={d.permission}
-                    onChange={(e) =>
-                      updateDraft(idx, { permission: e.target.value as SharePermission })
-                    }
-                    className="px-3 py-2 border border-gray-300 rounded text-sm bg-white"
+                    onChange={(e) => updateDraft(idx, { permission: e.target.value as SharePermission })}
+                    className="field focusable"
+                    style={{ width: 'auto' }}
                   >
                     <option value="view_only">View only</option>
                     <option value="read_data">Read data</option>
@@ -251,57 +263,47 @@ export default function ShareSessionModal({ sessionId, open, onClose }: Props) {
                     <button
                       type="button"
                       onClick={() => removeRow(idx)}
-                      className="text-gray-400 hover:text-red-600 px-2"
+                      className="focusable"
+                      style={{ width: 34, height: 34, borderRadius: 9, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none' }}
                       aria-label="Remove"
                     >
-                      ×
+                      <Icons.Close size={16} />
                     </button>
                   )}
                 </div>
               ))}
             </div>
-            <div className="text-xs text-gray-500 mb-3">
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 12 }}>
               {PERMISSION_DESCRIPTIONS[drafts[drafts.length - 1]?.permission ?? 'read_data']}
             </div>
             <button
               type="button"
               onClick={addRow}
-              className="text-sm text-indigo-600 hover:text-indigo-700 mb-4"
+              className="focusable"
+              style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--accent-ink)', background: 'transparent', border: 'none', marginBottom: 16, padding: 0 }}
             >
               + Add another recipient
             </button>
 
-            <label className="flex items-center gap-2 mb-4 text-sm text-gray-700 select-none cursor-pointer">
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, fontSize: 13.5, color: 'var(--text-soft)', cursor: 'pointer', userSelect: 'none' }}>
               <input
                 type="checkbox"
                 checked={notifyEmail}
                 onChange={(e) => setNotifyEmail(e.target.checked)}
-                className="rounded border-gray-300"
+                style={{ accentColor: 'var(--accent-strong)', width: 15, height: 15 }}
               />
               <span>Send email notification to recipients</span>
             </label>
 
             {error && (
-              <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mb-3">
+              <div style={{ fontSize: 13, color: 'oklch(0.5 0.18 25)', background: 'oklch(0.95 0.05 25)', borderRadius: 'var(--r-sm)', padding: '8px 12px', marginBottom: 12 }}>
                 {error}
               </div>
             )}
 
-            <div className="flex gap-2 mb-6">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200"
-                disabled={submitting}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSubmit}
-                disabled={submitting}
-                className="px-4 py-2 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700 disabled:opacity-50"
-              >
+            <div style={{ display: 'flex', gap: 10, marginBottom: 24 }}>
+              <button type="button" onClick={onClose} className="btn btn-outline" style={{ padding: '10px 18px' }} disabled={submitting}>Cancel</button>
+              <button type="button" onClick={handleSubmit} disabled={submitting} className="btn btn-primary" style={{ flex: 1, padding: '10px 18px', opacity: submitting ? 0.7 : 1 }}>
                 {submitting ? 'Sharing…' : 'Share'}
               </button>
             </div>

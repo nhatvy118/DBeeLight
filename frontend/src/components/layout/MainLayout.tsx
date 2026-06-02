@@ -25,17 +25,19 @@ export default function MainLayout({ children, currentSessionId, onSessionSelect
   const showHeader = user !== null;
 
   return (
-    <div className="flex h-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-gray-100">
+    <div className="app" style={{ color: 'var(--text)' }}>
       {showSidebar && (
         <Sidebar
           onSessionSelect={(sid) => onSessionSelect(sid)}
           currentSessionId={currentSessionId}
         />
       )}
-      <div className="flex flex-col min-w-0" style={{ flex: '4 1 85%' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {showHeader && <Header />}
 
-        <div className="flex-1 min-h-0 relative">{children}</div>
+        <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
+          {children}
+        </div>
       </div>
     </div>
   );

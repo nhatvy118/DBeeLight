@@ -9,6 +9,7 @@ import {
   type FileQuotaInfo,
   type UserFileInventoryRow,
 } from '../../services/api';
+import { Icons } from '../../icons';
 
 type Props = {
   open: boolean;
@@ -151,53 +152,40 @@ export default function StorageModal({ open, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4"
+      className="backdrop"
       role="dialog"
       aria-modal="true"
       aria-labelledby="storage-modal-title"
-      onClick={onClose}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="bg-white dark:bg-slate-900 rounded-xl shadow-xl border border-gray-200 dark:border-slate-700 max-w-xl w-full h-[min(50rem,85vh)] flex flex-col overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
+        className="card pop-shadow scale-in"
+        style={{ width: '100%', maxWidth: 560, height: 'min(50rem, 85vh)', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRadius: 'var(--r-lg)' }}
+        onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-slate-800">
-          <h3 id="storage-modal-title" className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-            Storage
-          </h3>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px', borderBottom: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ width: 40, height: 40, borderRadius: 12, display: 'grid', placeItems: 'center', background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>
+              <Icons.HardDrive size={20} />
+            </span>
+            <h3 id="storage-modal-title" style={{ fontSize: 19, fontWeight: 700 }}>Storage</h3>
+          </div>
           <button
             type="button"
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-2xl leading-none"
+            className="focusable"
+            style={{ width: 34, height: 34, borderRadius: 9, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none' }}
             aria-label="Close"
           >
-            ×
+            <Icons.Close size={18} />
           </button>
         </div>
 
-        <div className="px-5 pt-3 border-b border-gray-100 dark:border-slate-800 flex gap-1">
-          <button
-            type="button"
-            onClick={() => setTab('import')}
-            className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
-              tab === 'import'
-                ? 'bg-gray-100 dark:bg-slate-800 text-gray-900 dark:text-gray-100'
-                : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'
-            }`}
-          >
-            Import
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('export')}
-            className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
-              tab === 'export'
-                ? 'bg-gray-100 dark:bg-slate-800 text-gray-900 dark:text-gray-100'
-                : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'
-            }`}
-          >
-            Export
-          </button>
+        <div style={{ padding: '12px 24px 0', borderBottom: '1px solid var(--border)' }}>
+          <div className="seg" style={{ marginBottom: 12 }}>
+            <button type="button" data-on={tab === 'import'} onClick={() => setTab('import')}>Import</button>
+            <button type="button" data-on={tab === 'export'} onClick={() => setTab('export')}>Export</button>
+          </div>
         </div>
 
         <div className="px-5 py-4 flex flex-col flex-1 min-h-0 overflow-hidden">
@@ -228,16 +216,12 @@ export default function StorageModal({ open, onClose }: Props) {
                   of {formatBytes(limit)}
                 </span>
               </div>
-              <div className="h-2 rounded-full bg-gray-100 dark:bg-slate-800 overflow-hidden mb-2 shrink-0">
+              <div className="shrink-0 mb-2" style={{ height: 9, borderRadius: 99, background: 'var(--surface-3)', overflow: 'hidden' }}>
                 <div
-                  className={`h-full rounded-full transition-all ${
-                    pct >= 95
-                      ? 'bg-red-500'
-                      : pct >= 80
-                        ? 'bg-amber-500'
-                        : 'bg-indigo-600 dark:bg-indigo-500'
-                  }`}
-                  style={{ width: `${pct}%` }}
+                  style={{
+                    height: '100%', width: `${pct}%`, borderRadius: 99,
+                    background: pct >= 95 ? 'oklch(0.6 0.18 25)' : pct >= 80 ? 'oklch(0.75 0.15 70)' : 'linear-gradient(90deg, var(--accent-strong), var(--accent))',
+                  }}
                 />
               </div>
               <p className="text-xs text-gray-500 dark:text-gray-400 mb-3 shrink-0">

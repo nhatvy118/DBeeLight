@@ -40,6 +40,10 @@ function applyHtmlClass(theme: Theme) {
   const root = document.documentElement;
   if (theme === 'dark') root.classList.add('dark');
   else root.classList.remove('dark');
+  // The LightDBee design system keys its CSS variables off a data-theme
+  // attribute (see design-system.css). Keep it in sync with the class so both
+  // Tailwind `dark:` utilities and the design tokens respond to the toggle.
+  root.dataset.theme = theme;
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {

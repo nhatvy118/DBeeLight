@@ -29,11 +29,7 @@ import {
   stripExcelMarkersFromText,
   triggerExcelDownload,
 } from '../utils/excelExportMarkers';
-import plusIcon from '../assets/icons/Plus.svg';
-import fileIcon from '../assets/icons/File.svg';
-import microphoneIcon from '../assets/icons/Microphone.svg';
-import arrowUpCircleIcon from '../assets/icons/Arrow-up-circle.svg';
-import stopCircleIcon from '../assets/icons/Stop_circle.svg';
+import { Icons, BeeBadge } from '../icons';
 
 const MAX_TEXTAREA_HEIGHT = 200;
 const MIN_TEXTAREA_HEIGHT = 60;
@@ -1282,16 +1278,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const shareBanner = shareInfo ? (
     <div
-      className={
-        'px-4 py-2 text-sm border-b ' +
-        (shareInfo.revoked
-          ? 'bg-red-50 border-red-200 text-red-800'
+      style={{
+        padding: '10px 24px', fontSize: 13.5, borderBottom: '1px solid var(--border)',
+        background: shareInfo.revoked
+          ? 'oklch(0.95 0.05 25)'
           : shareInfo.permission === 'view_only'
-            ? 'bg-amber-50 border-amber-200 text-amber-900'
-            : shareInfo.permission === 'read_data'
-              ? 'bg-blue-50 border-blue-200 text-blue-900'
-              : 'bg-emerald-50 border-emerald-200 text-emerald-900')
-      }
+            ? 'var(--accent-soft)'
+            : 'var(--info-soft)',
+        color: shareInfo.revoked ? 'oklch(0.5 0.18 25)' : 'var(--text)',
+      }}
     >
       {shareInfo.revoked
         ? 'This shared chat has been revoked by the owner. You can no longer continue it.'
@@ -1303,13 +1298,190 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     </div>
   ) : null;
 
+  const greetHour = new Date().getHours();
+  const greeting = greetHour < 12 ? 'Good morning' : greetHour < 18 ? 'Good afternoon' : 'Good evening';
+  const hasFiles = inputAttachedFiles.length > 0 || stagedFiles.length > 0;
+
+  const composer = (
+    <div className="card soft-shadow" style={{ borderRadius: 'var(--r-lg)', padding: '14px 16px 12px', maxWidth: 760, margin: '0 auto', width: '100%' }}>
+      <input
+        ref={fileInputRef}
+        type="file"
+        style={{ display: 'none' }}
+        multiple={false}
+        accept=".xlsx,.xls,.csv,.pdf,.db,.sqlite,.txt,.md,application/pdf,application/x-sqlite3,text/csv,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+        onChange={handleFileInputChange}
+      />
+
+      {/* Staged / attached files */}
+      {!pendingStorageChoice && hasFiles && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+          {inputAttachedFiles.map((f) => (
+            <div key={f.id} className="scale-in" style={{ display: 'inline-flex', alignItems: 'center', gap: 9, padding: '7px 9px 7px 8px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+              <span style={{ width: 28, height: 28, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'var(--green-soft)', color: 'var(--green-ink)', flexShrink: 0 }}>
+                <Icons.File size={15} />
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename}</span>
+              <button
+                type="button"
+                disabled={isViewOnlyShare || isUploadingExcel}
+                onClick={() => void handleRemoveInputAttachment(f.id)}
+                className="focusable"
+                aria-label={`Remove ${f.filename}`}
+                style={{ width: 22, height: 22, borderRadius: 6, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none', flexShrink: 0 }}
+              >
+                <Icons.Close size={14} />
+              </button>
+            </div>
+          ))}
+          {stagedFiles.map((f) => (
+            <div key={f.localId} className="scale-in" style={{ display: 'inline-flex', alignItems: 'center', gap: 9, padding: '7px 9px 7px 8px', borderRadius: 'var(--r-sm)', border: '1px dashed var(--border-strong)', background: 'var(--surface-2)' }}>
+              <span style={{ width: 28, height: 28, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'var(--green-soft)', color: 'var(--green-ink)', flexShrink: 0, opacity: 0.7 }}>
+                <Icons.File size={15} />
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename}</span>
+              <button
+                type="button"
+                disabled={isViewOnlyShare || pendingStorageChoice || isUploadingExcel}
+                onClick={() => void handleRemoveInputAttachment(f.localId)}
+                className="focusable"
+                aria-label={`Remove ${f.filename}`}
+                style={{ width: 22, height: 22, borderRadius: 6, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none', flexShrink: 0 }}
+              >
+                <Icons.Close size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <textarea
+        key={inputKey}
+        ref={textareaRef}
+        value={query}
+        disabled={isViewOnlyShare}
+        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setQuery(e.target.value)}
+        onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            if (isStopVisible) return;
+            void handleSend();
+          }
+        }}
+        placeholder={
+          isViewOnlyShare
+            ? 'Read-only shared chat — sending disabled'
+            : selectedProject
+              ? `New chat in ${selectedProject.name}`
+              : 'Ask anything about your data…'
+        }
+        rows={1}
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
+        style={{
+          width: '100%', border: 'none', outline: 'none', background: 'transparent',
+          fontSize: 16, lineHeight: 1.5, color: 'var(--text)', resize: 'none',
+          maxHeight: `${MAX_TEXTAREA_HEIGHT}px`, minHeight: `${MIN_TEXTAREA_HEIGHT}px`,
+          paddingTop: 8, paddingBottom: 4,
+        }}
+      />
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            title="Attach a file"
+            className="focusable"
+            style={{ width: 36, height: 36, borderRadius: 10, display: 'grid', placeItems: 'center', color: 'var(--text-soft)', border: '1px solid var(--border)', background: 'transparent', flexShrink: 0 }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          >
+            <Icons.Plus size={19} />
+          </button>
+          {/* Data source selector */}
+          {(() => {
+            const sources = buildDataSources(sessionFiles, connectedDbLabel);
+            return sources.length > 1 ? (
+              <div style={{ marginBottom: -12 }}>
+                <DataSourceBar sources={sources} active={activeDataSources} onToggle={handleToggleDataSource} />
+              </div>
+            ) : null;
+          })()}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <button
+            type="button"
+            title="Voice input"
+            className="focusable"
+            style={{ width: 36, height: 36, borderRadius: 10, display: 'grid', placeItems: 'center', color: 'var(--text-soft)', background: 'transparent', border: 'none' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          >
+            <Icons.Mic size={19} />
+          </button>
+          <button
+            type="button"
+            onClick={(): void => { if (isStopVisible) { handleStopResponse(); return; } void handleSend(); }}
+            disabled={!isStopVisible && !canSend}
+            title={isStopVisible ? 'Stop' : 'Send'}
+            className="focusable"
+            style={{
+              width: 40, height: 40, borderRadius: 12, display: 'grid', placeItems: 'center', transition: 'all .15s', border: 'none',
+              background: (isStopVisible || canSend) ? 'var(--accent)' : 'var(--surface-3)',
+              color: (isStopVisible || canSend) ? 'var(--on-accent)' : 'var(--text-faint)',
+              cursor: (isStopVisible || canSend) ? 'pointer' : 'default',
+              boxShadow: (isStopVisible || canSend) ? '0 4px 12px -4px hsl(var(--shadow-color)/.5)' : 'none',
+            }}
+            aria-label={isStopVisible ? 'Stop' : 'Send'}
+          >
+            {isStopVisible ? <Icons.Stop size={20} /> : <Icons.ArrowUp size={20} />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const storageChoice = pendingStorageChoice ? (
+    <div className="card scale-in" style={{ maxWidth: 760, margin: '0 auto 12px', borderRadius: 'var(--r)', overflow: 'hidden', borderColor: 'var(--accent-soft-2)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '13px 16px', borderBottom: '1px solid var(--border)', background: 'var(--accent-soft)' }}>
+        <span style={{ color: 'var(--accent-ink)', flexShrink: 0 }}><Icons.Question size={18} /></span>
+        <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text)' }}>Do you want to save this file's data, or just ask questions about it?</span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12 }}>
+        {[
+          { save: false, icon: <Icons.Question size={17} />, bg: 'var(--surface-3)', color: 'var(--text-soft)', title: 'Q&A only', desc: "Ask about this file now — don't store it in the database." },
+          { save: true, icon: <Icons.Database size={17} />, bg: 'var(--green-soft)', color: 'var(--green-ink)', title: 'Save data', desc: "Store this file's data so you can query it anytime." },
+        ].map((opt) => (
+          <button
+            key={String(opt.save)}
+            type="button"
+            onClick={() => void handleStorageChoice(opt.save)}
+            className="focusable"
+            style={{ display: 'flex', alignItems: 'flex-start', gap: 12, textAlign: 'left', padding: '12px 14px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)', transition: 'all .13s' }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.background = 'var(--accent-soft)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--surface)'; }}
+          >
+            <span style={{ width: 32, height: 32, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: opt.bg, color: opt.color }}>{opt.icon}</span>
+            <span>
+              <span style={{ display: 'block', fontSize: 14, fontWeight: 700 }}>{opt.title}</span>
+              <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-muted)', marginTop: 1 }}>{opt.desc}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  ) : null;
+
   return (
-    <div className="flex flex-col h-full bg-white dark:bg-slate-900">
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--bg)' }}>
       {shareBanner}
-      {/* Chat Content */}
+
+      {/* Conversation */}
       {messages.length > 0 && (
-        <div className="flex-1 overflow-y-auto px-6 py-6">
-          <div className="max-w-5xl mx-auto w-full">
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px 24px' }}>
             <MessageList
               messages={messages}
               onRefreshResponse={(idx) => void handleRefreshResponse(idx)}
@@ -1324,9 +1496,16 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               typingStopSignal={typingStopSignal}
             />
             {streamingStage && (
-              <div className="flex items-center gap-2 px-4 py-2 mt-2 text-sm text-gray-600 dark:text-gray-400">
-                <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-pulse" />
-                <span>{streamingStage}</span>
+              <div className="fade-in" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', marginTop: 14 }}>
+                <BeeBadge size={30} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                  <span style={{ fontSize: 14.5, color: 'var(--text-soft)', fontWeight: 500 }}>{streamingStage}</span>
+                  <span style={{ display: 'inline-flex', gap: 4 }}>
+                    {[0, 1, 2].map((i) => (
+                      <span key={i} style={{ width: 6, height: 6, borderRadius: 99, background: 'var(--accent-strong)', animation: `dotPulse 1.2s ${i * 0.18}s infinite ease-in-out` }} />
+                    ))}
+                  </span>
+                </div>
               </div>
             )}
             <div ref={messagesEndRef} />
@@ -1334,245 +1513,83 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         </div>
       )}
 
-      {/* Input Field - Fixed position, same position whether empty or has history */}
-      <div className={`flex flex-col pb-10 pt-10 ${isEmptyState ? "justify-center flex-1 " : "justify-start pt-50"}`}>
-        <div className="max-w-5xl mx-auto w-full">
-          {/* Upload storage choice — sits above the input box like Claude Code's permission prompt */}
-          {pendingStorageChoice && (
-            <div className="mb-3 rounded-2xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 shadow-sm overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-100 dark:border-slate-800">
-                <span className="text-base font-bold text-gray-900 dark:text-gray-100">
-                  Do you want to save the data of this file, or just Q&amp;A on this file?
-                </span>
-              </div>
-              <div className="px-3 py-2 flex flex-col gap-1.5">
-                <button
-                  type="button"
-                  className="w-full text-left px-3 py-1.5 rounded-lg border border-gray-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
-                  onClick={() => void handleStorageChoice(false)}
-                >
-                  Q&amp;A only
-                </button>
-                <button
-                  type="button"
-                  className="w-full text-left px-3 py-1.5 rounded-lg border border-gray-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
-                  onClick={() => void handleStorageChoice(true)}
-                >
-                  Save data
-                </button>
-              </div>
+      {/* Empty state: greeting + composer grouped and centered */}
+      {isEmptyState ? (
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '40px 24px' }}>
+          <div style={{ width: '100%', maxWidth: 760, margin: '0 auto' }}>
+            <div className="fade-up" style={{ marginBottom: 18 }}>
+              <BeeBadge size={56} />
             </div>
+            <h1 className="fade-up" style={{ fontSize: 38, fontWeight: 800, letterSpacing: '-.025em', lineHeight: 1.1 }}>{greeting}.</h1>
+            <p className="fade-up" style={{ fontSize: 19, color: 'var(--text-soft)', marginTop: 8, marginBottom: 26, animationDelay: '.09s' }}>
+              Ask a question about your data in plain English — I'll find the answer, show it as a table or chart, and explain it.
+            </p>
+            {storageChoice}
+            {composer}
+            <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-faint)', marginTop: 11 }}>
+              LightDBee can make mistakes. It always asks before changing your data.
+            </p>
+          </div>
+        </div>
+      ) : (
+        /* Conversation / project view: composer pinned below */
+        <div style={{ padding: '12px 24px 22px', background: 'var(--bg)' }}>
+          {storageChoice}
+          {composer}
+          {messages.length > 0 && (
+            <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-faint)', marginTop: 11 }}>
+              LightDBee can make mistakes. It always asks before changing your data.
+            </p>
           )}
-          {/* Greeting text - Show in empty state or when project has history */}
-          {(isEmptyState || projectHasHistory) && (
-            <div className="text-center mb-6">
-              <h2 className="text-5xl md:text-6xl font-bold text-gray-900 dark:text-gray-100">Hi, How are you today?</h2>
+        </div>
+      )}
+
+      {/* Project chat history */}
+      {projectHasHistory && (
+        <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px 32px' }}>
+          <div style={{ maxWidth: 760, margin: '0 auto' }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)', marginBottom: 12 }}>
+              {projectSessions.length} chats
             </div>
-          )}
-          {/* Data source selector — shown when there are multiple sources to choose from */}
-          {(() => {
-            const sources = buildDataSources(sessionFiles, connectedDbLabel);
-            return sources.length > 1 ? (
-              <DataSourceBar
-                sources={sources}
-                active={activeDataSources}
-                onToggle={handleToggleDataSource}
-              />
-            ) : null;
-          })()}
-          <div className="relative bg-white dark:bg-slate-800 border-2 border-gray-300 dark:border-slate-700 rounded-3xl px-4 shadow-lg dark:shadow-none">
-            <div className="flex flex-col">
-              {!pendingStorageChoice && (inputAttachedFiles.length > 0 || stagedFiles.length > 0) && (
-                <div className="flex flex-wrap items-center gap-2 pt-3 pb-3">
-                  {inputAttachedFiles.map((f) => (
-                    <span
-                      key={f.id}
-                      className="inline-flex items-center gap-2 bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-slate-100 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 max-w-full min-w-0"
-                    >
-                      <img src={fileIcon} alt="" className="w-4 h-4 flex-shrink-0" />
-                      <span className="text-sm sm:text-base font-semibold leading-snug truncate min-w-0 max-w-md">
-                        {f.filename}
-                      </span>
-                      <button
-                        type="button"
-                        disabled={isViewOnlyShare || isUploadingExcel}
-                        className="shrink-0 text-base leading-none text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-100 px-0.5 disabled:opacity-0 disabled:pointer-events-none"
-                        aria-label={`Remove ${f.filename}`}
-                        onClick={() => void handleRemoveInputAttachment(f.id)}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                  {stagedFiles.map((f) => (
-                    <span
-                      key={f.localId}
-                      className="inline-flex items-center gap-2 bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-slate-100 px-3 py-2.5 rounded-xl border border-dashed border-gray-300 dark:border-slate-500 max-w-full min-w-0"
-                    >
-                      <img src={fileIcon} alt="" className="w-4 h-4 flex-shrink-0 opacity-60" />
-                      <span className="text-sm sm:text-base font-semibold leading-snug truncate min-w-0 max-w-md">
-                        {f.filename}
-                      </span>
-                      <button
-                        type="button"
-                        disabled={isViewOnlyShare || pendingStorageChoice || isUploadingExcel}
-                        className="shrink-0 text-base leading-none text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-100 px-0.5 disabled:opacity-0 disabled:pointer-events-none"
-                        aria-label={`Remove ${f.filename}`}
-                        onClick={() => void handleRemoveInputAttachment(f.localId)}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              <div
-                className={`flex items-center gap-3 min-h-[48px] ${
-                  !pendingStorageChoice && (inputAttachedFiles.length > 0 || stagedFiles.length > 0)
-                    ? '-mx-4 px-4 border-t border-gray-300 dark:border-slate-600 pt-3'
-                    : ''
-                }`}
-              >
-                <div className="relative flex-shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="text-gray-500 hover:text-gray-700 transition-colors"
-                    aria-label="Attach file"
-                  >
-                    <img src={plusIcon} alt="Add" className="w-5 h-5" />
-                  </button>
-
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    className="hidden"
-                    multiple={false}
-                    accept=".xlsx,.xls,.csv,.pdf,.db,.sqlite,.txt,.md,application/pdf,application/x-sqlite3,text/csv,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-                    onChange={handleFileInputChange}
-                  />
-                </div>
-
-                <textarea
-                  key={inputKey}
-                  ref={textareaRef}
-                  value={query}
-                  disabled={isViewOnlyShare}
-                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
-                    setQuery(e.target.value)
-                  }
-                  onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      if (isStopVisible) return;
-                      void handleSend();
+            <div className="card" style={{ overflow: 'hidden' }}>
+              {projectSessions.map((session, index) => (
+                <button
+                  key={session.session_id}
+                  onClick={() => {
+                    if (selectedProject) {
+                      window.history.pushState({}, '', `/chat/${selectedProject.id}/${session.session_id}`);
+                    } else {
+                      window.history.pushState({}, '', `/chat/${session.session_id}`);
                     }
+                    window.dispatchEvent(new PopStateEvent('popstate'));
+                    if (onSessionIdChange) onSessionIdChange(session.session_id);
                   }}
-                  placeholder={
-                    isViewOnlyShare
-                      ? "Read-only shared chat — sending disabled"
-                      : selectedProject
-                        ? `New chat in ${selectedProject.name}`
-                        : "Ask anything"
-                  }
-                  rows={1}
-                  autoComplete="off"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  className="flex-1 resize-none outline-none text-lg bg-transparent text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500"
-                  style={{
-                    maxHeight: `${MAX_TEXTAREA_HEIGHT}px`,
-                    minHeight: "60px",
-                    paddingTop: "20px",
-                    paddingBottom: "20px",
-                  }}
-                />
-
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button type="button" onClick={(): void => {}} aria-label="Microphone">
-                    <img src={microphoneIcon} alt="Microphone" className="w-5 h-5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(): void => { if (isStopVisible) { handleStopResponse(); return; } void handleSend(); }}
-                    disabled={!isStopVisible && !canSend}
-                    className="flex items-center justify-center w-10 h-10 rounded-full p-0 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
-                    aria-label={isStopVisible ? "Stop" : "Send"}
-                  >
-                    <img src={isStopVisible ? stopCircleIcon : arrowUpCircleIcon} alt="" className="w-20 h-20" />
-                  </button>
-                </div>
-              </div>
+                  type="button"
+                  className="focusable"
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 13, padding: '14px 18px', textAlign: 'left', borderTop: index ? '1px solid var(--border)' : 'none', background: 'transparent', border: 'none', borderTopWidth: index ? 1 : 0 }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <span style={{ width: 34, height: 34, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+                    <Icons.NewChat size={16} />
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 14.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatSessionName(session)}</span>
+                    {sessionPreviews[session.session_id] && (
+                      <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sessionPreviews[session.session_id]}</span>
+                    )}
+                  </span>
+                  {session.created_at && (
+                    <span style={{ fontSize: 12, color: 'var(--text-faint)', flexShrink: 0 }}>{formatDate(session.created_at)}</span>
+                  )}
+                  <Icons.ChevronRight size={17} style={{ color: 'var(--text-faint)', flexShrink: 0 }} />
+                </button>
+              ))}
             </div>
           </div>
         </div>
-      </div>
-
-      {/* Project Chat History - Show when project has history, right below chatbox */}
-      {
-        projectHasHistory && (
-          <div className="flex-1 overflow-y-auto px-8 pb-8">
-            <div className="max-w-4xl mx-auto">
-              <div className="space-y-0">
-                {projectSessions.map((session, index) => (
-                  <div key={session.session_id}>
-                    {index > 0 && <div className="border-t border-gray-200"></div>}
-                    <button
-                      onClick={() => {
-                        // Navigate to project session URL
-                        if (selectedProject) {
-                          window.history.pushState({}, '', `/chat/${selectedProject.id}/${session.session_id}`);
-                          window.dispatchEvent(new PopStateEvent('popstate'));
-                        } else {
-                          // Fallback: navigate to unassigned session
-                          window.history.pushState({}, '', `/chat/${session.session_id}`);
-                          window.dispatchEvent(new PopStateEvent('popstate'));
-                        }
-                        if (onSessionIdChange) {
-                          onSessionIdChange(session.session_id);
-                        }
-                      }}
-                      className="w-full text-left py-4 hover:bg-gray-50 transition-colors"
-                      type="button"
-                    >
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1 min-w-0">
-                          <h3 className="font-semibold text-gray-900 mb-1">{formatSessionName(session)}</h3>
-                          {sessionPreviews[session.session_id] && (
-                            <p className="text-sm text-gray-600 truncate">{sessionPreviews[session.session_id]}</p>
-                          )}
-                        </div>
-                        {session.created_at && (
-                          <span className="text-xs text-gray-500 ml-4 flex-shrink-0">
-                            {formatDate(session.created_at)}
-                          </span>
-                        )}
-                      </div>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )
-      }
-
-      {/* Disclaimer - Only show in empty state */}
-      {
-        isEmptyState && (
-          <div className="px-8 pb-8">
-            <div className="max-w-4xl mx-auto">
-              <p className="text-center text-xs text-gray-500 dark:text-gray-400">
-              By using LightDBee, you agree to our Term and Service Policy
-              </p>
-            </div>
-          </div>
-        )
-      }
-
-
-    </div >
+      )}
+    </div>
   );
 }
 

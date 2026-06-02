@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import {
   createSession,
@@ -15,15 +16,7 @@ import {
 import ProjectModal from '../modals/ProjectModal';
 import DatabaseConnectPopup, { type DatabaseConnectionData } from '../modals/DatabaseConnectPopup';
 import { encryptPassword, decryptPassword } from '../../utils/crypto';
-import settingsIcon from '../../assets/icons/Settings.svg';
-import gridIcon from '../../assets/icons/Grid.svg';
-import penIcon from '../../assets/icons/Pen.svg';
-import databaseIcon from '../../assets/icons/Database.svg';
-import folderPlusIcon from '../../assets/icons/Folder plus.svg';
-import folderIcon from '../../assets/icons/Folder.svg';
-import userIcon from '../../assets/icons/User.svg';
-import sidebarIcon from '../../assets/icons/Sidebar.svg';
-import beeLogo from '../../assets/icons/bee.png';
+import { Icons, BeeBadge, type IconComponent } from '../../icons';
 
 type Project = {
   id: string;
@@ -36,6 +29,53 @@ type SidebarProps = {
   onSessionSelect?: (sessionId: string) => void;
   currentSessionId?: string | null;
 };
+
+/** A primary navigation row in the sidebar. */
+function NavItem({
+  icon: Icon,
+  label,
+  onClick,
+  collapsed,
+  accent,
+}: {
+  icon: IconComponent;
+  label: string;
+  onClick: () => void;
+  collapsed: boolean;
+  accent?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={collapsed ? label : undefined}
+      type="button"
+      className="focusable"
+      style={{
+        width: '100%', display: 'flex', alignItems: 'center', gap: 12,
+        justifyContent: collapsed ? 'center' : 'flex-start',
+        padding: collapsed ? 10 : '10px 12px', borderRadius: 'var(--r-sm)',
+        fontSize: 14.5, fontWeight: 600, textAlign: 'left',
+        color: accent ? 'var(--accent-ink)' : 'var(--text-soft)',
+        background: accent ? 'var(--accent-soft)' : 'transparent',
+        border: accent ? '1px solid var(--accent-soft-2)' : '1px solid transparent',
+        transition: 'all .14s',
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = accent ? 'var(--accent-soft)' : 'var(--surface-2)'; if (!accent) e.currentTarget.style.color = 'var(--text)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = accent ? 'var(--accent-soft)' : 'transparent'; if (!accent) e.currentTarget.style.color = 'var(--text-soft)'; }}
+    >
+      <Icon size={19} />
+      {!collapsed && <span>{label}</span>}
+    </button>
+  );
+}
+
+function SectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-faint)', padding: '0 12px', marginBottom: 8 }}>
+      {children}
+    </div>
+  );
+}
 
 export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarProps) {
   const { user } = useAuth();
@@ -303,230 +343,199 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
     window.dispatchEvent(new PopStateEvent('popstate'));
   };
 
+  const PERM: Record<string, { label: string; color: string }> = {
+    view_only: { label: 'View', color: 'var(--text-muted)' },
+    read_data: { label: 'Read', color: 'var(--info)' },
+    edit_data: { label: 'Edit', color: 'var(--green-ink)' },
+  };
+  const userInitial = (user?.name || user?.email || 'U').slice(0, 1).toUpperCase();
+  const unassigned = getUnassignedSessions();
+
   return (
     <>
-      <div
-        className={`h-screen flex flex-col relative transition-all duration-300 bg-[#F9F9FA] dark:bg-slate-950 ${isCollapsed ? '' : 'border-r-2 border-gray-300 dark:border-slate-800'}`}
+      <aside
         style={{
-          flex: isCollapsed ? '0 0 auto' : '1 1 15%',
-          width: isCollapsed ? '80px' : undefined,
-          minWidth: isCollapsed ? '80px' : '200px'
+          width: isCollapsed ? 74 : 286, flexShrink: 0, height: '100%',
+          display: 'flex', flexDirection: 'column',
+          background: 'var(--bg-tint)', borderRight: '1px solid var(--border)',
+          transition: 'width .26s cubic-bezier(.4,0,.2,1)',
         }}
       >
-        {/* Main Content Area - Flex container for proportional sections */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Logo Section - Smaller */}
-          <div className="p-4 border-b-2 border-gray-300 dark:border-slate-800 relative group flex-shrink-0" style={{ flex: '0 0 auto', minHeight: '60px' }}>
-            <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-2'}`}>
-              <img
-                src={beeLogo}
-                alt="LightDBee"
-                className={`w-8 h-8 transition-opacity ${isCollapsed ? 'group-hover:opacity-0' : ''}`}
-              />
-              {!isCollapsed && (
-                <span className="text-xl font-semibold text-gray-900 dark:text-gray-100">LightDBee</span>
-              )}
-            </div>
-            {/* Sidebar Icon - Show on hover when collapsed */}
-            {isCollapsed && (
-              <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button
-                  onClick={() => setIsCollapsed(!isCollapsed)}
-                  className="text-gray-600 hover:text-gray-900 transition-colors"
-                  type="button"
-                >
-                  <img src={sidebarIcon} alt="Sidebar" className="w-10 h-10" />
-                </button>
-              </div>
-            )}
-            {/* Sidebar Icon - Always visible when expanded */}
-            {!isCollapsed && (
-              <div className="absolute top-4 right-4 z-10">
-                <button
-                  onClick={() => setIsCollapsed(!isCollapsed)}
-                  className="text-gray-600 hover:text-gray-900 transition-colors"
-                  type="button"
-                >
-                  <img src={sidebarIcon} alt="Sidebar" className="w-10 h-10" />
-                </button>
-              </div>
-            )}
+        {/* header / logo */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: isCollapsed ? '16px 0' : '16px 18px', justifyContent: isCollapsed ? 'center' : 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <BeeBadge size={36} />
+            {!isCollapsed && <span style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-.02em' }}>LightDBee</span>}
           </div>
-
-          {/* Top Section - Smaller */}
-          <div className="p-4 flex-shrink-0 overflow-y-auto" style={{ flex: '0 0 auto' }}>
-            {/* Navigation Items */}
-            <div className="space-y-0.5">
-              <button
-                onClick={handleNewChat}
-                className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-1.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left dark:text-gray-300 dark:hover:bg-slate-800`}
-                type="button"
-                title={isCollapsed ? 'New chat' : undefined}
-              >
-                <img src={penIcon} alt="New chat" className="w-6 h-6" />
-                {!isCollapsed && <span className="text-base font-medium">New chat</span>}
-              </button>
-
-              <button
-                onClick={() => setIsDatabasePopupOpen(true)}
-                className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-1.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left dark:text-gray-300 dark:hover:bg-slate-800`}
-                type="button"
-                title={isCollapsed ? 'Connect Database' : undefined}
-              >
-                <img src={databaseIcon} alt="Connect Database" className="w-6 h-6" />
-                {!isCollapsed && <span className="text-base font-medium">Connect Database</span>}
-              </button>
-
-              <button
-                onClick={() => setIsProjectModalOpen(true)}
-                className={`w-full flex items-center ${isCollapsed ? 'justify-center px-2' : 'gap-3 px-3'} py-1.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left dark:text-gray-300 dark:hover:bg-slate-800`}
-                type="button"
-                title={isCollapsed ? 'Add Project' : undefined}
-              >
-                <img src={folderPlusIcon} alt="Add Project" className="w-6 h-6" />
-                {!isCollapsed && <span className="text-base font-medium">Add Project</span>}
-              </button>
-            </div>
-          </div>
-
-          {/* Projects Section - 3 parts */}
           {!isCollapsed && (
-            <div className="border-t border-gray-200 dark:border-slate-800 flex-shrink-0 flex flex-col overflow-hidden" style={{ flex: '3 1 0' }}>
-              <div className="px-4 py-3 flex-shrink-0">
-                <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Projects</h2>
-              </div>
-              <div className="flex-1 overflow-y-auto px-4 pb-3">
-                {projects.length === 0 ? (
-                  <div className="text-sm text-gray-400 italic">No projects yet</div>
-                ) : (
-                  <div className="space-y-1">
-                    {projects.map((project) => (
-                      <button
-                        key={project.id}
-                        onClick={() => {
-                          setSelectedProjectId(project.id);
-                          // Navigate to project view (no session) - URL is source of truth
-                          navigate(`/chat/${project.id}`);
-                          // Clear selected session when switching projects
-                          if (onSessionSelect) {
-                            onSessionSelect(null as any);
-                          }
-                        }}
-                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-gray-100 text-gray-700 transition-colors text-left dark:text-gray-300 dark:hover:bg-slate-800 ${selectedProjectId === project.id ? 'bg-gray-100 dark:bg-slate-800 font-semibold' : ''}`}
-                        type="button"
-                      >
-                        <img src={folderIcon} alt="Folder" className="w-5 h-5 flex-shrink-0" />
-                        <span className="text-sm font-medium truncate">{project.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Shared with me */}
-          {!isCollapsed && receivedShares.length > 0 && (
-            <div className="border-t border-gray-200 dark:border-slate-800 flex-shrink-0 flex flex-col overflow-hidden" style={{ flex: '2 1 0' }}>
-              <div className="px-4 py-3 flex-shrink-0">
-                <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Shared with me</h2>
-              </div>
-              <div className="flex-1 overflow-y-auto px-4 pb-3">
-                <div className="space-y-1">
-                  {receivedShares.map((s) => {
-                    const isAccepted = !!s.accepted_at && !!s.forked_session_id;
-                    const target = isAccepted
-                      ? `/chat/${s.project_id}/${s.forked_session_id}`
-                      : `/share/accept/${encodeURIComponent(s.accept_token)}`;
-                    const permLabel =
-                      s.permission === 'view_only'
-                        ? 'View only'
-                        : s.permission === 'read_data'
-                          ? 'Read'
-                          : 'Edit';
-                    return (
-                      <button
-                        key={s.recipient_id}
-                        onClick={() => navigate(target)}
-                        className={`w-full text-left px-3 py-2 rounded-lg transition-colors text-sm hover:bg-gray-100 dark:hover:bg-slate-800 ${
-                          currentSessionId === s.forked_session_id
-                            ? 'bg-gray-100 font-medium text-gray-900'
-                            : 'text-gray-700'
-                        }`}
-                        type="button"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate">
-                            {s.session_name || 'Shared chat'}
-                          </span>
-                          <span className="text-xs text-gray-500 flex-shrink-0">{permLabel}</span>
-                        </div>
-                        <div className="text-xs text-gray-400 truncate">
-                          {isAccepted ? 'from ' : 'pending — '}
-                          {s.owner_name || s.owner_email || 'Unknown'}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Chats Section - 3 parts */}
-          {!isCollapsed && (
-            <div className="border-t border-gray-200 dark:border-slate-800 flex-shrink-0 flex flex-col overflow-hidden" style={{ flex: '3 1 0' }}>
-              <div className="px-4 py-3 flex-shrink-0">
-                <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Chat History</h2>
-              </div>
-              <div className="flex-1 overflow-y-auto px-4 pb-3">
-                {isLoading ? (
-                  <div className="text-sm text-gray-500">Loading...</div>
-                ) : getUnassignedSessions().length === 0 ? (
-                  <div className="text-sm text-gray-400 italic">No unassigned chats yet</div>
-                ) : (
-                  <div className="space-y-1">
-                    {getUnassignedSessions().map((session) => (
-                      <button
-                        key={session.session_id}
-                        onClick={() => handleSessionClick(session.session_id)}
-                        className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors text-sm ${currentSessionId === session.session_id
-                          ? 'bg-gray-100 dark:bg-slate-800 text-gray-900 dark:text-gray-100 font-medium'
-                          : 'hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-gray-300'
-                          }`}
-                        type="button"
-                      >
-                        <span className="truncate block">{formatSessionName(session)}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+            <button onClick={() => setIsCollapsed(true)} title="Collapse" type="button" className="focusable"
+              style={{ width: 32, height: 32, borderRadius: 8, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
+              <Icons.Sidebar size={19} />
+            </button>
           )}
         </div>
 
-        {/* Bottom Profile - Always at bottom */}
-        <div className={`mt-auto p-5`}>
-          <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3'}`}>
-            {user?.picture ? (
-              <img
-                src={user.picture}
-                alt={user.name || user.email || 'User'}
-                className="w-10 h-10 rounded-full"
-                referrerPolicy="no-referrer"
-              />
+        {isCollapsed && (
+          <div style={{ display: 'grid', placeItems: 'center', paddingBottom: 6 }}>
+            <button onClick={() => setIsCollapsed(false)} title="Expand" type="button" className="focusable"
+              style={{ width: 36, height: 36, borderRadius: 8, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none' }}>
+              <Icons.Sidebar size={19} />
+            </button>
+          </div>
+        )}
+
+        {/* primary nav */}
+        <div style={{ padding: isCollapsed ? '6px 12px' : '6px 14px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <NavItem icon={Icons.NewChat} label="New chat" collapsed={isCollapsed} accent onClick={() => { void handleNewChat(); }} />
+          <NavItem icon={Icons.Database} label={connectedDb ? 'Data sources' : 'Connect data'} collapsed={isCollapsed} onClick={() => setIsDatabasePopupOpen(true)} />
+          <NavItem icon={Icons.FolderPlus} label="New project" collapsed={isCollapsed} onClick={() => setIsProjectModalOpen(true)} />
+        </div>
+
+        {/* connected-data status */}
+        {!isCollapsed && (
+          <div style={{ padding: '10px 14px 4px' }}>
+            {connectedDb ? (
+              <button onClick={() => setIsDatabasePopupOpen(true)} type="button" className="focusable"
+                style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 11, padding: '11px 13px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)' }}>
+                <span style={{ position: 'relative', width: 32, height: 32, borderRadius: 9, display: 'grid', placeItems: 'center', background: 'var(--green-soft)', color: 'var(--green-ink)', flexShrink: 0 }}>
+                  <Icons.Database size={17} />
+                  <span style={{ position: 'absolute', right: -2, bottom: -2, width: 11, height: 11, borderRadius: 99, background: 'var(--green)', border: '2px solid var(--bg-tint)' }} />
+                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{connectedDb.databaseName}</span>
+                  <span style={{ display: 'block', fontSize: 11.5, color: 'var(--green-ink)', fontWeight: 600 }}>Connected</span>
+                </span>
+                <Icons.ChevronRight size={15} style={{ color: 'var(--text-faint)' }} />
+              </button>
             ) : (
-              <img src={userIcon} alt="User" className="w-10 h-10" />
-            )}
-            {!isCollapsed && (
-              <span className="text-base font-medium text-gray-900 dark:text-gray-100 truncate">
-                {user?.name || user?.email || 'User'}
-              </span>
+              <button onClick={() => setIsDatabasePopupOpen(true)} type="button" className="focusable"
+                style={{ width: '100%', textAlign: 'left', padding: 13, borderRadius: 'var(--r-sm)', border: '1.5px dashed var(--border-strong)', background: 'var(--surface)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13.5, fontWeight: 700, color: 'var(--accent-ink)' }}>
+                  <Icons.Plus size={16} /> Connect a database
+                </div>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>Start asking questions about your data.</p>
+              </button>
             )}
           </div>
+        )}
+
+        {/* scroll area: projects + shared + history */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: isCollapsed ? '12px 0' : '14px 14px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {!isCollapsed && (
+            <div>
+              <SectionLabel>Projects</SectionLabel>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {projects.length === 0 ? (
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>No projects yet</div>
+                ) : projects.map((project) => {
+                  const on = selectedProjectId === project.id;
+                  return (
+                    <button
+                      key={project.id}
+                      type="button"
+                      className="focusable"
+                      onClick={() => {
+                        setSelectedProjectId(project.id);
+                        navigate(`/chat/${project.id}`);
+                        if (onSessionSelect) onSessionSelect(null as unknown as string);
+                      }}
+                      style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 12px', borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14,
+                        color: on ? 'var(--text)' : 'var(--text-soft)', background: on ? 'var(--surface)' : 'transparent', border: on ? '1px solid var(--border)' : '1px solid transparent' }}
+                      onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-2)'; }}
+                      onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      <Icons.Folder size={17} style={{ color: on ? 'var(--accent-ink)' : 'var(--text-muted)', flexShrink: 0 }} />
+                      <span style={{ flex: 1, fontWeight: on ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {!isCollapsed && receivedShares.length > 0 && (
+            <div>
+              <SectionLabel>Shared with me</SectionLabel>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {receivedShares.map((s) => {
+                  const isAccepted = !!s.accepted_at && !!s.forked_session_id;
+                  const target = isAccepted
+                    ? `/chat/${s.project_id}/${s.forked_session_id}`
+                    : `/share/accept/${encodeURIComponent(s.accept_token)}`;
+                  const ownerName = s.owner_name || s.owner_email || 'Unknown';
+                  const perm = PERM[s.permission] ?? PERM.view_only;
+                  return (
+                    <button key={s.recipient_id} onClick={() => navigate(target)} type="button" className="focusable"
+                      style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 12px', borderRadius: 'var(--r-sm)', textAlign: 'left', color: 'var(--text-soft)', background: 'transparent', border: 'none' }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
+                      <span style={{ width: 26, height: 26, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'var(--surface-3)', color: 'var(--text-soft)', fontSize: 11, fontWeight: 800 }}>{ownerName[0]}</span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.session_name || 'Shared chat'}</span>
+                        <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{isAccepted ? `from ${ownerName}` : `pending — ${ownerName}`}</span>
+                      </span>
+                      <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.03em', color: perm.color, flexShrink: 0 }}>{perm.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {!isCollapsed && (
+            <div>
+              <SectionLabel>Chat history</SectionLabel>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {isLoading ? (
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>Loading…</div>
+                ) : unassigned.length === 0 ? (
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>No chats yet</div>
+                ) : unassigned.map((session) => {
+                  const on = currentSessionId === session.session_id;
+                  return (
+                    <button key={session.session_id} onClick={() => handleSessionClick(session.session_id)} type="button" className="focusable"
+                      style={{ width: '100%', display: 'block', padding: '9px 12px', borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14, fontWeight: on ? 700 : 500,
+                        color: on ? 'var(--text)' : 'var(--text-soft)', background: on ? 'var(--surface)' : 'transparent',
+                        border: on ? '1px solid var(--border)' : '1px solid transparent',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-2)'; }}
+                      onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}>
+                      {formatSessionName(session)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
-      </div>
+
+        {/* user profile */}
+        <div style={{ borderTop: '1px solid var(--border)', padding: isCollapsed ? '12px 0' : '12px 14px' }}>
+          <button
+            type="button"
+            className="focusable"
+            onClick={() => { navigate('/account'); }}
+            title="Account settings"
+            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, justifyContent: isCollapsed ? 'center' : 'flex-start', padding: isCollapsed ? 6 : '8px 10px', borderRadius: 'var(--r-sm)', background: 'transparent', border: 'none' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          >
+            {user?.picture ? (
+              <img src={user.picture} alt={user.name || user.email || 'User'} style={{ width: 36, height: 36, borderRadius: 99, objectFit: 'cover', flexShrink: 0 }} referrerPolicy="no-referrer" />
+            ) : (
+              <div style={{ width: 36, height: 36, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'linear-gradient(145deg, var(--accent), var(--accent-strong))', color: 'var(--on-accent)', fontWeight: 800, fontSize: 15 }}>{userInitial}</div>
+            )}
+            {!isCollapsed && (
+              <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.name || 'User'}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.email || ''}</div>
+              </div>
+            )}
+          </button>
+        </div>
+      </aside>
 
       <ProjectModal
         isOpen={isProjectModalOpen}

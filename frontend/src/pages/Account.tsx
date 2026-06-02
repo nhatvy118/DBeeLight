@@ -85,103 +85,51 @@ export default function Account() {
   };
 
   return (
-    <div className="h-full overflow-y-auto px-6 py-8 bg-white">
-      <div className="max-w-2xl mx-auto">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold text-gray-900">Edit profile</h1>
-          <a className="text-sm text-blue-600 hover:text-blue-700 underline" href="/chat">
-            Back to Chat
-          </a>
+    <div style={{ height: '100%', overflowY: 'auto', padding: '32px 24px', background: 'var(--bg)' }}>
+      <div style={{ maxWidth: 640, margin: '0 auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-.02em' }}>Account settings</h1>
+          <a style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--accent-ink)', textDecoration: 'none' }} href="/chat">Back to chat</a>
         </div>
 
-        <div className="mt-6 rounded-3xl border border-gray-200 bg-white shadow-sm p-6">
+        <div className="card soft-shadow" style={{ marginTop: 24, borderRadius: 'var(--r-lg)', padding: 26 }}>
           {isLoading ? (
-            <div className="text-sm text-gray-600">Loading…</div>
+            <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>Loading…</div>
           ) : !user ? (
-            <div className="text-sm text-gray-600">
-              You are not signed in. Use <span className="font-medium">Sign in with Google</span> in the header.
+            <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>
+              You are not signed in. Use <span style={{ fontWeight: 600 }}>Continue with Google</span> on the login page.
             </div>
           ) : (
             <>
               {/* Avatar */}
-              <div className="flex justify-center py-4">
-                <div className="relative">
-                  {user.picture ? (
-                    <img
-                      src={user.picture}
-                      alt={user.name || user.email || 'User'}
-                      className="w-40 h-40 rounded-full object-cover border border-gray-200"
-                      referrerPolicy="no-referrer"
-                    />
-                  ) : (
-                    <div className="w-40 h-40 rounded-full bg-slate-600 flex items-center justify-center text-white text-5xl font-semibold">
-                      {(user.name || user.email || '?').slice(0, 1).toUpperCase()}
-                    </div>
-                  )}
-
-                  {/* Camera button (placeholder) */}
-                  <button
-                    type="button"
-                    className="absolute bottom-2 right-2 w-10 h-10 rounded-full bg-white border border-gray-300 shadow-sm flex items-center justify-center hover:bg-gray-50 transition-colors"
-                    title="Change avatar (not supported)"
-                    onClick={() => window.alert("Avatar update isn't supported (Google profile is managed by Google).")}
-                  >
-                    <svg className="w-5 h-5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M3 7h3l2-3h8l2 3h3v13H3V7z"
-                      />
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M12 17a4 4 0 100-8 4 4 0 000 8z"
-                      />
-                    </svg>
-                  </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16, paddingBottom: 22, marginBottom: 22, borderBottom: '1px solid var(--border)' }}>
+                {user.picture ? (
+                  <img src={user.picture} alt={user.name || user.email || 'User'} style={{ width: 64, height: 64, borderRadius: 99, objectFit: 'cover' }} referrerPolicy="no-referrer" />
+                ) : (
+                  <div style={{ width: 64, height: 64, borderRadius: 99, display: 'grid', placeItems: 'center', background: 'linear-gradient(145deg, var(--accent), var(--accent-strong))', color: 'var(--on-accent)', fontWeight: 800, fontSize: 26 }}>
+                    {(user.name || user.email || '?').slice(0, 1).toUpperCase()}
+                  </div>
+                )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 16, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.name || '—'}</div>
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.email || '—'}</div>
+                  <p style={{ fontSize: 12, color: 'var(--text-faint)', marginTop: 6 }}>Your photo is managed by your Google account.</p>
                 </div>
               </div>
 
               {/* Form */}
-              <div className="mt-4 space-y-4">
-                <div className="rounded-2xl border border-gray-200 px-4 py-3">
-                  <label className="block text-xs font-medium text-gray-500">Display name</label>
-                  <input
-                    value={displayName}
-                    onChange={(e) => setDisplayName(e.target.value)}
-                    className="mt-1 w-full text-base text-gray-900 outline-none bg-transparent"
-                    placeholder="Your name"
-                  />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div>
+                  <label className="field-label">Display name</label>
+                  <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} className="field focusable" placeholder="Your name" />
                 </div>
-
-                <div className="rounded-2xl border border-gray-200 px-4 py-3">
-                  <label className="block text-xs font-medium text-gray-500">Username</label>
-                  <input
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    className="mt-1 w-full text-base text-gray-900 outline-none bg-transparent"
-                    placeholder="username"
-                  />
+                <div>
+                  <label className="field-label">Username</label>
+                  <input value={username} onChange={(e) => setUsername(e.target.value)} className="field focusable" placeholder="username" />
                 </div>
-                <div className="mt-6 flex items-center justify-end gap-3">
-                  <button
-                    type="button"
-                    onClick={handleCancel}
-                    disabled={!isDirty}
-                    className="px-6 py-2 rounded-full bg-gray-100 hover:bg-gray-200 text-sm font-medium text-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSave}
-                    disabled={!isDirty}
-                    className="px-6 py-2 rounded-full bg-black text-white text-sm font-medium hover:bg-gray-900 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Save
-                  </button>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, marginTop: 10 }}>
+                  <button type="button" onClick={handleCancel} disabled={!isDirty} className="btn btn-outline" style={{ padding: '11px 18px', opacity: isDirty ? 1 : 0.5 }}>Cancel</button>
+                  <button type="button" onClick={handleSave} disabled={!isDirty} className="btn btn-primary" style={{ padding: '11px 22px', opacity: isDirty ? 1 : 0.5 }}>Save changes</button>
                 </div>
               </div>
             </>
