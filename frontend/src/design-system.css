@@ -208,9 +208,12 @@ input:focus-visible, textarea:focus-visible {
 @keyframes growBar { from { transform: scaleY(0); } to { transform: scaleY(1); } }
 @keyframes dotPulse { 0%, 80%, 100% { opacity: .25; transform: scale(.8);} 40% { opacity: 1; transform: scale(1);} }
 
+@keyframes sheetUp { from { transform: translateY(100%); } to { transform: none; } }
+
 .fade-up { animation: fadeUp .45s cubic-bezier(.22,1,.36,1) both; }
 .fade-in { animation: fadeUp .4s cubic-bezier(.22,1,.36,1) both; }
 .scale-in { animation: scaleIn .2s cubic-bezier(.22,1,.36,1) both; }
+.sheet-up { animation: sheetUp .3s cubic-bezier(.4,0,.2,1) both; }
 
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .01ms !important; }

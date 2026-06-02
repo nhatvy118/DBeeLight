@@ -41,6 +41,7 @@ export default function MainLayout({ children, currentSessionId, onSessionSelect
     <Sidebar
       onSessionSelect={(sid) => onSessionSelect(sid)}
       currentSessionId={currentSessionId}
+      onRequestCloseDrawer={() => setDrawerOpen(false)}
     />
   );
 

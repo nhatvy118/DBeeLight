@@ -32,6 +32,8 @@ type Project = {
 type SidebarProps = {
   onSessionSelect?: (sessionId: string) => void;
   currentSessionId?: string | null;
+  /** Close the mobile drawer (so a popped-open modal isn't behind it). No-op on desktop. */
+  onRequestCloseDrawer?: () => void;
 };
 
 /** A primary navigation row in the sidebar. */
@@ -64,8 +66,8 @@ function NavItem({
         border: '1px solid transparent',
         transition: 'all .14s',
       }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = accent ? 'var(--accent-soft)' : 'var(--surface-2)'; if (!accent) e.currentTarget.style.color = 'var(--text)'; }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (!accent) e.currentTarget.style.color = 'var(--text-soft)'; }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-soft)'; e.currentTarget.style.color = 'var(--accent-ink)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = accent ? 'var(--accent-ink)' : 'var(--text-soft)'; }}
     >
       <Icon size={19} />
       {!collapsed && <span>{label}</span>}
@@ -196,7 +198,7 @@ function ProfileMenu({
   );
 }
 
-export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarProps) {
+export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCloseDrawer }: SidebarProps) {
   const { user } = useAuth();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [receivedShares, setReceivedShares] = useState<ReceivedShare[]>([]);
@@ -527,8 +529,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
         {/* primary nav */}
         <div style={{ padding: isCollapsed ? '6px 12px' : '6px 14px', display: 'flex', flexDirection: 'column', gap: 3 }}>
           <NavItem icon={Icons.NewChat} label="New chat" collapsed={isCollapsed} accent onClick={() => { void handleNewChat(); }} />
-          <NavItem icon={Icons.Database} label={connectedDb ? 'Data sources' : 'Connect data'} collapsed={isCollapsed} onClick={() => setIsDatabasePopupOpen(true)} />
-          <NavItem icon={Icons.FolderPlus} label="New project" collapsed={isCollapsed} onClick={() => setIsProjectModalOpen(true)} />
+          <NavItem icon={Icons.Database} label={connectedDb ? 'Data sources' : 'Connect data'} collapsed={isCollapsed} onClick={() => { onRequestCloseDrawer?.(); setIsDatabasePopupOpen(true); }} />
+          <NavItem icon={Icons.FolderPlus} label="New project" collapsed={isCollapsed} onClick={() => { onRequestCloseDrawer?.(); setIsProjectModalOpen(true); }} />
         </div>
 
         {/* connected-data status */}
@@ -654,8 +656,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId }: SidebarPr
           collapsed={isCollapsed}
           user={user}
           onNavigate={navigate}
-          onOpenStorage={() => setIsStorageModalOpen(true)}
-          onOpenHelp={() => setIsHelpModalOpen(true)}
+          onOpenStorage={() => { onRequestCloseDrawer?.(); setIsStorageModalOpen(true); }}
+          onOpenHelp={() => { onRequestCloseDrawer?.(); setIsHelpModalOpen(true); }}
           onLogout={() => { void handleLogout(); }}
         />
       </aside>

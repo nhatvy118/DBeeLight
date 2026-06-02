@@ -1546,8 +1546,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             </p>
           </div>
         </div>
-      ) : (
-        /* Conversation / project view: composer pinned below */
+      ) : projectHasHistory ? null : (
+        /* Active conversation: composer pinned below. (Project landing view
+           has its own "New chat in this project" CTA, so no composer here.) */
         <div style={{ padding: '12px 24px 22px', background: 'var(--bg)' }}>
           {storageChoice}
           {composer}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   deleteSessionFile,
   downloadStoredSessionFile,
@@ -150,7 +151,7 @@ export default function StorageModal({ open, onClose }: Props) {
   const exp = quota?.export_used_bytes ?? 0;
   const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
 
-  return (
+  return createPortal(
     <div
       className="backdrop"
       role="dialog"
@@ -363,6 +364,7 @@ export default function StorageModal({ open, onClose }: Props) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
