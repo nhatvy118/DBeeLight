@@ -2,7 +2,6 @@
 
 import logging
 import uuid
-import asyncio
 from typing import Any, Dict, List, Optional, TypedDict
 
 from openai import OpenAI
@@ -25,8 +24,6 @@ class OrchestratorState(TypedDict, total=False):
     primary_agent: str
     agent_id: str
     workflow_state: Dict[str, Any]
-    hybrid_results: Dict[str, Dict[str, Any]]
-    warnings: List[Dict[str, Any]]
     success: bool
     response: str
     error: Optional[str]
@@ -112,6 +109,8 @@ class Orchestrator:
             return "create_table"
         if route == "db_mutation":
             return "mutation"
+        if route == "db_general":
+            return "general"
         return "general"
 
     async def _parse_intent_node(self, state: OrchestratorState) -> OrchestratorState:
@@ -148,7 +147,7 @@ class Orchestrator:
             return "excel"
         if route == "chart":
             return "chart"
-        if route in ("db_readonly", "db_create_table", "db_mutation", "database"):
+        if route in ("db_readonly", "db_create_table", "db_mutation", "db_general"):
             return "db"
         primary = str(state.get("primary_agent") or "database").lower().strip()
         if primary == "chart":
@@ -210,28 +209,6 @@ class Orchestrator:
             "workflow_state": workflow_state,
         }
 
-    async def _run_subgraph_for_agent(
-        self,
-        session_id: str,
-        message: str,
-        agent_type: str,
-    ) -> Dict[str, Any]:
-        self._session_agent_map[session_id] = agent_type
-        try:
-            return await self.workflow.run(
-                session_id=session_id,
-                user_message=message,
-                agent_type=agent_type,
-                thread_id=session_id,
-            )
-        except Exception as e:
-            logger.exception("[Orchestrator] %s hybrid subgraph error: %s", agent_type, e)
-            return {
-                "current_stage": "ERROR",
-                "output": {"type": "error", "message": f"{agent_type} workflow error: {e}"},
-                "error": str(e),
-            }
-
     async def _db_agent_node(self, state: OrchestratorState) -> OrchestratorState:
         """Run database path: three workflows from intent, else DatabaseAgent."""
         session_id = str(state.get("session_id") or "")
@@ -270,114 +247,7 @@ class Orchestrator:
     async def _excel_agent_node(self, state: OrchestratorState) -> OrchestratorState:
         return await self._run_agent_node(state, "excel")
 
-    async def _hybrid_agent_node(self, state: OrchestratorState) -> OrchestratorState:
-        session_id = str(state.get("session_id") or "")
-        intent_result = state.get("intent_result") or {}
-        raw_message = str(state.get("user_message") or "")
-        normalized_message = str(intent_result.get("nl_query") or raw_message)
-        chart_type = str(intent_result.get("chart_type") or "").strip().lower()
-
-        # Fan-out selection: DB is base; add Chart for visualization.
-        selected_agents: List[str] = ["database"]
-        if chart_type:
-            selected_agents.append("chart")
-
-        selected_agents = [a for a in dict.fromkeys(selected_agents) if a in self._agents]
-        if not selected_agents:
-            selected_agents = ["database"] if "database" in self._agents else list(self._agents.keys())[:1]
-
-        tasks = [
-            self._run_subgraph_for_agent(
-                session_id=session_id,
-                # DB + Excel need full message (RAG / upload path markers). Chart uses NL.
-                message=(
-                    raw_message
-                    if agent_type in ("database", "excel")
-                    else normalized_message
-                ),
-                agent_type=agent_type,
-            )
-            for agent_type in selected_agents
-        ]
-        results = await asyncio.gather(*tasks)
-        hybrid_results = {agent_type: result for agent_type, result in zip(selected_agents, results)}
-        warnings: List[Dict[str, Any]] = []
-        success_count = 0
-        failed_agents: List[str] = []
-        for agent_type, wf_state in hybrid_results.items():
-            stage = str((wf_state or {}).get("current_stage") or "")
-            output = (wf_state or {}).get("output", {})
-            err = str((wf_state or {}).get("error") or "")
-            output_type = output.get("type", "") if isinstance(output, dict) else ""
-            is_error = stage == "ERROR" or output_type == "error" or bool(err)
-            if is_error:
-                failed_agents.append(agent_type)
-                warnings.append(
-                    {
-                        "type": "agent_failed",
-                        "agent": agent_type,
-                        "message": str(output.get("message") if isinstance(output, dict) else err) or f"{agent_type} failed",
-                    }
-                )
-            else:
-                success_count += 1
-
-        # Hybrid policy: at least 2 successful agent paths.
-        policy_ok = success_count >= 2
-        if not policy_ok:
-            warnings.append(
-                {
-                    "type": "hybrid_policy_violation",
-                    "message": (
-                        "Hybrid result requires at least 2 successful agents. "
-                        f"Only {success_count} succeeded out of {len(selected_agents)}."
-                    ),
-                    "success_count": success_count,
-                    "selected_agents": selected_agents,
-                    "failed_agents": failed_agents,
-                }
-            )
-
-        return {
-            **state,
-            "agent_id": "hybrid",
-            "hybrid_results": hybrid_results,
-            "warnings": warnings,
-            "success": policy_ok,
-        }
-
     async def _aggregate_response_node(self, state: OrchestratorState) -> OrchestratorState:
-        hybrid_results = state.get("hybrid_results") or {}
-        if isinstance(hybrid_results, dict) and hybrid_results:
-            parts: List[str] = []
-            pending = False
-            warnings = state.get("warnings") or []
-            for agent_type, wf_state in hybrid_results.items():
-                output = wf_state.get("output", {}) if isinstance(wf_state, dict) else {}
-                if isinstance(output, dict):
-                    msg = output.get("message") or output.get("data") or str(output)
-                else:
-                    msg = str(output)
-                stage = str((wf_state or {}).get("current_stage") or "")
-                if stage in ("SCHEMA_PREVIEW", "SQL_PREVIEW"):
-                    pending = True
-                label = agent_type.upper()
-                parts.append(f"[{label}]\n{str(msg).strip()}")
-
-            warning_text = ""
-            if warnings:
-                warning_lines = []
-                for w in warnings:
-                    if isinstance(w, dict):
-                        warning_lines.append(f"- {str(w.get('message') or w)}")
-                warning_text = "\n\n[WARNINGS]\n" + "\n".join(warning_lines) if warning_lines else ""
-
-            return {
-                **state,
-                "response": ("\n\n".join(parts).strip() + warning_text).strip(),
-                "pending_workflow_resume": pending,
-            }
-
         workflow_state = state.get("workflow_state") or {}
         if not workflow_state:
             return {
@@ -407,7 +277,6 @@ class Orchestrator:
         graph.add_node("DB_AGENT", self._db_agent_node)
         graph.add_node("CHART_AGENT", self._chart_agent_node)
         graph.add_node("EXCEL_AGENT", self._excel_agent_node)
-        graph.add_node("HYBRID_AGENT", self._hybrid_agent_node)
         graph.add_node("AGGREGATE_RESPONSE", self._aggregate_response_node)
         graph.set_entry_point("PARSE_INTENT")
         graph.add_conditional_edges(
@@ -418,14 +287,12 @@ class Orchestrator:
                 "db": "DB_AGENT",
                 "chart": "CHART_AGENT",
                 "excel": "EXCEL_AGENT",
-                "hybrid": "HYBRID_AGENT",
             },
         )
         graph.add_edge("CLARIFY", "AGGREGATE_RESPONSE")
         graph.add_edge("DB_AGENT", "AGGREGATE_RESPONSE")
         graph.add_edge("CHART_AGENT", "AGGREGATE_RESPONSE")
         graph.add_edge("EXCEL_AGENT", "AGGREGATE_RESPONSE")
-        graph.add_edge("HYBRID_AGENT", "AGGREGATE_RESPONSE")
         graph.add_edge("AGGREGATE_RESPONSE", END)
         return graph.compile()
 
@@ -441,7 +308,7 @@ class Orchestrator:
         need the routing decision *before* deciding whether to invoke the
         agent at all. Returns the same dict shape as ``IntentResult.to_dict()``
         — notably the ``route`` field (one of: db_readonly, db_create_table,
-        db_mutation, database, excel, chart).
+        db_mutation, db_general, excel, chart).
         """
         intent_result = await self._intent_service.classify(
             query,
@@ -497,27 +364,10 @@ class Orchestrator:
         intent = graph_state.get("intent_result", {}) if isinstance(graph_state, dict) else {}
         agent_id = str((graph_state or {}).get("agent_id") or self._agent_key_to_type(str(intent.get("agent_type") or "database")))
         workflow_state = (graph_state or {}).get("workflow_state") or {}
-        hybrid_results = (graph_state or {}).get("hybrid_results") or {}
         response = str((graph_state or {}).get("response") or "")
         pending_workflow_resume = bool((graph_state or {}).get("pending_workflow_resume"))
-        warnings = (graph_state or {}).get("warnings") or []
         success = bool((graph_state or {}).get("success", True))
         tool_events = self._extract_tool_events_from_state(workflow_state)
-        if isinstance(hybrid_results, dict) and hybrid_results:
-            tool_events = []
-            for wf_state in hybrid_results.values():
-                if isinstance(wf_state, dict):
-                    tool_events.extend(self._extract_tool_events_from_state(wf_state))
-            # Structured warning events for UI consumers
-            for w in warnings:
-                if isinstance(w, dict):
-                    tool_events.append(
-                        {
-                            "tool": "orchestrator",
-                            "type": "warning",
-                            "payload": w,
-                        }
-                    )
 
         return {
             "response": response,
@@ -529,8 +379,6 @@ class Orchestrator:
             "pending_workflow_resume": pending_workflow_resume,
             "workflow_state": {
                 **workflow_state,
-                "hybrid_results": hybrid_results,
-                "warnings": warnings,
                 "success": success,
             },
         }
