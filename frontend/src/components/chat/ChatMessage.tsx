@@ -54,6 +54,10 @@ type ChatMessageProps = {
   enableTyping?: boolean;
   onTypingStateChange?: (isTyping: boolean) => void;
   typingStopSignal?: number;
+  /** The gated SQL in this message has been executed → render its card green. */
+  sqlExecuted?: boolean;
+  /** The gated SQL failed on execution → render its card red. */
+  sqlFailed?: boolean;
 };
 
 function extractCodeText(children: any): string {
@@ -122,6 +126,8 @@ export default function ChatMessage({
   enableTyping = true,
   onTypingStateChange,
   typingStopSignal = 0,
+  sqlExecuted = false,
+  sqlFailed = false,
 }: ChatMessageProps) {
   const [displayedText, setDisplayedText] = useState<string>('');
   const [isTyping, setIsTyping] = useState<boolean>(false);
@@ -298,7 +304,7 @@ export default function ChatMessage({
                     const language = langMatch ? langMatch[1] : 'text';
 
                     return (
-                      <CodeBlockCard language={language} codeString={codeString} codeProps={{ className, ...props }}>
+                      <CodeBlockCard language={language} codeString={codeString} codeProps={{ className, ...props }} executed={language === 'sql' && sqlExecuted} failed={language === 'sql' && sqlFailed}>
                         {children}
                       </CodeBlockCard>
                     );

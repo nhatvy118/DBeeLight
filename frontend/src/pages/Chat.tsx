@@ -317,14 +317,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     };
   };
 
-  const getSqlActionStatesFromSessionResponse = (res: GetSessionResponse): Record<string, 'pending' | 'running' | 'executed' | 'cancelled'> => {
+  const getSqlActionStatesFromSessionResponse = (res: GetSessionResponse): Record<string, 'pending' | 'running' | 'executed' | 'failed' | 'cancelled'> => {
     if (!res.success) return {};
     const raw = (res.session_info as any)?.sql_action_states;
     if (!raw || typeof raw !== 'object') return {};
-    const out: Record<string, 'pending' | 'running' | 'executed' | 'cancelled'> = {};
+    const out: Record<string, 'pending' | 'running' | 'executed' | 'failed' | 'cancelled'> = {};
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
       const value = String(v || '').toLowerCase();
-      if (value === 'pending' || value === 'running' || value === 'executed' || value === 'cancelled') {
+      if (value === 'pending' || value === 'running' || value === 'executed' || value === 'failed' || value === 'cancelled') {
         out[String(k)] = value;
       }
     }
@@ -1037,12 +1037,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const msg = messages[aiIndex];
     if (!msg || !msg.sqlToExecute || isLoading || msg.sqlActionState === 'running' || msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled') return;
 
-    // Lock SQL actions permanently after first click (single-run behavior)
+    // Show a loading state while the query runs (reference SqlPreview "running").
     setMessages((prev) => {
       const updated = [...prev];
       const current = updated[aiIndex];
       if (current) {
-        updated[aiIndex] = { ...current, sqlActionState: 'executed' };
+        updated[aiIndex] = { ...current, sqlActionState: 'running' };
       }
       return updated;
     });
@@ -1058,19 +1058,29 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         );
       const res = await executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, false, null);
       if (res.success) {
+        const resText = res.response ?? '';
+        const cleanedRaw = stripInternalPayloads(resText);
+        // A bare "Successfully executed the SQL." carries no info beyond the
+        // success itself — the green "Executed" chip already says that, so
+        // don't append it as a separate text bubble. Keep any real follow-up
+        // (a result table, another SQL preview, affected-rows detail, …).
+        const isPlainSuccess =
+          !/```|(\n\s*\|.*\|)/.test(cleanedRaw) &&
+          /successfully executed/i.test(cleanedRaw) &&
+          cleanedRaw.trim().length < 80;
         setMessages((prev) => {
           const updated = [...prev];
           const current = updated[aiIndex];
           if (current) {
-            // Keep SQL preview visible but disable actions after execution
+            // Mark executed → action row shows the success chip.
             updated[aiIndex] = { ...current, sqlActionState: 'executed' };
           }
-          const resText = res.response ?? '';
+          if (isPlainSuccess) return updated;
           return [
             ...updated,
             {
               text: buildAssistantTextFromSqlPreview(
-                stripInternalPayloads(resText),
+                cleanedRaw,
                 extractSqlPreviewFromToolEvents((res as any).tool_events),
               ),
               isUser: false,
@@ -1095,14 +1105,23 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           }
         }
       } else {
-        setMessages((prev) => [
-          ...prev,
-          { text: `Error: ${res.error || 'Failed to execute SQL'}`, isUser: false },
-        ]);
+        // Mark failed (red "Query failed" card) — the Execute button stays so
+        // the user can retry.
+        setMessages((prev) => {
+          const updated = [...prev];
+          const current = updated[aiIndex];
+          if (current) updated[aiIndex] = { ...current, sqlActionState: 'failed' };
+          return [...updated, { text: `Error: ${res.error || 'Failed to execute SQL'}`, isUser: false }];
+        });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to execute SQL';
-      setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);
+      setMessages((prev) => {
+        const updated = [...prev];
+        const current = updated[aiIndex];
+        if (current) updated[aiIndex] = { ...current, sqlActionState: 'failed' };
+        return [...updated, { text: `Error: ${message}`, isUser: false }];
+      });
     } finally {
       setIsLoading(false);
     }

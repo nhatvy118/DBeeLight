@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import ChatMessage from './ChatMessage';
-import { Icons } from '../../icons';
+import { Icons, BeeBadge } from '../../icons';
 
 const SQL_TYPE_OPTIONS = [
   'INTEGER',
@@ -61,7 +61,7 @@ export type UiMessage = {
   attachments?: UiAttachment[];
   sqlToExecute?: string | null;
   sqlActionId?: string;
-  sqlActionState?: 'pending' | 'running' | 'executed' | 'cancelled';
+  sqlActionState?: 'pending' | 'running' | 'executed' | 'failed' | 'cancelled';
   exportToExcel?: ExportData | null;
   schemaPreview?: SchemaPreviewData | null;
   schemaLocked?: boolean;
@@ -117,8 +117,9 @@ export default function MessageList({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
-      {messages.map((msg, index) => (
-        <div key={index} style={{ width: '100%' }}>
+      {messages.map((msg, index) => {
+        const turnBody = (
+          <>
           {!msg.isUser &&
           msg.exportToExcel?.filename &&
           (msg.exportToExcel.base64 || msg.exportToExcel.sessionFileId) ? (
@@ -158,6 +159,8 @@ export default function MessageList({
             message={msg.text}
             isUser={msg.isUser}
             attachments={msg.attachments}
+            sqlExecuted={!msg.isUser && msg.sqlActionState === 'executed'}
+            sqlFailed={!msg.isUser && msg.sqlActionState === 'failed'}
             onTypingStateChange={
               !msg.isUser && index === messages.length - 1 ? onAssistantTypingChange : undefined
             }
@@ -304,16 +307,45 @@ export default function MessageList({
                 </button>
               )}
               {msg.sqlToExecute && onExecuteSql && (() => {
-                const sqlDone = msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled' || msg.sqlActionState === 'running';
+                const state = msg.sqlActionState;
+
+                // Running → loading dots (reference SqlPreview "running" state).
+                if (state === 'running') {
+                  return (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9, fontSize: 13, fontWeight: 600, color: 'var(--text-soft)' }}>
+                      <span style={{ display: 'inline-flex', gap: 4 }}>
+                        {[0, 1, 2].map((i) => (
+                          <span key={i} style={{ width: 6, height: 6, borderRadius: 99, background: 'var(--accent-strong)', animation: `dotPulse 1.2s ${i * 0.18}s infinite ease-in-out` }} />
+                        ))}
+                      </span>
+                      Running…
+                    </span>
+                  );
+                }
+
+                // Executed → no button row; the SQL card itself turns green
+                // "Query executed" (handled in ChatMessage / CodeBlockCard),
+                // matching how read-only queries look.
+                if (state === 'executed') return null;
+
+                if (state === 'cancelled') {
+                  return (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13, fontWeight: 600, color: 'var(--text-muted)', padding: '7px 4px' }}>
+                      <Icons.Close size={15} />
+                      Cancelled
+                    </span>
+                  );
+                }
+
+                // Pending → Cancel / Execute buttons.
                 return (
                   <>
                     {onCancelSql && (
                       <button
                         type="button"
                         onClick={() => void onCancelSql(index)}
-                        disabled={sqlDone}
                         className="btn btn-outline"
-                        style={{ padding: '7px 14px', fontSize: 13, opacity: sqlDone ? 0.5 : 1 }}
+                        style={{ padding: '7px 14px', fontSize: 13 }}
                       >
                         Cancel
                       </button>
@@ -321,9 +353,8 @@ export default function MessageList({
                     <button
                       type="button"
                       onClick={() => void onExecuteSql(index)}
-                      disabled={sqlDone}
                       className="btn btn-primary"
-                      style={{ padding: '7px 16px', fontSize: 13, opacity: sqlDone ? 0.5 : 1 }}
+                      style={{ padding: '7px 16px', fontSize: 13 }}
                     >
                       <Icons.Lightning size={15} />
                       Execute
@@ -333,9 +364,22 @@ export default function MessageList({
               })()}
             </div>
           )}
+          </>
+        );
 
-        </div>
-      ))}
+        return (
+          <div key={index} style={{ width: '100%' }}>
+            {msg.isUser ? (
+              turnBody
+            ) : (
+              <div style={{ display: 'flex', gap: 14 }}>
+                <BeeBadge size={34} style={{ flexShrink: 0, marginTop: 2 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>{turnBody}</div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -105,23 +105,35 @@ export function CodeBlockCard({
   codeString,
   children,
   codeProps,
+  executed,
+  failed,
 }: {
   language: string;
   codeString: string;
   children: React.ReactNode;
   codeProps?: Record<string, unknown>;
+  /** Force the green "Query executed" header — set once a gated mutation has
+   *  been run successfully, so it matches read-only queries. */
+  executed?: boolean;
+  /** Red "Query failed" header — set when a gated mutation errored on run. */
+  failed?: boolean;
 }) {
   const isSql = language === 'sql';
   const readOnly = isSql && READ_ONLY_RE.test(codeString);
 
-  // SQL read-only queries are run automatically to produce the answer, so a
-  // green "Query executed" header is accurate and matches the reference.
-  // Mutations / other languages get a neutral honey header.
-  const HeaderIcon = readOnly ? Icons.Check : Icons.Code;
-  const headerLabel = isSql ? (readOnly ? 'Query executed' : 'SQL query') : language;
-  const headerColor = readOnly ? 'var(--green-ink)' : 'var(--accent-ink)';
-  const headerBg = readOnly ? 'var(--green-soft)' : 'var(--accent-soft)';
-  const headerBorder = readOnly ? 'var(--green-soft)' : 'var(--accent-soft-2)';
+  // SQL header reflects run status:
+  //   failed   → red "Query failed"
+  //   executed → green "Query executed" (read-only SELECTs auto-run; gated
+  //              mutations after a successful Execute)
+  //   pending  → honey "SQL query"
+  const showFailed = isSql && !!failed;
+  const showExecuted = isSql && !showFailed && (readOnly || !!executed);
+  const RED_INK = 'oklch(0.58 0.2 25)';
+  const HeaderIcon = showFailed ? Icons.Close : showExecuted ? Icons.Check : Icons.Code;
+  const headerLabel = isSql ? (showFailed ? 'Query failed' : showExecuted ? 'Query executed' : 'SQL query') : language;
+  const headerColor = showFailed ? RED_INK : showExecuted ? 'var(--green-ink)' : 'var(--accent-ink)';
+  const headerBg = showFailed ? 'oklch(0.62 0.2 25 / 0.13)' : showExecuted ? 'var(--green-soft)' : 'var(--accent-soft)';
+  const headerBorder = showFailed ? 'oklch(0.62 0.2 25 / 0.35)' : showExecuted ? 'var(--green-soft)' : 'var(--accent-soft-2)';
 
   return (
     <div className="not-prose card" style={{ overflow: 'hidden', margin: '12px 0', borderColor: headerBorder }}>
@@ -155,18 +167,28 @@ export function CodeBlockCard({
 
 function MiniBarChart({ data }: { data: TableData }) {
   const { columns, rows } = data;
-  if (!rows.length) return null;
 
   const numericCols = columns.map((_, ci) => columnIsNumeric(rows, ci));
-  const valueCol = (() => {
-    for (let ci = columns.length - 1; ci >= 0; ci--) if (numericCols[ci]) return ci;
-    return -1;
-  })();
-  const labelCol = (() => {
+  const numericIdx = columns.map((_, ci) => ci).filter((ci) => numericCols[ci]);
+  const defaultValueCol = numericIdx.length ? numericIdx[numericIdx.length - 1] : -1;
+  const defaultLabelCol = (() => {
     for (let ci = 0; ci < columns.length; ci++) if (!numericCols[ci]) return ci;
     return 0;
   })();
-  if (valueCol < 0) return null;
+
+  // User-selectable label/value columns (default to a sensible auto-pick).
+  const [labelCol, setLabelCol] = useState(defaultLabelCol);
+  const [valueCol, setValueCol] = useState(defaultValueCol);
+
+  if (!rows.length || defaultValueCol < 0) return null;
+
+  // Show the column pickers only when there's an actual choice to make.
+  const showPicker = columns.length > 2 || numericIdx.length > 1;
+  const selectStyle: React.CSSProperties = {
+    padding: '5px 8px', borderRadius: 8, border: '1px solid var(--border)',
+    background: 'var(--surface)', color: 'var(--text)', fontSize: 12.5, fontWeight: 600,
+    maxWidth: 200, cursor: 'pointer',
+  };
 
   const series = rows
     .map((r) => ({ label: r[labelCol] ?? '', raw: r[valueCol] ?? '', value: parseNum(r[valueCol] ?? '') }))
@@ -174,7 +196,24 @@ function MiniBarChart({ data }: { data: TableData }) {
   const max = Math.max(...series.map((d) => Math.abs(d.value)), 1);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '6px 2px' }}>
+    <div>
+      {showPicker && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 16 }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12.5, fontWeight: 600, color: 'var(--text-muted)' }}>
+            Label
+            <select className="focusable" style={selectStyle} value={labelCol} onChange={(e) => setLabelCol(Number(e.target.value))}>
+              {columns.map((c, ci) => <option key={ci} value={ci}>{c}</option>)}
+            </select>
+          </label>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12.5, fontWeight: 600, color: 'var(--text-muted)' }}>
+            Value
+            <select className="focusable" style={selectStyle} value={valueCol} onChange={(e) => setValueCol(Number(e.target.value))}>
+              {numericIdx.map((ci) => <option key={ci} value={ci}>{columns[ci]}</option>)}
+            </select>
+          </label>
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '6px 2px' }}>
       {series.map((d, i) => (
         <div key={i} style={{ display: 'grid', gridTemplateColumns: '130px 1fr', alignItems: 'center', gap: 14 }}>
           <span
@@ -197,6 +236,7 @@ function MiniBarChart({ data }: { data: TableData }) {
           </div>
         </div>
       ))}
+      </div>
     </div>
   );
 }
