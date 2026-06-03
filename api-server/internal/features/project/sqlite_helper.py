@@ -39,13 +39,15 @@ def generate_sqlite_db_path(base_dir: Optional[Path] = None) -> Path:
     Generate a path for a new SQLite database file with a random name.
     
     Args:
-        base_dir: Base directory for databases (defaults to api-server/databases/)
-        
+        base_dir: Base directory for databases (defaults to api-server/internal/databases/)
+
     Returns:
         Path to the SQLite database file
     """
     if base_dir is None:
-        # Default to api-server/databases/ relative to this file
+        # parent x3 of internal/features/project/sqlite_helper.py == internal/,
+        # so this resolves to api-server/internal/databases/ (matches the file
+        # service + chart-server allow-list).
         base_dir = Path(__file__).resolve().parent.parent.parent / "databases"
     
     # Create directory if it doesn't exist
