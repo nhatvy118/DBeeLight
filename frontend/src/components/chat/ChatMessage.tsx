@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import VegaLiteChart from './VegaLiteChart';
 import { Icons } from '../../icons';
 import { CodeBlockCard, ResultTableCard } from './RichResponse';
+import { FileTypeBadge, getFileTypeInfo } from '../../utils/fileType';
 
 // Tolerate the agent occasionally wrapping the marker block in a markdown
 // code fence (it copies the format from its system-prompt example). The
@@ -213,12 +214,10 @@ export default function ChatMessage({
                   title={att.name}
                   style={{ display: 'inline-flex', alignItems: 'center', gap: 9, padding: '8px 12px 8px 9px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)' }}
                 >
-                  <span style={{ width: 30, height: 30, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'var(--green-soft)', color: 'var(--green-ink)', flexShrink: 0 }}>
-                    <Icons.File size={16} />
-                  </span>
+                  <FileTypeBadge filename={att.name} size={30} radius={7} />
                   <span style={{ minWidth: 0 }}>
                     <span style={{ display: 'block', fontSize: 13, fontWeight: 600, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{att.name}</span>
-                    <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>Excel</span>
+                    <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>{getFileTypeInfo(att.name).label}</span>
                   </span>
                 </div>
               ))}

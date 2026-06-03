@@ -31,6 +31,7 @@ import {
   triggerExcelDownload,
 } from '../utils/excelExportMarkers';
 import { Icons, BeeBadge } from '../icons';
+import { FileTypeBadge } from '../utils/fileType';
 
 const MAX_TEXTAREA_HEIGHT = 200;
 const MIN_TEXTAREA_HEIGHT = 60;
@@ -1359,9 +1360,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
           {inputAttachedFiles.map((f) => (
             <div key={f.id} className="scale-in" style={{ display: 'inline-flex', alignItems: 'center', gap: 9, padding: '7px 9px 7px 8px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
-              <span style={{ width: 28, height: 28, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'var(--green-soft)', color: 'var(--green-ink)', flexShrink: 0 }}>
-                <Icons.File size={15} />
-              </span>
+              <FileTypeBadge filename={f.filename} size={28} radius={7} />
               <span style={{ fontSize: 13, fontWeight: 600, maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename}</span>
               <button
                 type="button"
@@ -1377,9 +1376,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           ))}
           {stagedFiles.map((f) => (
             <div key={f.localId} className="scale-in" style={{ display: 'inline-flex', alignItems: 'center', gap: 9, padding: '7px 9px 7px 8px', borderRadius: 'var(--r-sm)', border: '1px dashed var(--border-strong)', background: 'var(--surface-2)' }}>
-              <span style={{ width: 28, height: 28, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'var(--green-soft)', color: 'var(--green-ink)', flexShrink: 0, opacity: 0.7 }}>
-                <Icons.File size={15} />
-              </span>
+              <FileTypeBadge filename={f.filename} mimeType={f.file.type} size={28} radius={7} style={{ opacity: 0.7 }} />
               <span style={{ fontSize: 13, fontWeight: 600, maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename}</span>
               <button
                 type="button"
