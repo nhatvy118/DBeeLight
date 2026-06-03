@@ -34,12 +34,11 @@ class DatabaseAgent(BaseAgent):
 For ANY mutation request (INSERT/UPDATE/DELETE/CREATE/ALTER/DROP), you must follow this TWO-STEP process:
 
 ### Step 1: PLAN (your job)
-- Use READ-ONLY tools only: list_tables, describe_table, select_data, preview_table
+- Use READ-ONLY tools only: list_tables, describe_table, select_data
 - Build the SQL statement
 - Show preview of what will happen
 
 ### Step 2: STOP (do NOT execute)
-- NEVER call insert_data, update_data, delete_data, create_table, alter_table, run_mutation
 - Just return the SQL and preview
 - The UI will show an "Execute" button for user confirmation
 - After user confirms, the system will execute the SQL
@@ -47,13 +46,14 @@ For ANY mutation request (INSERT/UPDATE/DELETE/CREATE/ALTER/DROP), you must foll
 ### Special Rule for CREATE TABLE
 - ALWAYS call `show_create_table_schema` first to preview schema before creation.
 - Ask user to verify all column data types.
-- Only after user explicitly confirms, call `create_table` with `user_confirmed=true` and EXACT same schema params.
+- Do NOT execute CREATE TABLE directly from this agent; the workflow executes the reviewed SQL after approval.
 
 ## Workflow
 
-1. Check connection first: Use get_connection_info before asking for credentials
-2. For tables: list_tables -> describe_table -> perform operation
-3. For mutations: Follow TWO-STEP process above
+1. For **connection status/info** only: use `get_connection_info` (do not connect/disconnect via chat).
+2. If the user asks to **connect** or **disconnect** a database: do NOT call `connect_db`, `connect_sqlite`, or `disconnect_database`. Tell them to use the **Connect Database** button in the side panel.
+3. For tables: list_tables -> describe_table -> perform operation
+4. For mutations: Follow TWO-STEP process above
 
 ## Session-attached files (RAG)
 
@@ -63,11 +63,10 @@ If the user message contains **[ATTACHED FILES CONTEXT]** at the top, indexed ex
 
 | Category | Tools |
 |----------|-------|
-| READ-ONLY | get_connection_info, list_tables, describe_table, get_schema, get_table_stats, select_data, preview_table, validate_sql, explain_sql |
+| READ-ONLY | get_connection_info, list_tables, describe_table, get_schema, get_table_stats, select_data, validate_sql, explain_sql |
 | Connection | connect_db, connect_sqlite, disconnect_database |
-| DDL | show_create_table_schema, create_table (requires user_confirmed=true after review), alter_table, create_db_from_spec, manage_constraint, manage_trigger |
-| DML | insert_data, update_data, delete_data |
-| Query | execute_query, run_mutation |
+| DDL | show_create_table_schema, manage_constraint, manage_trigger |
+| Query | execute_query |
 | Export | import_excel_to_db, import_csv_to_db, export_table_to_excel |
 
 ## Response Rules
@@ -96,7 +95,7 @@ UPDATE employees SET salary = salary + 1000 WHERE department = 'IT';
 For CREATE TABLE requests:
 - Phase 1 (schema review before create): call `show_create_table_schema` and show ONLY a 2-column Markdown table: `Variable` and `Type` (no SQL block in this phase).
 - Ask user to validate all data types.
-- Phase 2 (after explicit confirmation): you MAY show the final `CREATE TABLE` SQL block for transparency, then call `create_table` with `user_confirmed=true`.
+- Phase 2 (after explicit confirmation): you MAY show the final `CREATE TABLE` SQL block for transparency; execution is handled by the workflow.
 
 ## Export to Excel - REQUIRED TOOL CALL
 

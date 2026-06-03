@@ -641,17 +641,17 @@ class Orchestrator:
 
         for server_name, session in db_agent.sessions.items():
             try:
-                result = await session.call_tool("disconnect_db", {})
+                result = await session.call_tool("disconnect_database", {})
                 result_content = result.content
                 if not isinstance(result_content, str):
                     result_content = str(result_content)
                 logger.info(f"[Orchestrator] disconnect_external_db result: {result_content}")
                 return result_content
             except Exception as e:
-                logger.debug(f"[Orchestrator] disconnect_db not found in {server_name}: {e}")
+                logger.debug(f"[Orchestrator] disconnect_database not found in {server_name}: {e}")
                 continue
 
-        return "disconnect_db tool not found in any session"
+        return "disconnect_database tool not found in any session"
 
     async def connect_to_project_db(self, db_url: str) -> str:
         """Connect the database agent to a project's SQLite database (sets primary adapter)."""
