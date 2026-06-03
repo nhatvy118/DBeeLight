@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import ChatMessage from './ChatMessage';
+import { Icons, BeeBadge } from '../../icons';
 
 const SQL_TYPE_OPTIONS = [
   'INTEGER',
@@ -60,7 +61,7 @@ export type UiMessage = {
   attachments?: UiAttachment[];
   sqlToExecute?: string | null;
   sqlActionId?: string;
-  sqlActionState?: 'pending' | 'running' | 'executed' | 'cancelled';
+  sqlActionState?: 'pending' | 'running' | 'executed' | 'failed' | 'cancelled';
   exportToExcel?: ExportData | null;
   schemaPreview?: SchemaPreviewData | null;
   schemaLocked?: boolean;
@@ -115,49 +116,39 @@ export default function MessageList({
   if (messages.length === 0) return null;
 
   return (
-    <div className="space-y-6">
-      {messages.map((msg, index) => (
-        <div key={index} className="w-full">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
+      {messages.map((msg, index) => {
+        const turnBody = (
+          <>
           {!msg.isUser &&
           msg.exportToExcel?.filename &&
           (msg.exportToExcel.base64 || msg.exportToExcel.sessionFileId) ? (
-            <div className="flex justify-start w-full mb-2">
-              <div className="w-full max-w-xs flex flex-col items-stretch gap-1 min-w-0">
-                <div
-                  className="flex flex-col gap-2 bg-gray-100 dark:bg-slate-800 text-gray-800 dark:text-gray-100 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 max-w-full min-w-0"
-                  title={msg.exportToExcel.filename}
-                >
-                  <div className="flex items-start gap-2 min-w-0">
-                    <svg
-                      className="w-4 h-4 flex-shrink-0 mt-0.5 text-gray-600 dark:text-gray-300"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden
-                    >
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                      <polyline points="14 2 14 8 20 8" />
-                    </svg>
-                    <span className="text-sm sm:text-base font-semibold leading-snug truncate min-w-0">
+            <div style={{ display: 'flex', justifyContent: 'flex-start', width: '100%', marginBottom: 8 }}>
+              <div style={{ width: '100%', maxWidth: 320, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+                <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '11px 14px' }} title={msg.exportToExcel.filename}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                    <span style={{ width: 34, height: 34, borderRadius: 9, display: 'grid', placeItems: 'center', background: 'var(--green-soft)', color: 'var(--green-ink)', flexShrink: 0 }}>
+                      <Icons.Table size={17} />
+                    </span>
+                    <span style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                       {msg.exportToExcel.filename}
                     </span>
                   </div>
-                  <div className="flex justify-end w-full border-t border-gray-300 dark:border-slate-600 pt-2 mt-1">
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', width: '100%', borderTop: '1px solid var(--border)', paddingTop: 8 }}>
                     <button
                       type="button"
                       disabled={!onExportFile || exportingIndex === index}
                       onClick={() => void runFileDownload(index)}
-                      className="text-sm font-medium text-gray-800 hover:text-gray-950 disabled:opacity-50 dark:text-gray-200 dark:hover:text-white"
+                      className="btn btn-outline"
+                      style={{ padding: '6px 14px', fontSize: 13 }}
                     >
+                      <Icons.Download size={15} />
                       {exportingIndex === index ? '…' : 'Download'}
                     </button>
                   </div>
                 </div>
                 {typeof msg.exportToExcel.rowCount === 'number' && msg.exportToExcel.rowCount > 0 ? (
-                  <span className="text-[11px] text-gray-500 dark:text-gray-400 pl-1">
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', paddingLeft: 4 }}>
                     {msg.exportToExcel.rowCount.toLocaleString()} rows
                   </span>
                 ) : null}
@@ -168,197 +159,227 @@ export default function MessageList({
             message={msg.text}
             isUser={msg.isUser}
             attachments={msg.attachments}
+            sqlExecuted={!msg.isUser && msg.sqlActionState === 'executed'}
+            sqlFailed={!msg.isUser && msg.sqlActionState === 'failed'}
             onTypingStateChange={
               !msg.isUser && index === messages.length - 1 ? onAssistantTypingChange : undefined
             }
             typingStopSignal={!msg.isUser && index === messages.length - 1 ? typingStopSignal : 0}
           />
           {!msg.isUser && msg.schemaPreview && (
-            <div className="mt-3 mb-2 rounded-xl border border-gray-200 overflow-hidden">
-              <div className="px-3 py-2 bg-gray-50 text-xs font-medium text-gray-700">
-                Schema review: `{msg.schemaPreview.tableName}`
+            <div className="card" style={{ overflow: 'hidden', marginTop: 14, marginBottom: 8, borderColor: msg.schemaLocked ? 'var(--green-soft)' : 'var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '11px 16px', borderBottom: '1px solid var(--border)', background: msg.schemaLocked ? 'var(--green-soft)' : 'var(--surface-2)' }}>
+                {msg.schemaLocked ? <Icons.Check size={16} style={{ color: 'var(--green-ink)' }} /> : <Icons.Table size={16} style={{ color: 'var(--text-soft)' }} />}
+                <span style={{ fontSize: 13.5, fontWeight: 700, color: msg.schemaLocked ? 'var(--green-ink)' : 'var(--text)' }}>
+                  {msg.schemaLocked ? 'Table created' : 'Proposed table'}
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-soft)', background: 'var(--surface)', padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border)' }}>
+                  {msg.schemaPreview.tableName}
+                </span>
               </div>
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-xs">
-                  <thead className="bg-white">
+              <div style={{ overflowX: 'auto' }}>
+                <table className="data-table">
+                  <thead>
                     <tr>
-                      <th className="text-left px-3 py-2 border-b border-gray-200">Variable</th>
-                      <th className="text-left px-3 py-2 border-b border-gray-200">Type</th>
+                      <th>Column</th>
+                      <th>Type</th>
+                      <th style={{ width: 44 }}></th>
                     </tr>
                   </thead>
                   {msg.schemaPreview.columns.map((col) => (
                     <tbody key={col.variable}>
-                        <tr className="odd:bg-white even:bg-gray-50/40">
-                          <td className="px-3 py-2 border-b border-gray-100 font-mono text-gray-800">{col.variable}</td>
-                          <td className="px-3 py-2 border-b border-gray-100">
-                            <div className="flex items-center gap-2">
-                              <div className="w-full space-y-1">
-                                <select
-                                  className="w-full rounded-md border border-gray-300 px-2 py-1 bg-white disabled:bg-gray-100 disabled:text-gray-500"
-                                  value={SQL_TYPE_OPTIONS.includes(col.type) ? col.type : '__custom__'}
-                                  disabled={!!msg.schemaLocked}
-                                  onChange={(e) => {
-                                    const v = e.target.value;
-                                    if (v !== '__custom__') {
-                                      onSchemaTypeChange?.(index, col.variable, v);
-                                    } else {
-                                      onSchemaTypeChange?.(index, col.variable, 'CUSTOM_TYPE');
-                                    }
-                                  }}
-                                >
-                                  {SQL_TYPE_OPTIONS.map((t) => (
-                                    <option key={t} value={t}>{t}</option>
-                                  ))}
-                                  <option value="__custom__">Custom type...</option>
-                                </select>
-                                {!SQL_TYPE_OPTIONS.includes(col.type) && (
-                                  <input
-                                    type="text"
-                                    className="w-full rounded-md border border-gray-300 px-2 py-1 bg-white disabled:bg-gray-100 disabled:text-gray-500"
-                                    value={col.type}
-                                    disabled={!!msg.schemaLocked}
-                                    onChange={(e) => onSchemaTypeChange?.(index, col.variable, e.target.value)}
-                                    placeholder="Nhập type tùy chỉnh"
-                                  />
-                                )}
-                              </div>
-                              <button
-                                type="button"
+                      <tr>
+                        <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{col.variable}</td>
+                        <td>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <select
+                              className="field focusable"
+                              style={{ padding: '7px 10px', fontSize: 13, fontFamily: 'var(--font-mono)', maxWidth: 220 }}
+                              value={SQL_TYPE_OPTIONS.includes(col.type) ? col.type : '__custom__'}
+                              disabled={!!msg.schemaLocked}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (v !== '__custom__') {
+                                  onSchemaTypeChange?.(index, col.variable, v);
+                                } else {
+                                  onSchemaTypeChange?.(index, col.variable, 'CUSTOM_TYPE');
+                                }
+                              }}
+                            >
+                              {SQL_TYPE_OPTIONS.map((t) => (
+                                <option key={t} value={t}>{t}</option>
+                              ))}
+                              <option value="__custom__">Custom type…</option>
+                            </select>
+                            {!SQL_TYPE_OPTIONS.includes(col.type) && (
+                              <input
+                                type="text"
+                                className="field focusable"
+                                style={{ padding: '7px 10px', fontSize: 13, fontFamily: 'var(--font-mono)', maxWidth: 220 }}
+                                value={col.type}
                                 disabled={!!msg.schemaLocked}
-                                onClick={() => onToggleSchemaOptions?.(index, col.variable)}
-                                className="w-7 h-7 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
-                                title="More options"
-                              >
-                                +
-                              </button>
+                                onChange={(e) => onSchemaTypeChange?.(index, col.variable, e.target.value)}
+                                placeholder="Custom type"
+                              />
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            disabled={!!msg.schemaLocked}
+                            onClick={() => onToggleSchemaOptions?.(index, col.variable)}
+                            className="focusable"
+                            style={{ width: 28, height: 28, borderRadius: 7, display: 'grid', placeItems: 'center', border: '1px solid var(--border)', background: col.showOptions ? 'var(--accent-soft)' : 'var(--surface)', color: col.showOptions ? 'var(--accent-ink)' : 'var(--text-muted)' }}
+                            title="Constraints"
+                          >
+                            <Icons.Settings size={14} />
+                          </button>
+                        </td>
+                      </tr>
+                      {col.showOptions && (
+                        <tr>
+                          <td colSpan={3} style={{ background: 'var(--surface-2)', padding: '10px 14px' }}>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center' }}>
+                              {([['notNull', 'NOT NULL'], ['unique', 'UNIQUE'], ['primaryKey', 'PRIMARY KEY']] as const).map(([k, label]) => (
+                                <label key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13, fontWeight: 600, color: 'var(--text-soft)', cursor: 'pointer' }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={!!col[k]}
+                                    disabled={!!msg.schemaLocked}
+                                    onChange={(e) => onSchemaOptionChange?.(index, col.variable, k, e.target.checked)}
+                                    style={{ accentColor: 'var(--accent-strong)', width: 15, height: 15 }}
+                                  />
+                                  {label}
+                                </label>
+                              ))}
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13, fontWeight: 600, color: 'var(--text-soft)' }}>
+                                DEFAULT
+                                <input
+                                  type="text"
+                                  value={col.defaultValue || ''}
+                                  disabled={!!msg.schemaLocked}
+                                  onChange={(e) => onSchemaOptionChange?.(index, col.variable, 'defaultValue', e.target.value)}
+                                  placeholder="value"
+                                  style={{ width: 110, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 12.5 }}
+                                />
+                              </span>
                             </div>
                           </td>
                         </tr>
-                        {col.showOptions && (
-                          <tr>
-                            <td colSpan={2} className="px-3 py-2 border-b border-gray-100 bg-gray-50/50">
-                              <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
-                                <label className="flex items-center gap-2">
-                                  <input
-                                    type="checkbox"
-                                    checked={!!col.notNull}
-                                    disabled={!!msg.schemaLocked}
-                                    onChange={(e) => onSchemaOptionChange?.(index, col.variable, 'notNull', e.target.checked)}
-                                  />
-                                  NOT NULL
-                                </label>
-                                <label className="flex items-center gap-2">
-                                  <input
-                                    type="checkbox"
-                                    checked={!!col.unique}
-                                    disabled={!!msg.schemaLocked}
-                                    onChange={(e) => onSchemaOptionChange?.(index, col.variable, 'unique', e.target.checked)}
-                                  />
-                                  UNIQUE
-                                </label>
-                                <label className="flex items-center gap-2">
-                                  <input
-                                    type="checkbox"
-                                    checked={!!col.primaryKey}
-                                    disabled={!!msg.schemaLocked}
-                                    onChange={(e) => onSchemaOptionChange?.(index, col.variable, 'primaryKey', e.target.checked)}
-                                  />
-                                  PRIMARY KEY
-                                </label>
-                                <label className="flex items-center gap-2">
-                                  <span>DEFAULT</span>
-                                  <input
-                                    type="text"
-                                    value={col.defaultValue || ''}
-                                    disabled={!!msg.schemaLocked}
-                                    onChange={(e) => onSchemaOptionChange?.(index, col.variable, 'defaultValue', e.target.value)}
-                                    className="w-full rounded-md border border-gray-300 px-2 py-1 bg-white disabled:bg-gray-100"
-                                    placeholder="value"
-                                  />
-                                </label>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
+                      )}
                     </tbody>
                   ))}
                 </table>
               </div>
-              <div className="px-3 py-2 bg-white flex justify-end">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '11px 16px', borderTop: '1px solid var(--border)' }}>
+                <span style={{ fontSize: 12.5, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                  <Icons.Info size={14} />
+                  {msg.schemaLocked ? `${msg.schemaPreview.columns.length} columns · imported` : `${msg.schemaPreview.columns.length} columns detected`}
+                </span>
                 <button
                   type="button"
                   onClick={() => onConfirmSchema?.(index)}
                   disabled={!!msg.schemaLocked}
-                  className="text-xs px-3 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                  className="btn btn-primary"
+                  style={{ padding: '9px 18px', fontSize: 13.5, opacity: msg.schemaLocked ? 0.7 : 1 }}
                 >
-                  {msg.schemaLocked ? 'Schema confirmed' : 'Confirm schema'}
+                  <Icons.Check size={15} />
+                  {msg.schemaLocked ? 'Schema confirmed' : 'Confirm & create table'}
                 </button>
               </div>
             </div>
           )}
 
           {!msg.isUser && (
-            <div className="mt-2 mb-2 flex items-center gap-3 text-xs">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
               {onRefreshResponse && (
                 <button
                   type="button"
                   onClick={() => void onRefreshResponse(index)}
-                  className="flex items-center gap-1 text-gray-500 hover:text-gray-700 transition-colors"
+                  className="focusable"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 8, fontSize: 12.5, fontWeight: 600, color: 'var(--text-muted)', background: 'transparent', border: 'none' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; e.currentTarget.style.color = 'var(--text)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
                 >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                    />
-                  </svg>
-                  <span>Refresh response</span>
+                  <Icons.Refresh size={15} />
+                  <span>Regenerate</span>
                 </button>
               )}
-              {msg.sqlToExecute && onExecuteSql && (
-                <>
-                  {onCancelSql && (
+              {msg.sqlToExecute && onExecuteSql && (() => {
+                const state = msg.sqlActionState;
+
+                // Running → loading dots (reference SqlPreview "running" state).
+                if (state === 'running') {
+                  return (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9, fontSize: 13, fontWeight: 600, color: 'var(--text-soft)' }}>
+                      <span style={{ display: 'inline-flex', gap: 4 }}>
+                        {[0, 1, 2].map((i) => (
+                          <span key={i} style={{ width: 6, height: 6, borderRadius: 99, background: 'var(--accent-strong)', animation: `dotPulse 1.2s ${i * 0.18}s infinite ease-in-out` }} />
+                        ))}
+                      </span>
+                      Running…
+                    </span>
+                  );
+                }
+
+                // Executed → no button row; the SQL card itself turns green
+                // "Query executed" (handled in ChatMessage / CodeBlockCard),
+                // matching how read-only queries look.
+                if (state === 'executed') return null;
+
+                if (state === 'cancelled') {
+                  return (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13, fontWeight: 600, color: 'var(--text-muted)', padding: '7px 4px' }}>
+                      <Icons.Close size={15} />
+                      Cancelled
+                    </span>
+                  );
+                }
+
+                // Pending → Cancel / Execute buttons.
+                return (
+                  <>
+                    {onCancelSql && (
+                      <button
+                        type="button"
+                        onClick={() => void onCancelSql(index)}
+                        className="btn btn-outline"
+                        style={{ padding: '7px 14px', fontSize: 13 }}
+                      >
+                        Cancel
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => void onCancelSql(index)}
-                      disabled={msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled' || msg.sqlActionState === 'running'}
-                      className="flex items-center gap-1 text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      onClick={() => void onExecuteSql(index)}
+                      className="btn btn-primary"
+                      style={{ padding: '7px 16px', fontSize: 13 }}
                     >
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M6 18L18 6M6 6l12 12"
-                        />
-                      </svg>
-                      <span>Cancel</span>
+                      <Icons.Lightning size={15} />
+                      Execute
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => void onExecuteSql(index)}
-                    disabled={msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled' || msg.sqlActionState === 'running'}
-                    className="flex items-center gap-1 text-emerald-600 hover:text-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M5 13l4 4L19 7"
-                      />
-                    </svg>
-                    <span>Execute SQL</span>
-                  </button>
-                </>
-              )}
+                  </>
+                );
+              })()}
             </div>
           )}
+          </>
+        );
 
-        </div>
-      ))}
+        return (
+          <div key={index} style={{ width: '100%' }}>
+            {msg.isUser ? (
+              turnBody
+            ) : (
+              <div style={{ display: 'flex', gap: 14 }}>
+                <BeeBadge size={34} style={{ flexShrink: 0, marginTop: 2 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>{turnBody}</div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -34,7 +34,7 @@ export default function VegaLiteChart({ specJson }: VegaLiteChartProps) {
   }
 
   return (
-    <div className="my-4 not-prose rounded-lg border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3 overflow-x-auto">
+    <div className="card" style={{ margin: '16px 0', padding: 14, overflowX: 'auto' }}>
       <VegaEmbed
         spec={spec as any}
         options={{

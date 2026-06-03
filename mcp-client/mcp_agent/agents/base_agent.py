@@ -304,7 +304,7 @@ class BaseAgent(ABC):
                     print(f"[{self.agent_id}] [{target_server}] Calling tool: {tool_name} {tool_args}")
                     if verbose:
                         print(f"[{self.agent_id}] [{target_server}] {tool_name} {tool_args}")
-                    await _progress_emit("tool", "running", f"Calling {tool_name}...")
+                    await _progress_emit("tool", "running", f"Calling {tool_name}")
                     try:
                         result = await self.sessions[target_server].call_tool(tool_name, tool_args)
                         single_export_fast = (
