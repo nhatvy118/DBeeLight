@@ -331,6 +331,60 @@ export async function deleteProject(id: string): Promise<DeleteProjectResponse> 
   return (await response.json()) as DeleteProjectResponse;
 }
 
+// ----- Admin dashboard -----
+
+export type AdminUser = {
+  id: number;
+  name: string | null;
+  email: string | null;
+  created_at: string | null;
+  is_admin: boolean;
+  disabled: boolean;
+  disabled_at: string | null;
+  project_count: number;
+  session_count: number;
+  storage_bytes: number;
+};
+
+export type AdminStats = {
+  total_users: number;
+  disabled_users: number;
+  admin_users: number;
+  total_projects: number;
+  total_sessions: number;
+  total_storage_bytes: number;
+};
+
+export async function getAdminUsers(): Promise<AdminUser[]> {
+  const response = await fetch(url('/api/admin/users'), { credentials: 'include' });
+  if (!response.ok) throw new Error('Failed to load users');
+  const data = (await response.json()) as { success: boolean; users?: AdminUser[] };
+  return data.users ?? [];
+}
+
+export async function getAdminStats(): Promise<AdminStats> {
+  const response = await fetch(url('/api/admin/stats'), { credentials: 'include' });
+  if (!response.ok) throw new Error('Failed to load stats');
+  const data = (await response.json()) as { success: boolean; stats: AdminStats };
+  return data.stats;
+}
+
+/** Disable (lock out) or re-enable a user account. Returns the new disabled state. */
+export async function setUserDisabled(userId: number, disabled: boolean): Promise<boolean> {
+  const action = disabled ? 'disable' : 'enable';
+  const response = await fetch(url(`/api/admin/users/${userId}/${action}`), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as { detail?: string; error?: string };
+    throw new Error(data.detail || data.error || 'Failed to update user');
+  }
+  const data = (await response.json()) as { disabled: boolean };
+  return data.disabled;
+}
+
 // ----- Chat session sharing -----
 
 export type SharePermission = 'view_only' | 'read_data' | 'edit_data';

@@ -171,6 +171,9 @@ function ProfileMenu({
           <MenuItem icon={Icons.Settings} label="Account settings" onClick={() => { setOpen(false); onNavigate('/account'); }} />
           <MenuItem icon={Icons.HardDrive} label="Storage" onClick={() => { setOpen(false); onOpenStorage(); }} />
           <MenuItem icon={Icons.Question} label="Help & support" onClick={() => { setOpen(false); onOpenHelp(); }} />
+          {user?.is_admin && (
+            <MenuItem icon={Icons.Server} label="Admin dashboard" onClick={() => { setOpen(false); onNavigate('/admin'); }} />
+          )}
           <div style={{ height: 1, background: 'var(--border)', margin: '6px 4px' }} />
           <MenuItem icon={Icons.Logout} label="Log out" danger onClick={() => { setOpen(false); onLogout(); }} />
         </div>

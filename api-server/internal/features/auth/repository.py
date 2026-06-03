@@ -40,7 +40,7 @@ class UserRepository:
         DO UPDATE SET
             name = EXCLUDED.name,
             email = COALESCE(EXCLUDED.email, users.email)
-        RETURNING id, name, google_sub, email
+        RETURNING id, name, google_sub, email, is_admin, disabled_at
         """
 
         try:

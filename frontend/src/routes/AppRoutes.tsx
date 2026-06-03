@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import AcceptShare from '../pages/AcceptShare';
 import Account from '../pages/Account';
+import AdminDashboard from '../pages/AdminDashboard';
 import Chat from '../pages/Chat';
 import Login from '../pages/Login';
 import PrintChat from '../pages/PrintChat';
@@ -124,6 +125,8 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
     return <Chat projectId={projectId} sessionId={sessionId} onSessionIdChange={onSessionIdChange} />;
   }
   if (path === '/account') return <Account />;
+  // Admin-only dashboard. Non-admins fall through to NotFound (no leak of the page).
+  if (path === '/admin') return user.is_admin ? <AdminDashboard /> : <NotFound />;
   return <NotFound />;
 }
 

@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
+from internal.features.admin.router import router as admin_router
 from internal.features.auth.router import router as auth_router
 from internal.features.chat.router import router as chat_router
 from internal.features.file.router import router as file_router
@@ -95,6 +96,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions_router)
     app.include_router(project_router)
     app.include_router(share_router)
+    app.include_router(admin_router)
 
     return app
 

@@ -74,6 +74,8 @@ export const Icons: Record<string, IconComponent> = {
   Calendar: Ic([<rect key="a" x={3} y={4} width={18} height={17} rx={2.5} />, <path key="b" d="M3 9h18M8 2v4M16 2v4" />]),
   Text: Ic([<path key="a" d="M4 6h16M4 12h16M4 18h10" />]),
   Server: Ic([<rect key="a" x={3} y={4} width={18} height={7} rx={2} />, <rect key="b" x={3} y={13} width={18} height={7} rx={2} />, <path key="c" d="M7 7.5h.01M7 16.5h.01" />]),
+  Users: Ic([<path key="a" d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />, <circle key="b" cx={9} cy={7} r={4} />, <path key="c" d="M22 21v-2a4 4 0 0 0-3-3.87" />, <path key="d" d="M16 3.13a4 4 0 0 1 0 7.75" />]),
+  ShieldUser: Ic([<path key="a" d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />, <circle key="b" cx={12} cy={10} r={2.2} />, <path key="c" d="M8.5 16a3.6 3.6 0 0 1 7 0" />]),
   HardDrive: Ic([<path key="a" d="M3 13h18" />, <path key="b" d="M5 13 7 5h10l2 8v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1Z" />, <path key="c" d="M8 17h.01M12 17h.01" />]),
   Info: Ic([<circle key="a" cx={12} cy={12} r={9} />, <path key="b" d="M12 11v5M12 8h.01" />]),
   Settings: Ic([<circle key="a" cx={12} cy={12} r={3} />, <path key="b" d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 0 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H1a2 2 0 0 1 0-4h.1A1.6 1.6 0 0 0 2.6 7a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H7a1.6 1.6 0 0 0 1-1.5V1a2 2 0 0 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V7a1.6 1.6 0 0 0 1.5 1H23a2 2 0 0 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" />]),

@@ -160,6 +160,16 @@ class AuthService:
             logger.error(f"UseCase: Error persisting user: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to persist user: {str(e)}") from e
 
+        # Block disabled accounts from signing in.
+        if db_user.get("disabled_at") is not None:
+            logger.warning(f"UseCase: Disabled account attempted login, google_sub={google_sub}")
+            request.session.clear()
+            return RedirectResponse(url=f"{self._frontend_url}/login?error=account_disabled")
+
+        # Surface admin role to the frontend via the session user.
+        user["is_admin"] = bool(db_user.get("is_admin"))
+        request.session["user"] = user
+
         logger.info(f"UseCase: OAuth callback successful, redirecting to {next_path}")
         return RedirectResponse(url=f"{self._frontend_url}{next_path}")
 
