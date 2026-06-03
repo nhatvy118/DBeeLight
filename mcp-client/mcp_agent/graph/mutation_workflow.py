@@ -426,7 +426,7 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
         )
         sql = strip_sql_fences(response.choices[0].message.content or "")
 
-        ok, explain_err, explain_summary = await validate_explain_and_summarize(
+        ok, explain_err, explain_summary, type_sql = await validate_explain_and_summarize(
             agent,
             llm,
             _call_tool,
@@ -461,6 +461,8 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
         }
         if explain_summary:
             out["explain_summary"] = explain_summary
+        if type_sql:
+            out["type_sql"] = type_sql
         out = await _enrich_mutation_preview(agent, operation, sql, out)
         if out.get("mutation_preview_fatal"):
             last_error = str(out.get("mutation_preview_error_raw") or "Preview failed")

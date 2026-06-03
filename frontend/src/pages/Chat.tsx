@@ -217,23 +217,43 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   type SqlPreviewData = {
     sql: string;
+    explain?: string;
+    type_sql?: string;
+    mutationPreviewMarkdown?: string | null;
+  };
+
+  type SqlPreviewPayload = {
+    sql: string;
+    explain?: string;
+    type_sql?: string;
+    mutation_preview_markdown?: string | null;
     mutationPreviewMarkdown?: string | null;
   };
 
   const extractSqlPreviewFromToolEvents = (events?: ToolEvent[]): SqlPreviewData | null => {
     if (!events || !Array.isArray(events)) return null;
-    const sqlEvent = events.find((e) => e?.type === 'sql_preview' && e?.payload);
+    const sqlEvent = events.find(
+      (e) => (e?.type === 'sql_preview' || e?.type === 'query_result') && e?.payload,
+    );
     if (!sqlEvent?.payload) return null;
-    const payload = sqlEvent.payload as Record<string, any>;
+    const payload = sqlEvent.payload as SqlPreviewPayload;
     const sql = typeof payload.sql === 'string' ? payload.sql.trim() : '';
     if (!sql) return null;
+    const explain =
+      typeof payload.explain === 'string'
+        ? payload.explain.trim()
+        : typeof (payload as Record<string, unknown>).explain_summary === 'string'
+          ? String((payload as Record<string, unknown>).explain_summary).trim()
+          : '';
+    const type_sql =
+      typeof payload.type_sql === 'string' ? payload.type_sql.trim() : '';
     const mutationPreviewMarkdown =
       typeof payload.mutation_preview_markdown === 'string'
         ? payload.mutation_preview_markdown.trim()
         : typeof payload.mutationPreviewMarkdown === 'string'
           ? payload.mutationPreviewMarkdown.trim()
           : null;
-    return { sql, mutationPreviewMarkdown };
+    return { sql, explain, type_sql, mutationPreviewMarkdown };
   };
 
   const buildAssistantTextFromSqlPreview = (

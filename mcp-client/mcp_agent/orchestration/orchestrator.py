@@ -401,12 +401,27 @@ class Orchestrator:
             })
 
         if output_type == "sql_preview":
+            payload: Dict[str, Any] = {
+                "sql": state.get("sql") or output.get("sql"),
+                "explain": output.get("explain_summary") or "",
+                "type_sql": output.get("type_sql") or "",
+            }
+            if output.get("mutation_preview_markdown"):
+                payload["mutation_preview_markdown"] = output.get("mutation_preview_markdown")
             events.append({
                 "tool": "execute_query",
                 "type": "sql_preview",
+                "payload": payload,
+            })
+
+        if output_type == "query_result":
+            events.append({
+                "tool": "execute_query",
+                "type": "query_result",
                 "payload": {
-                    "sql": state.get("sql"),
-                    "mutation_preview_markdown": output.get("mutation_preview_markdown"),
+                    "sql": state.get("sql") or "",
+                    "explain": output.get("explain_summary") or "",
+                    "type_sql": output.get("type_sql") or "",
                 },
             })
 

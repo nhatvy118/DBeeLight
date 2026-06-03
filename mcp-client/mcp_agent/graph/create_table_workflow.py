@@ -356,7 +356,7 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
         )
         sql = strip_sql_fences(response.choices[0].message.content or "")
 
-        ok, explain_err, explain_summary = await validate_explain_and_summarize(
+        ok, explain_err, explain_summary, type_sql = await validate_explain_and_summarize(
             agent,
             llm,
             _call_tool,
@@ -401,6 +401,8 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
     }
     if explain_summary:
         out["explain_summary"] = explain_summary
+    if type_sql:
+        out["type_sql"] = type_sql
 
     return {
         **state,
@@ -415,6 +417,7 @@ async def sql_approval(state: AgentState, _llm, _agent) -> AgentState:
     sql = state.get("sql")
     out = state.get("output") if isinstance(state.get("output"), dict) else {}
     es = out.get("explain_summary")
+    ts = out.get("type_sql")
     wait_output = {
         "type": "sql_preview",
         "sql": sql,
@@ -426,6 +429,8 @@ async def sql_approval(state: AgentState, _llm, _agent) -> AgentState:
     }
     if isinstance(es, str) and es.strip():
         wait_output["explain_summary"] = es.strip()
+    if isinstance(ts, str) and ts.strip():
+        wait_output["type_sql"] = ts.strip()
     ok = interrupt({"stage": "SQL_PREVIEW", "output": wait_output})
     if not ok:
         return {
