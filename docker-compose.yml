@@ -71,10 +71,13 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./api-server/internal/file_handle:/app/api-server/internal/file_handle
-      - ./api-server/internal/temp_dbs:/app/api-server/internal/temp_dbs
-      - ./api-server/internal/databases:/app/api-server/internal/databases
+      - app_file_handle:/app/api-server/internal/file_handle
+      - app_temp_dbs:/app/api-server/internal/temp_dbs
+      - app_databases:/app/api-server/internal/databases
 
 volumes:
   postgres_data:
   redis_data:
+  app_file_handle:
+  app_temp_dbs:
+  app_databases:

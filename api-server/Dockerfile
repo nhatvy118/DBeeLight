@@ -67,10 +67,6 @@ WORKDIR /app
 
 # Copy entire prepared tree (all venvs + source).
 COPY --from=builder --chown=app:app /app /app
-
-# Create writable dirs for runtime file IO (overridden by volumes in dev,
-# replaced with S3 adapter in prod). These must match _internal_data_root()
-# in internal/features/file/service.py — everything lives under internal/.
 RUN mkdir -p /app/api-server/internal/file_handle \
              /app/api-server/internal/temp_dbs \
              /app/api-server/internal/databases \
