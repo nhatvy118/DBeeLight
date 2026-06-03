@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, Request
 
 from internal.features.project.repository import ProjectRepository
 from internal.features.project.sqlite_helper import (
+    delete_sqlite_database,
     generate_sqlite_db_path,
     get_sqlite_db_url_from_path,
     init_sqlite_database,
 )
+
+if TYPE_CHECKING:
+    from internal.features.file.service import FileService
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +90,49 @@ class ProjectService:
             logger.error(f"Error creating project: {e}\n{error_trace}")
             error_detail = f"Failed to create project: {str(e)}"
             raise HTTPException(status_code=500, detail=error_detail) from e
+
+    async def delete_project(self, request: Request, project_id: str, file_service: "FileService") -> dict:
+        """
+        Delete a project and everything attached to it:
+          - all chat sessions of the project (rows) + their uploaded files / temp DBs
+          - chat_shares (cascaded by the row deletes)
+          - the project's SQLite database file on disk
+        """
+        user_key = self._get_user_key(request)
+
+        project = await self._project_repo.get_project_by_id(project_id, user_key)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        try:
+            # 1. Remove on-disk files/temp DBs per session. Lean purge: just rmtree
+            #    the file_handle session tree + unlink the temp DB. No per-file row
+            #    or chat-message work — the session rows (and cascaded file rows)
+            #    are deleted in step 2, and the project SQLite file in step 3.
+            session_ids = await self._project_repo.get_session_ids_for_project(project_id, user_key)
+            for sid in session_ids:
+                try:
+                    file_service.purge_session_disk(sid, user_key)
+                except Exception as e:
+                    logger.warning(f"Session disk purge failed for {sid} (project {project_id}): {e}")
+
+            # 2. Delete session rows + project row in one transaction.
+            deleted = await self._project_repo.delete_project(project_id, user_key)
+            if deleted is None:
+                # Lost a race (already deleted) — treat as not found.
+                raise HTTPException(status_code=404, detail="Project not found")
+
+            # 3. Delete the project's SQLite file (safe: confined to managed dir).
+            delete_sqlite_database(deleted.get("db_url"))
+
+            logger.info(f"Project deleted: id={project_id}, sessions_removed={len(session_ids)}")
+            return {"success": True, "deleted_sessions": len(session_ids)}
+        except HTTPException:
+            raise
+        except Exception as e:
+            import traceback
+            logger.error(f"Error deleting project {project_id}: {e}\n{traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete project: {str(e)}") from e
 
     async def list_projects(self, request: Request) -> dict:
         """

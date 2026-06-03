@@ -83,26 +83,36 @@ class ProjectRepository:
             row: Optional[asyncpg.Record] = await conn.fetchrow(query, project_id, user_id)
             return dict(row) if row else None
 
-    async def update_project_db_url(self, project_id: str, user_id: str, db_url: str) -> None:
-        """
-        Update the db_url for a project.
-        user_id is Google sub (TEXT) for consistency with sessions.
-        """
-        logger.info(f"Repository: Updating db_url for project_id={project_id}, user_id={user_id}, db_url={db_url}")
+    async def get_session_ids_for_project(self, project_id: str, user_id: str) -> list[str]:
+        """All session ids belonging to a project (for file/temp-db cleanup before delete)."""
+        query = "SELECT id FROM session WHERE user_id = $1 AND project_id = $2"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, user_id, project_id)
+            return [str(row["id"]) for row in rows]
 
-        query = """
-        UPDATE projects
-        SET db_url = $1
-        WHERE id = $2 AND user_id = $3
+    async def delete_project(self, project_id: str, user_id: str) -> Optional[dict[str, Any]]:
         """
+        Delete a project and all its chat sessions, ensuring it belongs to the user.
 
-        try:
-            async with self._pool.acquire() as conn:
-                result = await conn.execute(query, db_url.strip(), project_id, user_id)
-                if result == "UPDATE 0":
-                    logger.warning(f"Repository: No project found to update: project_id={project_id}, user_id={user_id}")
-                else:
-                    logger.info(f"Repository: Project db_url updated successfully: project_id={project_id}")
-        except Exception as e:
-            logger.error(f"Repository: Database error updating project db_url: {e}", exc_info=True)
-            raise
+        Sessions are deleted first because ``session.project_id`` has no
+        ON DELETE CASCADE; deleting them also cascades chat_shares and file rows.
+        Runs in a transaction. Returns the deleted project row (incl ``db_url``
+        so the caller can remove the SQLite file), or None if not found/owned.
+        """
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM session WHERE user_id = $1 AND project_id = $2",
+                    user_id,
+                    project_id,
+                )
+                row: Optional[asyncpg.Record] = await conn.fetchrow(
+                    "DELETE FROM projects WHERE id = $1 AND user_id = $2 RETURNING id, db_url",
+                    project_id,
+                    user_id,
+                )
+                if row is None:
+                    logger.warning(f"Repository: No project found to delete: project_id={project_id}, user_id={user_id}")
+                    return None
+                logger.info(f"Repository: Deleted project {project_id} and its sessions for user_id={user_id}")
+                return dict(row)

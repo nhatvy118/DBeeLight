@@ -5,8 +5,11 @@ import { useIsMobile } from '../../hooks/useIsMobile';
 
 type ModalProps = {
   title: string;
-  subtitle?: string;
+  subtitle?: ReactNode;
   icon?: IconComponent;
+  /** Override the icon badge colors (defaults to the accent tone). */
+  iconBg?: string;
+  iconColor?: string;
   onClose: () => void;
   children: ReactNode;
   width?: number;
@@ -20,7 +23,7 @@ type ModalProps = {
  *  Always rendered through a portal to ``document.body`` so it escapes any
  *  ``transform``ed ancestor (e.g. the mobile sidebar drawer) — a fixed element
  *  inside a transformed parent would otherwise be clipped to that parent. */
-export default function Modal({ title, subtitle, icon: Icon, onClose, children, width = 520 }: ModalProps) {
+export default function Modal({ title, subtitle, icon: Icon, iconBg, iconColor, onClose, children, width = 520 }: ModalProps) {
   const isMobile = useIsMobile();
 
   const overlay = (
@@ -51,7 +54,7 @@ export default function Modal({ title, subtitle, icon: Icon, onClose, children, 
 
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, padding: isMobile ? '16px 20px 14px' : '24px 26px 18px' }}>
           {Icon && (
-            <div style={{ width: 44, height: 44, borderRadius: 13, display: 'grid', placeItems: 'center', background: 'var(--accent-soft)', color: 'var(--accent-ink)', flexShrink: 0 }}>
+            <div style={{ width: 44, height: 44, borderRadius: 13, display: 'grid', placeItems: 'center', background: iconBg ?? 'var(--accent-soft)', color: iconColor ?? 'var(--accent-ink)', flexShrink: 0 }}>
               <Icon size={22} />
             </div>
           )}
