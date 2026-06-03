@@ -30,15 +30,6 @@ class ExecuteSqlRequest(BaseModel):
     lock_state: Optional[str] = None
 
 
-class ExportRequest(BaseModel):
-    table_name: str
-    columns: Optional[str] = "*"
-    where_clause: Optional[str] = None
-    session_id: Optional[str] = None
-    project_id: Optional[str] = None
-    format: Optional[str] = "csv"  # "csv" or "excel"
-
-
 class DbConnectRequest(BaseModel):
     host: str
     port: int = 5432
@@ -59,8 +50,3 @@ class ChatOk(BaseModel):
     warnings: list[dict[str, Any]] = Field(default_factory=list)
     tool_events: list[dict[str, Any]] = Field(default_factory=list)
     pending_workflow_resume: bool = False
-
-
-class ErrorResp(BaseModel):
-    success: bool = False
-    error: str

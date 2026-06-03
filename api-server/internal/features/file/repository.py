@@ -132,13 +132,6 @@ class FileRepository:
             user_id,
         )
 
-    async def sum_size_bytes_for_user(self, user_id: str) -> int:
-        row = await self._pool.fetchrow(
-            "SELECT COALESCE(SUM(size_bytes), 0)::bigint AS n FROM files WHERE user_id = $1",
-            user_id,
-        )
-        return int(row["n"] or 0) if row else 0
-
     async def list_files_for_user_inventory(
         self, user_id: str, *, limit: int = 500
     ) -> list[dict[str, Any]]:
@@ -201,16 +194,3 @@ class FileRepository:
             out.append(d)
         return out
 
-    async def count_chunks_for_session(self, session_id: str) -> int:
-        row = await self._pool.fetchrow(
-            "SELECT COUNT(*) AS c FROM file_chunks WHERE session_id = $1",
-            session_id,
-        )
-        return int(row["c"]) if row else 0
-
-    async def list_local_paths_for_session(self, session_id: str) -> list[str]:
-        rows = await self._pool.fetch(
-            "SELECT local_path FROM files WHERE session_id = $1",
-            session_id,
-        )
-        return [r["local_path"] for r in rows]

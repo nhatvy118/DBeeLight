@@ -497,31 +497,6 @@ class ChatShareRepository:
             result = await conn.execute(query, recipient_id, owner_google_sub)
             return not result.endswith("0")
 
-    async def get_owner_for_recipient_project(
-        self, *, recipient_google_sub: str, project_id: str
-    ) -> Optional[str]:
-        """If the recipient has an active (accepted, non-revoked) share for a
-        session in ``project_id``, return that share's owner google_sub.
-
-        Used to bypass owner-only checks (e.g. ``ProjectRepository.get_project_by_id``)
-        on derived flows where the recipient legitimately needs to access a
-        resource scoped to the owner.
-        """
-        if not recipient_google_sub or not project_id:
-            return None
-        query = """
-        SELECT s.owner_user_id
-        FROM chat_share_recipients r
-        JOIN chat_shares s ON s.id = r.share_id
-        WHERE r.recipient_user_id = $1
-          AND s.project_id = $2::uuid
-          AND r.revoked_at IS NULL
-          AND s.revoked_at IS NULL
-        LIMIT 1
-        """
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(query, recipient_google_sub, project_id)
-            return row["owner_user_id"] if row else None
 
     async def verify_session_owner(
         self, *, session_id: str, owner_google_sub: str

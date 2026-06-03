@@ -34,6 +34,59 @@ def init_sqlite_database(db_path: Path) -> bool:
         return False
 
 
+def _databases_base_dir() -> Path:
+    """Managed dir for project SQLite DBs: api-server/internal/databases/.
+    parent x3 of internal/features/project/sqlite_helper.py == internal/."""
+    return Path(__file__).resolve().parent.parent.parent / "databases"
+
+
+def get_sqlite_path_from_url(db_url: str | None) -> Optional[Path]:
+    """Reverse of get_sqlite_db_url_from_path: a ``sqlite:///...`` URL → Path.
+    Returns None for non-sqlite URLs (e.g. placeholder://, postgres://)."""
+    if not db_url:
+        return None
+    s = str(db_url).strip()
+    if not s.lower().startswith("sqlite:"):
+        return None
+    body = s.split("?", 1)[0]  # drop any ``?mode=ro`` style query
+    if body.startswith("sqlite:///"):
+        path_str = body[len("sqlite:///"):]
+    elif body.startswith("sqlite://"):
+        path_str = body[len("sqlite://"):]
+    else:
+        path_str = body[len("sqlite:"):]
+    return Path(path_str) if path_str else None
+
+
+def delete_sqlite_database(db_url: str | None) -> bool:
+    """Delete the SQLite file (plus -wal/-shm sidecars) for a project db_url.
+
+    Safety: only removes files that resolve inside the managed databases dir,
+    so a stray/external db_url can never delete arbitrary paths. Returns True
+    if at least one file was removed.
+    """
+    path = get_sqlite_path_from_url(db_url)
+    if path is None:
+        return False
+    try:
+        resolved = path.resolve()
+        base = _databases_base_dir().resolve()
+        if base != resolved.parent and base not in resolved.parents:
+            logger.warning(f"Refusing to delete sqlite file outside managed dir: {resolved}")
+            return False
+        removed = False
+        for p in (resolved, resolved.with_name(resolved.name + "-wal"), resolved.with_name(resolved.name + "-shm")):
+            if p.exists():
+                p.unlink()
+                removed = True
+        if removed:
+            logger.info(f"Deleted project SQLite database: {resolved}")
+        return removed
+    except Exception as e:
+        logger.error(f"Failed to delete sqlite db for url {db_url!r}: {e}")
+        return False
+
+
 def generate_sqlite_db_path(base_dir: Optional[Path] = None) -> Path:
     """
     Generate a path for a new SQLite database file with a random name.
@@ -45,10 +98,9 @@ def generate_sqlite_db_path(base_dir: Optional[Path] = None) -> Path:
         Path to the SQLite database file
     """
     if base_dir is None:
-        # parent x3 of internal/features/project/sqlite_helper.py == internal/,
-        # so this resolves to api-server/internal/databases/ (matches the file
-        # service + chart-server allow-list).
-        base_dir = Path(__file__).resolve().parent.parent.parent / "databases"
+        # api-server/internal/databases/ (matches the file service + chart-server
+        # allow-list, and delete_sqlite_database's safety boundary).
+        base_dir = _databases_base_dir()
     
     # Create directory if it doesn't exist
     base_dir.mkdir(parents=True, exist_ok=True)

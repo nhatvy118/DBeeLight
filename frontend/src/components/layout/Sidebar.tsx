@@ -6,6 +6,7 @@ import {
   getSessions,
   createProject,
   getProjects,
+  deleteProject,
   listReceivedShares,
   connectExternalDb,
   disconnectExternalDb,
@@ -15,6 +16,7 @@ import {
   type SessionInfo,
 } from '../../services/api';
 import ProjectModal from '../modals/ProjectModal';
+import DeleteProjectModal from '../modals/DeleteProjectModal';
 import DatabaseConnectPopup, { type DatabaseConnectionData } from '../modals/DatabaseConnectPopup';
 import StorageModal from '../modals/StorageModal';
 import HelpModal from '../modals/HelpModal';
@@ -204,6 +206,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
   const [receivedShares, setReceivedShares] = useState<ReceivedShare[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
+  const [isDeletingProject, setIsDeletingProject] = useState(false);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isDatabasePopupOpen, setIsDatabasePopupOpen] = useState(false);
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
@@ -441,6 +445,38 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
     }
   };
 
+  const handleConfirmDeleteProject = async () => {
+    if (!projectToDelete) return;
+    const target = projectToDelete;
+    setIsDeletingProject(true);
+    try {
+      const res = await deleteProject(target.id);
+      if (!res.success) {
+        window.alert(res.error || 'Failed to delete project');
+        return;
+      }
+      setProjects((prev) => {
+        const next = prev.filter((p) => p.id !== target.id);
+        localStorage.setItem('projects', JSON.stringify(next));
+        return next;
+      });
+      setProjectToDelete(null);
+      // If we were viewing the deleted project, leave it.
+      if (selectedProjectId === target.id) {
+        setSelectedProjectId(null);
+        navigate('/');
+      }
+      // Its sessions are gone — refresh the lists.
+      await fetchSessions();
+      window.dispatchEvent(new Event('projectSessionsUpdated'));
+    } catch (err) {
+      console.error('Failed to delete project:', err);
+      window.alert('Failed to delete project');
+    } finally {
+      setIsDeletingProject(false);
+    }
+  };
+
   const handleDatabaseConnect = async (connectionData: DatabaseConnectionData): Promise<{ success: boolean; error?: string }> => {
     const result = await connectExternalDb({
       host: connectionData.server,
@@ -572,23 +608,39 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
                 ) : projects.map((project) => {
                   const on = selectedProjectId === project.id;
                   return (
-                    <button
+                    <div
                       key={project.id}
-                      type="button"
-                      className="focusable"
-                      onClick={() => {
-                        setSelectedProjectId(project.id);
-                        navigate(`/chat/${project.id}`);
-                        if (onSessionSelect) onSessionSelect(null as unknown as string);
-                      }}
-                      style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 12px', borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14,
-                        color: on ? 'var(--text)' : 'var(--text-soft)', background: on ? 'var(--surface)' : 'transparent', border: on ? '1px solid var(--border)' : '1px solid transparent' }}
-                      onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-2)'; }}
-                      onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}
+                      style={{ position: 'relative', display: 'flex', alignItems: 'center' }}
                     >
-                      <Icons.Folder size={17} style={{ color: on ? 'var(--accent-ink)' : 'var(--text-muted)', flexShrink: 0 }} />
-                      <span style={{ flex: 1, fontWeight: on ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name}</span>
-                    </button>
+                      <button
+                        type="button"
+                        className="focusable"
+                        onClick={() => {
+                          setSelectedProjectId(project.id);
+                          navigate(`/chat/${project.id}`);
+                          if (onSessionSelect) onSessionSelect(null as unknown as string);
+                        }}
+                        style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 12px', paddingRight: 36, borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14,
+                          color: on ? 'var(--text)' : 'var(--text-soft)', background: on ? 'var(--surface)' : 'transparent', border: on ? '1px solid var(--border)' : '1px solid transparent' }}
+                        onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-2)'; }}
+                        onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}
+                      >
+                        <Icons.Folder size={17} style={{ color: on ? 'var(--accent-ink)' : 'var(--text-muted)', flexShrink: 0 }} />
+                        <span style={{ flex: 1, fontWeight: on ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="focusable"
+                        aria-label={`Delete project ${project.name}`}
+                        title="Delete project"
+                        onClick={(e) => { e.stopPropagation(); setProjectToDelete(project); }}
+                        style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', width: 26, height: 26, display: 'grid', placeItems: 'center', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-faint)', cursor: 'pointer', flexShrink: 0 }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-3)'; e.currentTarget.style.color = 'var(--danger, #d93025)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-faint)'; }}
+                      >
+                        <Icons.Trash size={15} />
+                      </button>
+                    </div>
                   );
                 })}
               </div>
@@ -680,6 +732,16 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
       <StorageModal open={isStorageModalOpen} onClose={() => setIsStorageModalOpen(false)} />
 
       <HelpModal open={isHelpModalOpen} onClose={() => setIsHelpModalOpen(false)} />
+
+      {projectToDelete && (
+        <DeleteProjectModal
+          projectId={projectToDelete.id}
+          projectName={projectToDelete.name}
+          isDeleting={isDeletingProject}
+          onClose={() => setProjectToDelete(null)}
+          onConfirm={() => void handleConfirmDeleteProject()}
+        />
+      )}
     </>
   );
 }

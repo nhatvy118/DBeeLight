@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from typing import Sequence
@@ -38,13 +37,3 @@ class EmbeddingService:
     async def embed_query(self, text: str) -> list[float]:
         emb = await self.embed_batch([text])
         return emb[0] if emb else [0.0] * DIM
-
-
-def run_embed_sync(svc: EmbeddingService, texts: Sequence[str]) -> list[list[float]]:
-    """Run async embed in sync context (upload handler)."""
-    return asyncio.get_event_loop().run_until_complete(svc.embed_batch(texts))
-
-
-async def embed_batch_sync_wrap(texts: Sequence[str]) -> list[list[float]]:
-    svc = EmbeddingService()
-    return await svc.embed_batch(texts)

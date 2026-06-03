@@ -313,6 +313,24 @@ export async function createProject(name: string, description?: string, db_url: 
   return (await response.json()) as CreateProjectResponse;
 }
 
+export type DeleteProjectResponse =
+  | { success: true; deleted_sessions?: number }
+  | { success: false; error: string };
+
+/** Delete a project plus its chats, files, temp DBs and SQLite database. */
+export async function deleteProject(id: string): Promise<DeleteProjectResponse> {
+  const response = await fetch(url(`/api/projects/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as { error?: string };
+    return { success: false, error: data.error ?? 'Failed to delete project' };
+  }
+  return (await response.json()) as DeleteProjectResponse;
+}
+
 // ----- Chat session sharing -----
 
 export type SharePermission = 'view_only' | 'read_data' | 'edit_data';

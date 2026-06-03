@@ -51,6 +51,12 @@
   --accent-soft: var(--honey-soft);
   --accent-soft-2: var(--honey-soft-2);
   --on-accent: oklch(0.30 0.06 60);
+  /* danger / destructive (red) */
+  --danger: oklch(0.575 0.205 27);
+  --danger-ink: oklch(0.55 0.205 27);
+  --danger-soft: oklch(0.955 0.030 27);
+  --danger-border: oklch(0.885 0.065 27);
+  --on-danger: oklch(1 0 0);
   color-scheme: light;
 }
 
@@ -80,6 +86,12 @@
   --accent-soft: var(--honey-soft);
   --accent-soft-2: var(--honey-soft-2);
   --on-accent: oklch(0.24 0.05 60);
+  /* danger / destructive (red) — soft = dark maroon, ink = brighter red for contrast */
+  --danger: oklch(0.60 0.195 27);
+  --danger-ink: oklch(0.74 0.165 27);
+  --danger-soft: oklch(0.33 0.075 27);
+  --danger-border: oklch(0.44 0.105 27);
+  --on-danger: oklch(0.99 0.01 27);
   color-scheme: dark;
 }
 

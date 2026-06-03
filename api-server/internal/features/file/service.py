@@ -66,16 +66,6 @@ def _path_is_file_handle_subdir(parts: tuple[str, ...], user_key: str, subdir: s
     return parts[i + 1] == user_key and parts[i + 3] == subdir
 
 
-def _path_is_legacy_uploads_import(parts: tuple[str, ...], user_key: str) -> bool:
-    try:
-        i = parts.index("uploads")
-    except ValueError:
-        return False
-    if len(parts) < i + 5:
-        return False
-    return parts[i + 1] == user_key and parts[i + 3] == SESSION_IMPORT_SUBDIR
-
-
 def classify_session_stored_path(local_path: str, user_key: str) -> str:
     """``import`` (RAG upload), ``chat_export`` (assistant Excel), or ``other``."""
     parts = _path_parts(local_path)
@@ -84,8 +74,6 @@ def classify_session_stored_path(local_path: str, user_key: str) -> str:
     if _path_is_file_handle_subdir(parts, user_key, SESSION_EXPORT_SUBDIR):
         return "chat_export"
     if _path_is_file_handle_subdir(parts, user_key, SESSION_IMPORT_SUBDIR):
-        return "import"
-    if _path_is_legacy_uploads_import(parts, user_key):
         return "import"
     return "other"
 
@@ -191,11 +179,6 @@ class FileService:
                 imp += sz
         return imp, chat
 
-    async def get_user_storage_usage(self, user_key: str) -> int:
-        """Indexed files that are not assistant chat exports (Import tab + legacy rows)."""
-        imp, _ = await self._storage_bytes_breakdown(user_key)
-        return imp
-
     async def get_total_storage_used_bytes(self, user_key: str) -> int:
         """All indexed session files (import + chat export). Excel MCP staging excluded from cap."""
         imp, chat = await self._storage_bytes_breakdown(user_key)
@@ -206,63 +189,6 @@ class FileService:
         imp, chat = await self._storage_bytes_breakdown(user_key)
         return imp, chat, imp + chat
 
-    def _session_file_marker_content(self, file_id: UUID, filename: str) -> str:
-        return (
-            f"[SESSION_FILE_ID_START]{file_id}[SESSION_FILE_ID_END]\n"
-            f"[UPLOADED_EXCEL_NAME_START]{filename}[UPLOADED_EXCEL_NAME_END]"
-        )
-
-    async def append_session_file_upload_message(
-        self,
-        *,
-        session_id: str,
-        user_key: str,
-        file_id: UUID,
-        filename: str,
-    ) -> dict[str, Any]:
-        """Persist a user-visible chat line so the UI can show the upload (markers stripped for display)."""
-        content = self._session_file_marker_content(file_id, filename)
-        msg: dict[str, Any] = {
-            "role": "user",
-            "content": content,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        stack_key = f"{user_key}:{session_id}:stack"
-        pushed = False
-        try:
-            from internal.infra.redis import redis_stack_push
-
-            pushed = await redis_stack_push(stack_key, msg)
-        except Exception as e:
-            logger.warning("Redis chat append failed, will try DB: %s", e)
-        if pushed:
-            return msg
-
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow(
-                    "SELECT content FROM session WHERE id = $1 AND user_id = $2 FOR UPDATE",
-                    session_id,
-                    user_key,
-                )
-                if row is None:
-                    return msg
-                data = row["content"]
-                if isinstance(data, str):
-                    data = json.loads(data)
-                if not isinstance(data, dict):
-                    data = {"session_id": session_id, "messages": []}
-                messages = list(data.get("messages") or [])
-                messages.append(msg)
-                data["messages"] = messages
-                data["updated_at"] = datetime.now(timezone.utc).isoformat()
-                await conn.execute(
-                    "UPDATE session SET content = $1::jsonb WHERE id = $2 AND user_id = $3",
-                    json.dumps(data, ensure_ascii=False),
-                    session_id,
-                    user_key,
-                )
-        return msg
 
     async def _prune_session_messages_with_file_id(
         self,
@@ -913,11 +839,20 @@ class FileService:
             await self.delete_file(UUID(str(r["id"])), user_key)
         tpath = _temp_db_path(session_id)
         tpath.unlink(missing_ok=True)
-        # Remove session tree (import, export) and legacy ``uploads/.../session`` if present.
-        for rel in (
-            _session_file_tree_dir(user_key, session_id),
-            _internal_data_root() / "uploads" / user_key / session_id,
-        ):
-            if rel.is_dir():
-                shutil.rmtree(rel, ignore_errors=True)
+        # Remove the session tree (import + export).
+        tree = _session_file_tree_dir(user_key, session_id)
+        if tree.is_dir():
+            shutil.rmtree(tree, ignore_errors=True)
+
+    def purge_session_disk(self, session_id: str, user_key: str) -> None:
+        """Disk-only cleanup for a session whose row is about to be deleted in bulk
+        (e.g. project deletion). Removes the temp DB file and the entire file_handle
+        session tree (import + export) in one shot. Skips the per-file row/message
+        pruning that ``cleanup_session_files`` does, because the session row — and
+        its cascaded file rows — are being deleted anyway."""
+        temp_db = _internal_data_root() / "temp_dbs" / f"{session_id}.db"
+        temp_db.unlink(missing_ok=True)
+        tree = _session_file_tree_dir(user_key, session_id)
+        if tree.is_dir():
+            shutil.rmtree(tree, ignore_errors=True)
 

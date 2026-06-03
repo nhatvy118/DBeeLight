@@ -58,21 +58,3 @@ class UserRepository:
             logger.error(f"Repository: Database error upserting user: {e}", exc_info=True)
             raise
 
-    async def find_by_email(self, email: str) -> Optional[dict[str, Any]]:
-        """Look up a user by email (case-insensitive). Returns None if not found."""
-        e = (email or "").strip().lower()
-        if not e:
-            return None
-        query = "SELECT id, name, google_sub, email FROM users WHERE LOWER(email) = $1"
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(query, e)
-            return dict(row) if row else None
-
-    async def find_by_google_sub(self, google_sub: str) -> Optional[dict[str, Any]]:
-        gs = (google_sub or "").strip()
-        if not gs:
-            return None
-        query = "SELECT id, name, google_sub, email FROM users WHERE google_sub = $1"
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(query, gs)
-            return dict(row) if row else None
