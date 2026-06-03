@@ -69,9 +69,9 @@ dmypy.json
 # macOs
 .DS_Store
 
-# sqlite databases
-api-server/databases/*
-api-server/temp_dbs/*
+# runtime user data — keep the dirs (.gitkeep), ignore the files inside
+api-server/internal/databases/*.db*
+api-server/internal/temp_dbs/*.db*
+api-server/internal/file_handle/*
+!api-server/internal/file_handle/.gitkeep
 test_file/*
-/api-server/internal/temp_dbs
-/api-server/internal/databases

@@ -28,7 +28,7 @@ OrchestratorRoute = Literal[
     "db_readonly",
     "db_create_table",
     "db_mutation",
-    "database",
+    "db_general",
     "excel",
     "chart",
 ]
@@ -37,13 +37,17 @@ ORCHESTRATOR_ROUTES: List[Dict[str, str]] = [
     {"id": "db_readonly", "kind": "workflow", "label": "Database read-only (SELECT, schema, list/describe tables, …)"},
     {"id": "db_create_table", "kind": "workflow", "label": "Database create table"},
     {"id": "db_mutation", "kind": "workflow", "label": "Database mutation (INSERT/UPDATE/DELETE/ALTER/DROP/…)"},
-    {"id": "database", "kind": "agent", "label": "Database agent (general tool loop)"},
+    {"id": "db_general", "kind": "agent", "label": "Database agent (general tool loop)"},
     {"id": "excel", "kind": "agent", "label": "Excel agent"},
     {"id": "chart", "kind": "agent", "label": "Chart agent (Vega-Lite visualization from SQL)"},
 ]
 
 _VALID_ORCHESTRATOR_ROUTES = frozenset(r["id"] for r in ORCHESTRATOR_ROUTES)
 INTENT_CONTEXT_TURNS = max(2, int(os.getenv("INTENT_CONTEXT_TURNS", "6")))
+_CONNECT_DISCONNECT_UI_REPLY = (
+    "To connect or disconnect a database, please use the **Connect Database** button in the side panel. "
+    "Database connections are managed through the UI, not via chat."
+)
 
 
 AccessLevel = Literal["view_only", "read_data", "edit_data"]
@@ -58,7 +62,7 @@ ROUTE_ACCESS_LEVEL: Dict[str, AccessLevel] = {
     # General DB tool loop — could be either read or write. Mark as
     # ``read_data`` so the request is not blocked outright; SQL-level gates
     # in execute_sql() still reject mutation SQL the agent might emit.
-    "database":        "read_data",
+    "db_general":      "read_data",
     # Excel and chart agents produce derived artifacts (files, Vega-Lite specs)
     # that don't mutate the project database — they only read. Sit at read_data.
     "excel":           "read_data",
@@ -70,15 +74,17 @@ _INTENT_CLASSIFICATION_PROMPT = """You are an orchestration router. Pick exactly
 **Decision order (important):**
 - For anything database-related, decide in this order: first try **1 → 2 → 3** (the three structured DB workflows). Only if the request clearly fits NONE of them, use **4** (general Database Agent).
 - Non-database topics: use **5** or **6** when appropriate.
-- If the user message includes uploaded dataset context (e.g. "[UPLOADED DATASETS]" or "[ATTACHED FILES CONTEXT]"), prefer **db_readonly** or **database** for filtering, comparing, aggregating, DISTINCT/JOIN questions over uploaded tabular data. Use **excel** only when the user explicitly wants spreadsheet formatting, in-cell charts, or workbook structure edits.
+- If the user message includes uploaded dataset context (e.g. "[UPLOADED DATASETS]" or "[ATTACHED FILES CONTEXT]"), prefer **db_readonly** or **db_general** for filtering, comparing, aggregating, DISTINCT/JOIN questions over uploaded tabular data. Use **excel** only when the user explicitly wants spreadsheet formatting, in-cell charts, or workbook structure edits.
 - Set "semantic_retrieval" to true only when the user needs semantic grounding from unstructured document text (summaries, policy/contract interpretation, "what does this document say..."). For structured SQL-style analysis over uploaded tables, set "semantic_retrieval" to false.
+- If the user asks off-topic smalltalk/personal chat that is not related to this app's capabilities, set "needs_clarification" to true and set "clarification_question" exactly to: "Please ask questions related to the database."
+- If the user asks to **connect** or **disconnect** a database (action request, not just status/info), set "needs_clarification" to true and set "clarification_question" exactly to: "{connect_disconnect_reply}"
 
 Branches:
 
-1) "db_readonly" — Read-only: SELECT, list/describe tables, schema exploration, aggregates without modifying data. Also use this when user mentions connecting or disconnecting a database — do NOT ask for clarification, route immediately.
+1) "db_readonly" — Read-only SQL/data: SELECT, list/describe tables, schema exploration, aggregates without modifying data. **Do NOT** use for connect/disconnect actions or "connection info" questions.
 2) "db_create_table" — CREATE TABLE / define new table structure.
-3) "db_mutation" — **Only** writes / schema changes: INSERT, UPDATE, DELETE, ALTER TABLE, DROP, TRUNCATE, MERGE that modifies data. **Never** use this route for "export/download/save table to Excel or CSV" — that only **reads** data; use **database** (general DB agent with export tools) or **db_readonly** instead.
-4) "database" — DB requests that need the **general tool loop**: export table/query to Excel/CSV file, `export_table_to_excel`, troubleshooting, or anything that does not fit 1–3 cleanly. **Prefer this** when the user asks to export or download a dataset as a file.
+3) "db_mutation" — **Only** writes / schema changes: INSERT, UPDATE, DELETE, ALTER TABLE, DROP, TRUNCATE, MERGE that modifies data. **Never** use this route for "export/download/save table to Excel or CSV" — that only **reads** data; use **db_general** (general DB agent with export tools) or **db_readonly** instead.
+4) "db_general" — DB requests that need the **general tool loop**: get_connection_info / "info about the connection" (status only, not connect/disconnect actions), export table/query to Excel/CSV (`export_table_to_excel`), troubleshooting, or anything that does not fit 1–3 cleanly. **Prefer this** when the user asks to export or download a dataset as a file.
 5) "excel" — Spreadsheets, CSV/XLSX, rows/columns, analyze/transform Excel files.
 6) "chart" — Visualizing data from the project DB as interactive Vega-Lite charts (line/bar/pie/scatter/heatmap/histogram/area/boxplot). Pick this when the user asks for a chart, plot, graph, biểu đồ, đồ thị on data that lives in the connected database.
 
@@ -86,9 +92,9 @@ Reference (registry workflows for wording only):
 {workflow_descriptions}
 
 Return strict JSON with:
-- "needs_clarification": REQUIRED boolean — true ONLY if the user request is ambiguous and you cannot safely choose a route yet. Never set true for connect/disconnect database requests.
+- "needs_clarification": REQUIRED boolean — true if ambiguous OR if user wants to connect/disconnect via chat (use UI message above). For connect/disconnect action requests, do not pick a route.
 - "clarification_question": REQUIRED string or null — if needs_clarification is true, ask ONE concise follow-up question to disambiguate; otherwise null.
-- "route": REQUIRED when needs_clarification=false — exactly one of: "db_readonly" | "db_create_table" | "db_mutation" | "database" | "excel" | "chart"
+- "route": REQUIRED when needs_clarification=false — exactly one of: "db_readonly" | "db_create_table" | "db_mutation" | "db_general" | "excel" | "chart"
 - "nl_query": normalized natural-language query
 - "chart_type": chart hint if visualization requested, else null
 - "table_hint": table/entity hint if mentioned, else null
@@ -137,7 +143,8 @@ class IntentService:
     def _build_prompt(self) -> str:
         """Build the classification prompt with current workflow descriptions."""
         return _INTENT_CLASSIFICATION_PROMPT.format(
-            workflow_descriptions=get_workflow_descriptions()
+            workflow_descriptions=get_workflow_descriptions(),
+            connect_disconnect_reply=_CONNECT_DISCONNECT_UI_REPLY,
         )
 
     def _build_user_content(
@@ -220,7 +227,7 @@ class IntentService:
             result = {
                 "needs_clarification": False,
                 "clarification_question": None,
-                "route": "database",
+                "route": "db_general",
                 "nl_query": prompt,
                 "chart_type": None,
 
@@ -302,9 +309,10 @@ def _route_aliases(raw: str) -> str:
         "db-readonly": "db_readonly",
         "db_create": "db_create_table",
         "db_mutation_workflow": "db_mutation",
-        "general_db": "database",
-        "db_general": "database",
-        "db_agent": "database",
+        "general_db": "db_general",
+        "db_general": "db_general",
+        "db_agent": "db_general",
+        "database": "db_general",
     }
     return aliases.get(s, s)
 
@@ -342,7 +350,7 @@ def _resolve_orchestrator_route(result: dict, nl_query: str) -> OrchestratorRout
             if at == "chart":
                 return "chart"
             if at == "database":
-                return "database"
+                return "db_general"
 
     fb = _normalize_fallback_agent(result.get("fallback_agent"))
     if fb == "excel":
@@ -350,21 +358,21 @@ def _resolve_orchestrator_route(result: dict, nl_query: str) -> OrchestratorRout
     if fb == "chart":
         return "chart"
     if fb == "database":
-        return "database"
+        return "db_general"
 
     inferred = _infer_fallback_agent({**result, "nl_query": nl_query}, nl_query)
     if inferred == "excel":
         return "excel"
     if inferred == "chart":
         return "chart"
-    return "database"
+    return "db_general"
 
 
 def _adjust_route_for_available(route: OrchestratorRoute, available: set[str]) -> OrchestratorRoute:
     """If excel/chart agent is missing, fall back to general database when possible."""
     if not available:
         return route
-    if route in ("db_readonly", "db_create_table", "db_mutation", "database"):
+    if route in ("db_readonly", "db_create_table", "db_mutation", "db_general"):
         if "database" not in available:
             logger.warning(
                 "[IntentService] route=%s but no database agent in %s — keeping route",
@@ -373,9 +381,9 @@ def _adjust_route_for_available(route: OrchestratorRoute, available: set[str]) -
             )
         return route
     if route == "excel" and "excel" not in available:
-        return "database" if "database" in available else route
+        return "db_general" if "database" in available else route
     if route == "chart" and "chart" not in available:
-        return "database" if "database" in available else route
+        return "db_general" if "database" in available else route
     return route
 
 
@@ -387,7 +395,7 @@ def _route_to_workflow_fields(route: OrchestratorRoute) -> tuple[Optional[str], 
         return "db_create_table", None, "database"
     if route == "db_mutation":
         return "db_mutation", None, "database"
-    if route == "database":
+    if route == "db_general":
         return None, "database", "database"
     if route == "excel":
         return "excel_analyze", None, "excel"
@@ -454,3 +462,5 @@ def _infer_fallback_agent(result: dict, nl_query: str) -> str:
     ):
         return "excel"
     return "database"
+
+

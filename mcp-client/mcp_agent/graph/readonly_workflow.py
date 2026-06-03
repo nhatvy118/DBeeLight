@@ -663,7 +663,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
             )
             select_sql = strip_sql_fences(sel_resp.choices[0].message.content or "")
 
-            ok, explain_err, explain_summary = await validate_explain_and_summarize(
+            ok, explain_err, explain_summary, type_sql = await validate_explain_and_summarize(
                 agent,
                 llm,
                 _call_tool,
@@ -721,6 +721,8 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
         }
         if explain_summary:
             out["explain_summary"] = explain_summary
+        if type_sql:
+            out["type_sql"] = type_sql
         return {
             **state,
             "sql": select_sql,

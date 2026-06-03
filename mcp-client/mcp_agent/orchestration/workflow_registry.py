@@ -26,7 +26,7 @@ DATABASE_WORKFLOWS = [
             "table info", "thông tin bảng", "liệt kê", "xem dữ liệu",
             "bao nhiêu", "có bao nhiêu", "tổng", "trung bình",
         ],
-        "description": "Read-only SQL queries: SELECT, list tables, describe table structure, connection management. No data modification.",
+        "description": "Read-only SQL queries: SELECT, list tables, describe table structure. No data modification. Connection management uses db_general.",
         "example_queries": [
             "Select all users older than 25",
             "Show me the bicycle table structure",

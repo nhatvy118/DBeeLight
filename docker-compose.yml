@@ -24,15 +24,15 @@ services:
     image: pgvector/pgvector:pg17
     container_name: dbeelight-postgres
     environment:
-      POSTGRES_USER: dbeelight
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: dbeelight_app
+      POSTGRES_USER: ${POSTGRES_USER:-dbeelight}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in root .env}
+      POSTGRES_DB: ${POSTGRES_DB:-dbeelight_app}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dbeelight -d dbeelight_app"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -42,7 +42,7 @@ services:
     image: redis:7-alpine
     container_name: dbeelight-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -53,31 +53,27 @@ services:
 
   api-server:
     <<: *common
-    # Production EC2 pulls this prebuilt image (pushed by GitHub Actions).
-    # Local dev still works via `docker compose up --build` which rebuilds from source.
     image: ghcr.io/nhatvy118/dbeelight-api:${API_IMAGE_TAG:-latest}
     build:
-      # Build from monorepo root so mcp-client (local editable dep) is visible.
       context: .
       dockerfile: api-server/Dockerfile
     container_name: dbeelight-api
     env_file:
       - ./api-server/.env
-    # Compose env wins over .env — wire service DNS for inter-container calls.
     environment:
-      DB_URL: postgres://dbeelight:postgres@postgres:5432/dbeelight_app?sslmode=disable
+      DB_URL: postgres://${POSTGRES_USER:-dbeelight}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dbeelight_app}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
     ports:
-      - "5001:5001"
+      - "127.0.0.1:5001:5001"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
-      # Persist user-uploaded files across container restarts (MVP).
-      # In prod swap with S3 storage backend.
-      - ./api-server/file_handle:/app/api-server/file_handle
+      - ./api-server/internal/file_handle:/app/api-server/internal/file_handle
+      - ./api-server/internal/temp_dbs:/app/api-server/internal/temp_dbs
+      - ./api-server/internal/databases:/app/api-server/internal/databases
 
 volumes:
   postgres_data:

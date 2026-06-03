@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import closeIcon from '../../assets/icons/Close.svg';
+import { useState, useEffect } from 'react';
+import Modal from './Modal';
+import { Icons } from '../../icons';
 
 type DatabaseConnectPopupProps = {
   isOpen: boolean;
@@ -76,7 +77,6 @@ export default function DatabaseConnectPopup({
   };
 
   const handleClose = () => {
-    // Only reset local error state; form values and success state persist in parent
     setErrorMessage('');
     if (!connectedDb) {
       setServer('');
@@ -90,7 +90,7 @@ export default function DatabaseConnectPopup({
   };
 
   const handleDisconnect = () => {
-    void onDisconnect(); // clear parent state first
+    void onDisconnect();
     setServer('');
     setPort('');
     setUsername('');
@@ -98,171 +98,114 @@ export default function DatabaseConnectPopup({
     setPassword('');
     setStatus('idle');
     setErrorMessage('');
-    // popup stays open so user can re-connect
   };
 
   const isConnecting = status === 'connecting';
   const isSuccess = status === 'success';
   const isDisabled = isConnecting || isSuccess || isInProject;
 
+  const field = (
+    id: string,
+    label: string,
+    value: string,
+    setter: (v: string) => void,
+    placeholder: string,
+    type = 'text',
+  ) => (
+    <div>
+      <label htmlFor={id} className="field-label">{label}</label>
+      <input
+        id={id}
+        type={type}
+        value={value}
+        onChange={(e) => setter(e.target.value)}
+        disabled={isDisabled}
+        className="field focusable"
+        style={{ opacity: isDisabled ? 0.7 : 1 }}
+        placeholder={placeholder}
+      />
+    </div>
+  );
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-slate-900 rounded-lg p-6 w-full max-w-md shadow-xl">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Connect Database</h2>
-          <button
-            onClick={handleClose}
-            className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
-            type="button"
-          >
-            <img src={closeIcon} alt="Close" className="w-5 h-5" />
-          </button>
+    <Modal
+      title="Connect your data"
+      subtitle="Your credentials stay encrypted on your device."
+      icon={Icons.Database}
+      onClose={handleClose}
+      width={540}
+    >
+      {/* Project restriction banner */}
+      {isInProject && (
+        <div style={{ display: 'flex', gap: 9, alignItems: 'flex-start', padding: '11px 13px', background: 'var(--info-soft)', borderRadius: 'var(--r-sm)', color: 'var(--text-soft)', marginBottom: 16 }}>
+          <Icons.Info size={16} style={{ flexShrink: 0, marginTop: 1, color: 'var(--info)' }} />
+          <span style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+            Cannot connect to an external database while inside a project. Switch to a non-project session to use this feature.
+          </span>
         </div>
+      )}
 
-        {/* Project restriction banner */}
-        {isInProject && (
-          <div className="mb-4 flex items-start gap-2 rounded-lg bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-700 px-4 py-3">
-            <svg className="mt-0.5 h-4 w-4 flex-shrink-0 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-            </svg>
-            <p className="text-sm text-yellow-800 dark:text-yellow-300">
-              Cannot connect to an external database while inside a project. Switch to a non-project session to use this feature.
-            </p>
-          </div>
-        )}
-
-        {/* Success banner */}
-        {!isInProject && isSuccess && (
-          <div className="mb-4 flex items-start gap-2 rounded-lg bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-700 px-4 py-3">
-            <svg className="mt-0.5 h-4 w-4 flex-shrink-0 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
-            <div className="text-sm text-green-800 dark:text-green-300">
-              <span className="font-semibold">Connected successfully</span>
-              <div className="mt-0.5 text-green-700 dark:text-green-400">
-                {databaseName} @ {server}:{port}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Error banner */}
-        {!isInProject && status === 'error' && errorMessage && (
-          <div className="mb-4 flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 px-4 py-3">
-            <svg className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-            <p className="text-sm text-red-800 dark:text-red-300">{errorMessage}</p>
-          </div>
-        )}
-
-        {/* Form Fields */}
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="server" className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Server
-            </label>
-            <input
-              id="server"
-              type="text"
-              value={server}
-              onChange={(e) => setServer(e.target.value)}
-              disabled={isDisabled}
-              className="w-full px-4 py-2 bg-gray-100 dark:bg-slate-800 border border-gray-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-gray-100 disabled:opacity-60"
-              placeholder="localhost"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="port" className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Port
-            </label>
-            <input
-              id="port"
-              type="text"
-              value={port}
-              onChange={(e) => setPort(e.target.value)}
-              disabled={isDisabled}
-              className="w-full px-4 py-2 bg-gray-100 dark:bg-slate-800 border border-gray-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-gray-100 disabled:opacity-60"
-              placeholder="5432"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="username" className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Username
-            </label>
-            <input
-              id="username"
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              disabled={isDisabled}
-              className="w-full px-4 py-2 bg-gray-100 dark:bg-slate-800 border border-gray-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-gray-100 disabled:opacity-60"
-              placeholder="postgres"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="databaseName" className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Database name
-            </label>
-            <input
-              id="databaseName"
-              type="text"
-              value={databaseName}
-              onChange={(e) => setDatabaseName(e.target.value)}
-              disabled={isDisabled}
-              className="w-full px-4 py-2 bg-gray-100 dark:bg-slate-800 border border-gray-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-gray-100 disabled:opacity-60"
-              placeholder="mydb"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={isDisabled}
-              className="w-full px-4 py-2 bg-gray-100 dark:bg-slate-800 border border-gray-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-gray-100 disabled:opacity-60"
-              placeholder="••••••••"
-            />
+      {/* Success banner */}
+      {!isInProject && isSuccess && (
+        <div style={{ display: 'flex', gap: 9, alignItems: 'flex-start', padding: '11px 13px', background: 'var(--green-soft)', borderRadius: 'var(--r-sm)', marginBottom: 16 }}>
+          <Icons.Check size={16} style={{ flexShrink: 0, marginTop: 1, color: 'var(--green-ink)' }} />
+          <div style={{ fontSize: 13, color: 'var(--green-ink)' }}>
+            <span style={{ fontWeight: 700 }}>Connected successfully</span>
+            <div style={{ marginTop: 2 }}>{databaseName} @ {server}:{port}</div>
           </div>
         </div>
+      )}
 
-        {/* Action Button */}
-        <div className="mt-6 flex justify-center">
-          {isInProject ? null : isSuccess ? (
-            <button
-              onClick={handleDisconnect}
-              className="px-8 py-2 bg-red-100 hover:bg-red-200 dark:bg-red-900/40 dark:hover:bg-red-900/60 text-red-700 dark:text-red-300 font-medium rounded-lg transition-colors"
-              type="button"
-            >
-              Disconnect
-            </button>
-          ) : (
-            <button
-              onClick={() => void handleConnect()}
-              disabled={isConnecting}
-              className="px-8 py-2 bg-blue-300 hover:bg-blue-400 text-black font-medium rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
-              type="button"
-            >
-              {isConnecting && (
-                <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                </svg>
-              )}
-              {isConnecting ? 'Connecting…' : 'Connect'}
-            </button>
-          )}
+      {/* Error banner */}
+      {!isInProject && status === 'error' && errorMessage && (
+        <div style={{ display: 'flex', gap: 9, alignItems: 'flex-start', padding: '11px 13px', background: 'oklch(0.95 0.05 25)', borderRadius: 'var(--r-sm)', marginBottom: 16 }}>
+          <Icons.Close size={16} style={{ flexShrink: 0, marginTop: 1, color: 'oklch(0.58 0.19 25)' }} />
+          <span style={{ fontSize: 13, color: 'oklch(0.5 0.18 25)' }}>{errorMessage}</span>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+          {field('server', 'Host', server, setServer, 'localhost')}
+          {field('port', 'Port', port, setPort, '5432')}
+        </div>
+        {field('databaseName', 'Database name', databaseName, setDatabaseName, 'mydb')}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          {field('username', 'Username', username, setUsername, 'postgres')}
+          {field('password', 'Password', password, setPassword, '••••••••', 'password')}
+        </div>
+        <div style={{ display: 'flex', gap: 9, alignItems: 'flex-start', padding: '11px 13px', background: 'var(--info-soft)', borderRadius: 'var(--r-sm)', color: 'var(--text-soft)' }}>
+          <Icons.Info size={16} style={{ flexShrink: 0, marginTop: 1, color: 'var(--info)' }} />
+          <span style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+            LightDBee only reads your data to answer questions. It never changes anything without asking you first.
+          </span>
         </div>
       </div>
-    </div>
+
+      {/* Action Button */}
+      <div style={{ display: 'flex', gap: 10, marginTop: 24 }}>
+        <button type="button" className="btn btn-outline" style={{ flex: '0 0 auto', padding: '12px 20px' }} onClick={handleClose}>Cancel</button>
+        {isInProject ? null : isSuccess ? (
+          <button
+            onClick={handleDisconnect}
+            type="button"
+            className="btn"
+            style={{ flex: 1, padding: '12px 20px', background: 'oklch(0.95 0.05 25)', color: 'oklch(0.5 0.18 25)' }}
+          >
+            <Icons.Close size={16} /> Disconnect
+          </button>
+        ) : (
+          <button
+            onClick={() => void handleConnect()}
+            disabled={isConnecting}
+            type="button"
+            className="btn btn-primary"
+            style={{ flex: 1, padding: '12px 20px', opacity: isConnecting ? 0.8 : 1 }}
+          >
+            {isConnecting ? 'Connecting…' : (<><Icons.Lightning size={16} /> Test &amp; connect</>)}
+          </button>
+        )}
+      </div>
+    </Modal>
   );
 }

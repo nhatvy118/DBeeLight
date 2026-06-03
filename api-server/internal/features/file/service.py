@@ -42,7 +42,7 @@ SESSION_EXPORT_SUBDIR = "export"
 
 
 def _file_handle_root() -> Path:
-    return _api_server_root() / "file_handle"
+    return _internal_data_root() / "file_handle"
 
 
 def _session_file_tree_dir(user_key: str, session_id: str) -> Path:
@@ -110,12 +110,15 @@ _ASSIST_ROW_COUNT_RE = re.compile(
 
 
 
-def _api_server_root() -> Path:
+def _internal_data_root() -> Path:
+    """Root for all runtime user data: ``api-server/internal/`` (file_handle,
+    temp_dbs, databases live directly under here). parents[2] of
+    ``internal/features/file/service.py`` == ``internal/``."""
     return Path(__file__).resolve().parents[2]
 
 
 def _temp_db_path(session_id: str) -> Path:
-    d = _api_server_root() / "temp_dbs"
+    d = _internal_data_root() / "temp_dbs"
     d.mkdir(parents=True, exist_ok=True)
     return d / f"{session_id}.db"
 
@@ -913,7 +916,7 @@ class FileService:
         # Remove session tree (import, export) and legacy ``uploads/.../session`` if present.
         for rel in (
             _session_file_tree_dir(user_key, session_id),
-            _api_server_root() / "uploads" / user_key / session_id,
+            _internal_data_root() / "uploads" / user_key / session_id,
         ):
             if rel.is_dir():
                 shutil.rmtree(rel, ignore_errors=True)

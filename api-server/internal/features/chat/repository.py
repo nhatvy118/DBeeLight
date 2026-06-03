@@ -23,16 +23,16 @@ ORCHESTRATOR_TTL_SECONDS = 600  # evict orchestrators idle longer than 10 minute
 # window — guards short in-flight requests that don't hold a refcount.
 _EVICT_RECENT_GUARD_SECONDS = 120
 
-# api-server owns the SQLite data directories. Pass them explicitly to the
-# chart-server subprocess so it doesn't have to guess workspace layout.
-# - ``internal/databases/`` is where ``sqlite_helper.generate_sqlite_db_path``
-#   creates project DBs.
-# - ``temp_dbs/`` is for per-session file imports.
-# - ``databases/`` (legacy) kept for any projects rowed before the move.
-_API_SERVER_ROOT = Path(__file__).resolve().parents[3]
+# All SQLite data lives under ``api-server/internal/``. Pass these dirs
+# explicitly to the chart-server subprocess so it doesn't have to guess the
+# workspace layout. These MUST match where the file service actually writes
+# (``_internal_data_root()`` in internal/features/file/service.py):
+# - ``databases/`` — project DBs from ``sqlite_helper.generate_sqlite_db_path``.
+# - ``temp_dbs/``  — per-session file imports.
+_INTERNAL_DATA_ROOT = Path(__file__).resolve().parents[2]
 _CHART_SQLITE_ALLOWED_DIRS = ":".join(
-    str((_API_SERVER_ROOT / name).resolve())
-    for name in ("internal/databases", "temp_dbs", "databases")
+    str((_INTERNAL_DATA_ROOT / name).resolve())
+    for name in ("databases", "temp_dbs")
 )
 
 

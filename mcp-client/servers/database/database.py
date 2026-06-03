@@ -43,12 +43,6 @@ _session_adapter: Optional[DatabaseAdapter] = None
 # the user's chosen files' tables are visible (not every table in the shared SQLite).
 _session_allowed_tables: Optional[set] = None
 
-# Store the latest reviewed CREATE TABLE proposal.
-# create_table() will only execute when it matches this reviewed proposal
-# and user_confirmed=True is explicitly provided.
-_pending_create_table_review: Optional[dict[str, Any]] = None
-
-
 def get_adapter() -> DatabaseAdapter:
     """Return primary adapter if available, else session adapter."""
     if _primary_adapter is not None:
@@ -409,26 +403,18 @@ async def show_create_table_schema(
     columns: str,
     primary_key: Optional[str] = None
 ) -> str:
-    """Preview the CREATE TABLE schema and save it for user review before execution.
+    """Preview a CREATE TABLE schema for user review.
 
     Args:
         table_name: Name of the table to create
         columns: Column definitions in SQL format
         primary_key: Optional primary key column name (if not specified in columns)
     """
-    global _pending_create_table_review
-
     # Just validate that some adapter is connected before storing the proposal.
     if _primary_adapter is None and _session_adapter is None:
         return "Error: No database connected. Please connect first."
 
     rows = _to_variable_type_rows(columns)
-
-    _pending_create_table_review = {
-        "table_name": table_name,
-        "columns": columns,
-        "primary_key": primary_key,
-    }
 
     if not rows:
         return (
@@ -466,124 +452,13 @@ async def show_create_table_schema(
 
 
 # =============================================================================
-# DDL Operations (Create, Alter Tables)
+# DDL Operations (Schema)
 # =============================================================================
 
 
-@mcp.tool()
-async def create_table(
-    table_name: str,
-    columns: str,
-    primary_key: Optional[str] = None,
-    user_confirmed: bool = False
-) -> str:
-    """Create a new table in the database after schema review confirmation.
-    
-    Args:
-        table_name: Name of the table to create
-        columns: Column definitions in SQL format (e.g., "id INTEGER PRIMARY KEY, name TEXT, email TEXT")
-        primary_key: Optional primary key column name (if not specified in columns)
-        user_confirmed: Must be True only after user has validated the schema preview
-    """
-    global _pending_create_table_review
-
-    if not user_confirmed:
-        return (
-            "Blocked: create_table requires explicit confirmation. "
-            "Please call `show_create_table_schema` first, let user validate all column types, "
-            "then call `create_table` with `user_confirmed=True`."
-        )
-
-    if not _pending_create_table_review:
-        return (
-            "Blocked: no reviewed schema found. "
-            "Call `show_create_table_schema` first and get user confirmation before creating table."
-        )
-
-    expected = _pending_create_table_review
-    if (
-        expected.get("table_name") != table_name
-        or expected.get("columns") != columns
-        or expected.get("primary_key") != primary_key
-    ):
-        return (
-            "Blocked: schema mismatch with the reviewed proposal. "
-            "Please run `show_create_table_schema` again with the exact schema to be created, "
-            "then ask for confirmation."
-        )
-
-    adapter = await _adapter_for_table(table_name)
-    result = await adapter.create_table(table_name, columns, primary_key)
-
-    if "Error" not in result and "Failed" not in result:
-        _pending_create_table_review = None
-
-    return result
-
-
-@mcp.tool()
-async def alter_table(
-    action: str,
-    table_name: str,
-    column_name: str,
-    column_def: Optional[str] = None,
-    new_column_name: Optional[str] = None
-) -> str:
-    """Alter a table structure (add, drop, modify, rename columns).
-    
-    Args:
-        action: Action to perform - "add_column", "drop_column", "modify_column", "rename_column"
-        table_name: Name of the table to alter
-        column_name: Name of the column (for add/modify/drop/rename)
-        column_def: Column definition (required for "add_column" and "modify_column")
-                   Examples:
-                   - "VARCHAR(100)" for add_column
-                   - "VARCHAR(200)" or "SET NOT NULL" for modify_column
-        new_column_name: New name for the column (required for "rename_column")
-    
-    Examples:
-        - Add column: action="add_column", column_name="email", column_def="VARCHAR(255)"
-        - Drop column: action="drop_column", column_name="old_column"
-        - Modify column: action="modify_column", column_name="name", column_def="VARCHAR(200)"
-        - Rename column: action="rename_column", column_name="old_name", new_column_name="new_name"
-    
-    Note: SQLite has limited ALTER TABLE support (no modify_column).
-    """
-    adapter = await _adapter_for_table(table_name)
-    return await adapter.alter_table(action, table_name, column_name, column_def, new_column_name)
-
-
-@mcp.tool()
-async def create_db_from_spec(spec_text: str) -> str:
-    """Create database schema from a specification text (SQL DDL statements).
-
-    Args:
-        spec_text: SQL DDL statements to create tables, constraints, etc.
-    """
-    # DDL goes to the primary DB (never session SQLite).
-    adapter = _primary_adapter if _primary_adapter is not None else get_adapter()
-    return await adapter.create_from_spec(spec_text)
-
-
 # =============================================================================
-# DML Operations (Insert, Select, Update, Delete)
+# DML Operations (Select)
 # =============================================================================
-
-
-@mcp.tool()
-async def insert_data(
-    table_name: str,
-    data: dict[str, Any]
-) -> str:
-    """Insert data into a table.
-
-    Args:
-        table_name: Name of the table
-        data: Dictionary with column names as keys and values to insert.
-    """
-    adapter = await _adapter_for_table(table_name)
-    return await adapter.insert_data(table_name, data)
-
 
 @mcp.tool()
 async def select_data(
@@ -607,50 +482,6 @@ async def select_data(
     """
     adapter = await _adapter_for_table(table_name)
     return await adapter.select_data(table_name, columns, where_clause, limit, order_by)
-
-
-@mcp.tool()
-async def update_data(
-    table_name: str,
-    data: dict[str, Any],
-    where_clause: str
-) -> str:
-    """Update data in a table.
-
-    Args:
-        table_name: Name of the table
-        data: Dictionary with column names and new values.
-        where_clause: WHERE clause to identify rows to update (e.g., "id = 1")
-    """
-    adapter = await _adapter_for_table(table_name)
-    return await adapter.update_data(table_name, data, where_clause)
-
-
-@mcp.tool()
-async def delete_data(
-    table_name: str,
-    where_clause: str
-) -> str:
-    """Delete data from a table.
-
-    Args:
-        table_name: Name of the table
-        where_clause: WHERE clause to identify rows to delete (e.g., "id = 1")
-    """
-    adapter = await _adapter_for_table(table_name)
-    return await adapter.delete_data(table_name, where_clause)
-
-
-@mcp.tool()
-async def preview_table(table_name: str, limit: int = 10) -> str:
-    """Preview a table with a limited number of rows.
-
-    Args:
-        table_name: Name of the table
-        limit: Number of rows to preview (default: 10)
-    """
-    adapter = await _adapter_for_table(table_name)
-    return await adapter.preview_table(table_name, limit)
 
 
 # =============================================================================
@@ -879,21 +710,6 @@ async def export_table_to_excel(
 
 
 @mcp.tool()
-async def run_mutation(sql: str) -> str:
-    """Run a mutation query (INSERT, UPDATE, DELETE) and return affected rows.
-
-    Args:
-        sql: SQL mutation query (INSERT, UPDATE, or DELETE)
-    """
-    if _primary_adapter is not None and _session_adapter is not None:
-        table_name = _first_table_name_from_sql(sql)
-        adapter = await _adapter_for_table(table_name or "")
-    else:
-        adapter = get_adapter()
-    return await adapter.run_mutation(sql)
-
-
-@mcp.tool()
 async def validate_sql(sql: str) -> str:
     """Validate DDL (CREATE/ALTER/DROP/TRUNCATE) via dry-run + rollback.
 
@@ -935,17 +751,6 @@ async def list_databases() -> str:
     """List all databases (PostgreSQL) or show current database (SQLite)."""
     adapter = get_adapter()
     return await adapter.list_databases()
-
-
-@mcp.tool()
-async def generate_schema_doc(format: str = "text") -> str:
-    """Generate documentation for the database schema.
-
-    Args:
-        format: Output format - "text" or "markdown"
-    """
-    adapter = get_adapter()
-    return await adapter.generate_schema_doc(format)
 
 
 @mcp.tool()

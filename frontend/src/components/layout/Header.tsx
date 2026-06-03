@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { url } from '../../services/api';
 import { useTheme } from '../../context/ThemeContext';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import ShareSessionModal from '../modals/ShareSessionModal';
 import StorageModal from '../modals/StorageModal';
-import settingsIcon from '../../assets/icons/Settings.svg';
-import logoutIcon from '../../assets/icons/Logout.svg';
-import shareIcon from '../../assets/icons/Share.svg';
-import folderIcon from '../../assets/icons/Folder.svg';
-import beeLogo from '../../assets/icons/bee.png';
+import { Icons, BeeBadge } from '../../icons';
 
 type Project = {
   id: string;
@@ -16,9 +14,15 @@ type Project = {
   createdAt: string;
 };
 
-export default function Header() {
+type HeaderProps = {
+  /** When provided (mobile + sidebar present), shows a hamburger that opens the drawer. */
+  onMenuClick?: () => void;
+};
+
+export default function Header({ onMenuClick }: HeaderProps) {
   const { user } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const isMobile = useIsMobile();
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
@@ -182,196 +186,165 @@ export default function Header() {
     return () => window.removeEventListener('popstate', onNav);
   }, []);
 
-  const pathname = window.location.pathname;
-  const isHomePage = pathname === '/';
-  const isLoginPage = pathname === '/login';
-  const showLogo = (isHomePage || isLoginPage) && !user;
+  const userInitial = (user?.name || user?.email || '?').slice(0, 1).toUpperCase();
+  const hasSession = currentSessionFromUrl() !== null;
+
+  const menuItem = (icon: ReactNode, label: string, onClick: () => void, danger = false) => (
+    <button
+      type="button"
+      onClick={onClick}
+      role="menuitem"
+      className="focusable"
+      style={{
+        width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '10px 12px',
+        borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14, fontWeight: 600,
+        color: danger ? 'oklch(0.58 0.19 25)' : 'var(--text-soft)', background: 'transparent',
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = danger ? 'oklch(0.95 0.05 25)' : 'var(--surface-2)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+    >
+      {icon}
+      {label}
+    </button>
+  );
 
   return (
-    <div className="w-full flex justify-between items-center px-6 py-4">
-      {/* Left Section - Logo or Project */}
-      <div className="flex items-center gap-2">
-        {showLogo ? (
-          <img src={beeLogo} alt="LightDBee" className="h-8 w-auto object-contain" />
-        ) : selectedProject ? (
-          <div className="flex items-center gap-3">
-            <img src={folderIcon} alt="Folder" className="w-7 h-7" />
-            <span className="text-xl font-semibold text-gray-900">{selectedProject.name}</span>
+    <header
+      style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: isMobile ? '10px 12px' : '14px 24px', borderBottom: '1px solid var(--border)', flexShrink: 0, background: 'var(--bg)',
+        gap: 8,
+      }}
+    >
+      {/* Left Section - Hamburger (mobile) + Logo or Project */}
+      <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+        {onMenuClick && (
+          <button
+            type="button"
+            onClick={onMenuClick}
+            className="focusable"
+            title="Menu"
+            aria-label="Open menu"
+            style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', color: 'var(--text-soft)', background: 'transparent', border: 'none', flexShrink: 0 }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          >
+            <Icons.Sidebar size={21} />
+          </button>
+        )}
+        {selectedProject ? (
+          <>
+            <span style={{ width: 30, height: 30, borderRadius: 9, display: 'grid', placeItems: 'center', background: 'var(--accent-soft)', color: 'var(--accent-ink)', flexShrink: 0 }}>
+              <Icons.Folder size={17} />
+            </span>
+            <span style={{ fontSize: 15.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {selectedProject.name}
+            </span>
+          </>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <BeeBadge size={30} />
+            <span style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-.02em' }}>LightDBee</span>
           </div>
-        ) : null}
+        )}
       </div>
 
       {/* Right Section */}
-      <div className="flex items-center gap-3 ml-auto">
+      <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 4 : 8, marginLeft: 'auto' }}>
         {user ? (
           <>
-            {/* Share Button */}
+            {/* Share — icon-only on mobile to save room */}
             <button
               type="button"
               onClick={handleShareClick}
-              className="hover:opacity-80 transition-opacity"
+              className="btn btn-outline"
+              style={{ padding: isMobile ? '8px 10px' : '8px 16px', fontSize: 13.5, opacity: hasSession ? 1 : 0.55 }}
               title="Share this chat"
             >
-              <img src={shareIcon} alt="Share" className="h-10" />
+              <Icons.Share size={16} />
+              {!isMobile && 'Share'}
             </button>
 
-            {/* Export Button + dropdown */}
-            <div className="relative" ref={exportMenuRef}>
+            {/* Export + dropdown */}
+            <div style={{ position: 'relative' }} ref={exportMenuRef}>
               <button
                 type="button"
                 onClick={() => setExportMenuOpen((o) => !o)}
-                className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                className="btn btn-ghost"
+                style={{ fontSize: 13.5, padding: isMobile ? '8px 10px' : undefined }}
                 title="Export this chat"
                 aria-haspopup="true"
                 aria-expanded={exportMenuOpen}
               >
-                Export
+                <Icons.Export size={16} />
+                {!isMobile && 'Export'}
               </button>
               {exportMenuOpen && (
                 <div
-                  className="absolute right-0 top-full mt-2 w-56 rounded-xl border border-gray-200 bg-white shadow-lg dark:bg-slate-900 dark:border-slate-700 py-1 z-50"
+                  className="card pop-shadow scale-in"
+                  style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', width: 232, borderRadius: 'var(--r)', padding: 7, zIndex: 50, transformOrigin: 'top right' }}
                   role="menu"
                 >
-                  <button
-                    type="button"
-                    onClick={handleExportMarkdown}
-                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                    role="menuitem"
-                  >
-                    Download Markdown (.md)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleExportPdf}
-                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                    role="menuitem"
-                  >
-                    Save as PDF (browser print)
-                  </button>
+                  {menuItem(<Icons.Download size={18} />, 'Download Markdown', handleExportMarkdown)}
+                  {menuItem(<Icons.Export size={18} />, 'Save as PDF', handleExportPdf)}
                 </div>
               )}
             </div>
 
+            {/* Theme toggle */}
+            <button
+              onClick={toggleTheme}
+              title="Toggle theme"
+              className="focusable"
+              style={{ width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center', color: 'var(--text-soft)', border: '1px solid var(--border)', background: 'transparent' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            >
+              {theme === 'dark' ? <Icons.Sun size={18} /> : <Icons.Moon size={18} />}
+            </button>
+
             {/* Avatar + dropdown menu */}
-            <div className="relative" ref={avatarMenuRef}>
+            <div style={{ position: 'relative' }} ref={avatarMenuRef}>
               <button
                 type="button"
                 onClick={() => setAvatarMenuOpen((o) => !o)}
-                className="w-8 h-8 rounded-full hover:bg-gray-100 flex items-center justify-center transition-colors overflow-hidden"
+                className="focusable"
+                style={{ width: 38, height: 38, borderRadius: 99, display: 'grid', placeItems: 'center', overflow: 'hidden', background: 'linear-gradient(145deg, var(--accent), var(--accent-strong))', color: 'var(--on-accent)', fontWeight: 800, fontSize: 15 }}
                 aria-expanded={avatarMenuOpen}
                 aria-haspopup="true"
               >
                 {user.picture ? (
-                  <img
-                    src={user.picture}
-                    alt={user.name || user.email || 'User'}
-                    className="w-8 h-8 rounded-full object-cover"
-                    referrerPolicy="no-referrer"
-                  />
+                  <img src={user.picture} alt={user.name || user.email || 'User'} style={{ width: 38, height: 38, borderRadius: 99, objectFit: 'cover' }} referrerPolicy="no-referrer" />
                 ) : (
-                  <div className="w-8 h-8 rounded-full bg-slate-500 flex items-center justify-center">
-                    <span className="text-white text-sm font-medium">
-                      {(user.name || user.email || '?').slice(0, 1).toUpperCase()}
-                    </span>
-                  </div>
+                  userInitial
                 )}
               </button>
 
               {avatarMenuOpen && (
                 <div
-                  className="absolute right-0 top-full mt-2 w-72 rounded-xl border border-gray-200 bg-white shadow-lg dark:bg-slate-900 dark:border-slate-700 py-2 z-50"
+                  className="card pop-shadow scale-in"
+                  style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', width: 264, borderRadius: 'var(--r)', padding: 8, zIndex: 50, transformOrigin: 'top right' }}
                   role="menu"
                 >
                   {/* User info */}
-                  <div className="flex items-center gap-3 px-4 py-3">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '8px 10px 12px', borderBottom: '1px solid var(--border)', marginBottom: 6 }}>
                     {user.picture ? (
-                      <img
-                        src={user.picture}
-                        alt=""
-                        className="w-10 h-10 rounded-full object-cover flex-shrink-0"
-                        referrerPolicy="no-referrer"
-                      />
+                      <img src={user.picture} alt="" style={{ width: 38, height: 38, borderRadius: 99, objectFit: 'cover', flexShrink: 0 }} referrerPolicy="no-referrer" />
                     ) : (
-                      <div className="w-10 h-10 rounded-full bg-slate-500 flex items-center justify-center flex-shrink-0 text-white font-medium">
-                        {(user.name || user.email || '?').slice(0, 1).toUpperCase()}
+                      <div style={{ width: 38, height: 38, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'linear-gradient(145deg, var(--accent), var(--accent-strong))', color: 'var(--on-accent)', fontWeight: 800, fontSize: 16 }}>
+                        {userInitial}
                       </div>
                     )}
-                    <div className="min-w-0 flex-1">
-                      <p className="text-gray-900 font-semibold truncate">
-                        {user.name || '—'}
-                      </p>
-                      <p className="text-gray-500 text-sm truncate">
-                        {user.email || '—'}
-                      </p>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.name || '—'}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.email || '—'}</div>
                     </div>
                   </div>
-                  <div className="border-t border-gray-100 my-1" />
-                  {/* Setting */}
-                  <a
-                    href="/account"
-                    onClick={() => setAvatarMenuOpen(false)}
-                    className="flex items-center gap-3 px-4 py-2.5 text-gray-700 hover:bg-gray-50 transition-colors dark:text-gray-200 dark:hover:bg-slate-800"
-                    role="menuitem"
-                  >
-                    <img src={settingsIcon} alt="" className="w-5 h-5 text-gray-500 dark:invert dark:opacity-80" />
-                    <span>Setting</span>
-                  </a>
-                  {/* Theme toggle */}
-                  <button
-                    type="button"
-                    onClick={toggleTheme}
-                    className="flex w-full items-center gap-3 px-4 py-2.5 text-gray-700 hover:bg-gray-50 transition-colors text-left dark:text-gray-200 dark:hover:bg-slate-800"
-                    role="menuitem"
-                  >
-                    {theme === 'dark' ? (
-                      <svg className="w-5 h-5 text-gray-500 dark:text-gray-300" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="12" cy="12" r="4" />
-                        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
-                      </svg>
-                    ) : (
-                      <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-                      </svg>
-                    )}
-                    <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
-                  </button>
-                  {/* Storage */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAvatarMenuOpen(false);
-                      setStorageModalOpen(true);
-                    }}
-                    className="flex w-full items-center gap-3 px-4 py-2.5 text-gray-700 hover:bg-gray-50 transition-colors text-left dark:text-gray-200 dark:hover:bg-slate-800"
-                    role="menuitem"
-                  >
-                    <svg
-                      className="w-5 h-5 text-gray-500 dark:text-gray-400 shrink-0"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      viewBox="0 0 24 24"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden
-                    >
-                      <path d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
-                    </svg>
-                    <span>Storage</span>
-                  </button>
-                  {/* Log out */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAvatarMenuOpen(false);
-                      void handleLogout();
-                    }}
-                    className="flex w-full items-center gap-3 px-4 py-2.5 text-gray-700 hover:bg-gray-50 transition-colors text-left dark:text-gray-200 dark:hover:bg-slate-800"
-                    role="menuitem"
-                  >
-                    <img src={logoutIcon} alt="" className="w-5 h-5 text-gray-500 dark:invert dark:opacity-80" />
-                    <span>Log out</span>
-                  </button>
+                  {menuItem(<Icons.Settings size={18} />, 'Account settings', () => { setAvatarMenuOpen(false); window.history.pushState({}, '', '/account'); window.dispatchEvent(new PopStateEvent('popstate')); })}
+                  {menuItem(theme === 'dark' ? <Icons.Sun size={18} /> : <Icons.Moon size={18} />, theme === 'dark' ? 'Light mode' : 'Dark mode', toggleTheme)}
+                  {menuItem(<Icons.HardDrive size={18} />, 'Storage', () => { setAvatarMenuOpen(false); setStorageModalOpen(true); })}
+                  <div style={{ height: 1, background: 'var(--border)', margin: '6px 4px' }} />
+                  {menuItem(<Icons.Logout size={18} />, 'Log out', () => { setAvatarMenuOpen(false); void handleLogout(); }, true)}
                 </div>
               )}
             </div>
@@ -388,7 +361,7 @@ export default function Header() {
         />
       )}
       <StorageModal open={storageModalOpen} onClose={() => setStorageModalOpen(false)} />
-    </div>
+    </header>
   );
 }
 

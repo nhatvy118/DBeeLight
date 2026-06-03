@@ -8,6 +8,7 @@ import logging
 import re
 from typing import Any, Awaitable, Callable, List, Optional
 
+
 logger = logging.getLogger(__name__)
 
 _DELETE_PREVIEW_ROW_CAP = 200
@@ -972,8 +973,12 @@ async def validate_explain_and_summarize(
     operation: str,
     request: str,
     db_type: str | None = None,
-) -> tuple[bool, str, str]:
-    """4-tier verify: Tier1 sqlglot → Tier2 explain or Tier3 DDL rollback → NL summary."""
+) -> tuple[bool, str, str, str]:
+    """4-tier verify: Tier1 sqlglot → Tier2 explain or Tier3 DDL rollback → NL summary.
+
+    Returns ``(success, error_message, explain_summary, type_sql)`` where ``type_sql``
+    is the sqlglot-derived statement kind (DQL, DML, DDL, …).
+    """
     from mcp_agent.graph.sql_verification import verify_sql_for_preview
 
     result = await verify_sql_for_preview(
@@ -985,7 +990,9 @@ async def validate_explain_and_summarize(
         request=request,
         db_type=db_type,
     )
-    return result.as_tuple()
+    ok, err, explain = result.as_tuple()
+    type_sql = result.statement_kind.value if result.statement_kind else ""
+    return ok, err, explain, type_sql
 
 
 def sql_generation_failure_message(last_error: str) -> str:
