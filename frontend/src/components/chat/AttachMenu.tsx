@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Icons, type IconComponent } from '../../icons';
+import { toast } from '../Toaster';
 
 type AttachMenuProps = {
   /** Open the OS file picker (device upload). */
@@ -29,7 +30,7 @@ export default function AttachMenu({ onUploadDevice, onGoogleDrive, disabled }: 
       act: () => {
         setOpen(false);
         if (onGoogleDrive) onGoogleDrive();
-        else window.alert('Google Drive import is coming soon.');
+        else toast.info('Google Drive import is coming soon.');
       },
     },
   ];

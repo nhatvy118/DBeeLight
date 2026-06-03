@@ -7,6 +7,7 @@ import { useIsMobile } from '../../hooks/useIsMobile';
 import ShareSessionModal from '../modals/ShareSessionModal';
 import StorageModal from '../modals/StorageModal';
 import { Icons, BeeBadge } from '../../icons';
+import { toast } from '../Toaster';
 
 type Project = {
   id: string;
@@ -102,7 +103,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
   const handleShareClick = () => {
     const sessionId = currentSessionFromUrl();
     if (!sessionId) {
-      window.alert('Open a chat session before sharing.');
+      toast.warning('Open a chat session before sharing.');
       return;
     }
     setShareSessionId(sessionId);
@@ -126,7 +127,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
   const handleExportMarkdown = async () => {
     const sessionId = currentSessionFromUrl();
     if (!sessionId) {
-      window.alert('Open a chat session before exporting.');
+      toast.warning('Open a chat session before exporting.');
       return;
     }
     setExportMenuOpen(false);
@@ -134,14 +135,14 @@ export default function Header({ onMenuClick }: HeaderProps) {
       const { downloadSessionMarkdown } = await import('../../services/api');
       await downloadSessionMarkdown(sessionId);
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : 'Failed to export');
+      toast.error(e instanceof Error ? e.message : 'Failed to export');
     }
   };
 
   const handleExportPdf = () => {
     const sessionId = currentSessionFromUrl();
     if (!sessionId) {
-      window.alert('Open a chat session before exporting.');
+      toast.warning('Open a chat session before exporting.');
       return;
     }
     setExportMenuOpen(false);

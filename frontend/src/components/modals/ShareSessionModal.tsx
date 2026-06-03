@@ -10,6 +10,8 @@ import {
   type ShareRecipientCreated,
 } from '../../services/api';
 import { Icons } from '../../icons';
+import { toast } from '../Toaster';
+import { confirm } from '../ConfirmDialog';
 
 type Props = {
   sessionId: string;
@@ -65,7 +67,7 @@ export default function ShareSessionModal({ sessionId, open, onClose }: Props) {
       await resendShareEmail(recipientId);
       await refreshExisting();
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : 'Failed to resend email');
+      toast.error(e instanceof Error ? e.message : 'Failed to resend email');
       await refreshExisting();
     } finally {
       setResendingId(null);
@@ -133,22 +135,22 @@ export default function ShareSessionModal({ sessionId, open, onClose }: Props) {
   }
 
   async function handleRevokeRecipient(recipientId: string) {
-    if (!window.confirm('Revoke this recipient\'s access?')) return;
+    if (!(await confirm({ title: 'Revoke access?', message: "Revoke this recipient's access?", confirmLabel: 'Revoke', danger: true }))) return;
     try {
       await revokeShareRecipient(recipientId);
       await refreshExisting();
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : 'Failed to revoke');
+      toast.error(e instanceof Error ? e.message : 'Failed to revoke');
     }
   }
 
   async function handleRevokeShare(shareId: string) {
-    if (!window.confirm('Revoke this entire share (all recipients)?')) return;
+    if (!(await confirm({ title: 'Revoke share?', message: 'Revoke this entire share (all recipients)?', confirmLabel: 'Revoke all', danger: true }))) return;
     try {
       await revokeShare(shareId);
       await refreshExisting();
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : 'Failed to revoke');
+      toast.error(e instanceof Error ? e.message : 'Failed to revoke');
     }
   }
 

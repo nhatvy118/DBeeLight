@@ -4,6 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import {
   createSession,
   getSessions,
+  deleteChatSession,
   createProject,
   getProjects,
   deleteProject,
@@ -22,6 +23,8 @@ import StorageModal from '../modals/StorageModal';
 import HelpModal from '../modals/HelpModal';
 import { encryptPassword, decryptPassword } from '../../utils/crypto';
 import { Icons, BeeBadge, type IconComponent } from '../../icons';
+import { toast } from '../Toaster';
+import { confirm } from '../ConfirmDialog';
 import type { AuthUser } from '../../context/AuthContext';
 
 type Project = {
@@ -211,6 +214,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [isDeletingProject, setIsDeletingProject] = useState(false);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isDatabasePopupOpen, setIsDatabasePopupOpen] = useState(false);
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
@@ -381,7 +385,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
       }
     } catch (err) {
       console.error('Failed to create session:', err);
-      window.alert('Failed to create new chat');
+      toast.error('Failed to create new chat');
     }
   };
 
@@ -440,11 +444,11 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
         }
       } else {
         console.error('Failed to create project:', res);
-        window.alert('Failed to create project');
+        toast.error('Failed to create project');
       }
     } catch (err) {
       console.error('Failed to create project:', err);
-      window.alert('Failed to create project');
+      toast.error('Failed to create project');
     }
   };
 
@@ -455,7 +459,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
     try {
       const res = await deleteProject(target.id);
       if (!res.success) {
-        window.alert(res.error || 'Failed to delete project');
+        toast.error(res.error || 'Failed to delete project');
         return;
       }
       setProjects((prev) => {
@@ -474,9 +478,29 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
       window.dispatchEvent(new Event('projectSessionsUpdated'));
     } catch (err) {
       console.error('Failed to delete project:', err);
-      window.alert('Failed to delete project');
+      toast.error('Failed to delete project');
     } finally {
       setIsDeletingProject(false);
+    }
+  };
+
+  const handleDeleteSession = async (session: SessionInfo) => {
+    const name = formatSessionName(session);
+    if (!(await confirm({ title: 'Delete chat?', message: `Delete "${name}"? This removes the chat and its files. This can't be undone.`, confirmLabel: 'Delete', danger: true }))) return;
+    setDeletingSessionId(session.session_id);
+    try {
+      await deleteChatSession(session.session_id);
+      setSessions((prev) => prev.filter((s) => s.session_id !== session.session_id));
+      if (currentSessionId === session.session_id) {
+        navigate('/chat');
+        if (onSessionSelect) onSessionSelect(null as unknown as string);
+      }
+      window.dispatchEvent(new Event('projectSessionsUpdated'));
+    } catch (err) {
+      console.error('Failed to delete session:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to delete chat');
+    } finally {
+      setDeletingSessionId(null);
     }
   };
 
@@ -689,16 +713,32 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
                   <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>No chats yet</div>
                 ) : unassigned.map((session) => {
                   const on = currentSessionId === session.session_id;
+                  const deleting = deletingSessionId === session.session_id;
                   return (
-                    <button key={session.session_id} onClick={() => handleSessionClick(session.session_id)} type="button" className="focusable"
-                      style={{ width: '100%', display: 'block', padding: '9px 12px', borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14, fontWeight: on ? 700 : 500,
-                        color: on ? 'var(--text)' : 'var(--text-soft)', background: on ? 'var(--surface)' : 'transparent',
-                        border: on ? '1px solid var(--border)' : '1px solid transparent',
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                      onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-2)'; }}
-                      onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}>
-                      {formatSessionName(session)}
-                    </button>
+                    <div key={session.session_id} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                      <button onClick={() => handleSessionClick(session.session_id)} type="button" className="focusable"
+                        style={{ width: '100%', display: 'block', padding: '9px 12px', paddingRight: 36, borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14, fontWeight: on ? 700 : 500,
+                          color: on ? 'var(--text)' : 'var(--text-soft)', background: on ? 'var(--surface)' : 'transparent',
+                          border: on ? '1px solid var(--border)' : '1px solid transparent',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                        onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-2)'; }}
+                        onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}>
+                        {formatSessionName(session)}
+                      </button>
+                      <button
+                        type="button"
+                        className="focusable"
+                        aria-label={`Delete chat ${formatSessionName(session)}`}
+                        title="Delete chat"
+                        disabled={deleting}
+                        onClick={(e) => { e.stopPropagation(); void handleDeleteSession(session); }}
+                        style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', width: 26, height: 26, display: 'grid', placeItems: 'center', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-faint)', cursor: deleting ? 'not-allowed' : 'pointer', flexShrink: 0 }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-3)'; e.currentTarget.style.color = 'var(--danger)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-faint)'; }}
+                      >
+                        <Icons.Trash size={14} />
+                      </button>
+                    </div>
                   );
                 })}
               </div>

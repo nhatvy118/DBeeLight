@@ -2,10 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessageList, { type UiMessage, type SchemaPreviewData } from '../components/chat/MessageList';
 import DataSourceBar, { buildDataSources, getActiveFileIds, type DataSource } from '../components/chat/DataSourceBar';
 import AttachMenu from '../components/chat/AttachMenu';
+import { toast } from '../components/Toaster';
+import { confirm } from '../components/ConfirmDialog';
 import {
   getSession,
   sendMessageWithStream,
   getSessions,
+  deleteChatSession,
   executeSql,
   resumeWorkflow,
   createSession,
@@ -434,7 +437,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       await deleteSessionFile(fileId);
       setInputAttachedFiles((prev) => prev.filter((f) => f.id !== fileId));
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : 'Remove failed');
+      toast.error(e instanceof Error ? e.message : 'Remove failed');
     }
   };
 
@@ -452,7 +455,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       if (!sid) {
         const cr = await createSession(null, selectedProject?.id || propProjectId || null);
         if (!cr.success || !cr.session_id) {
-          window.alert('Could not create a chat session for this upload');
+          toast.error('Could not create a chat session for this upload');
           return [];
         }
         sid = cr.session_id;
@@ -483,15 +486,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               const lines = inv.slice(0, 12).map(
                 (r) => `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — session ${r.session_id.slice(0, 8)}…`,
               );
-              window.alert(
+              toast.error(
                 'Storage limit reached (5 GB). Delete some files and try again.\n\n' +
                   (lines.length ? `Recent files:\n${lines.join('\n')}` : ''),
               );
             } catch {
-              window.alert('Storage limit reached (5 GB). Delete some files and try again.');
+              toast.error('Storage limit reached (5 GB). Delete some files and try again.');
             }
           } else {
-            window.alert(e instanceof Error ? e.message : 'Failed to upload file');
+            toast.error(e instanceof Error ? e.message : 'Failed to upload file');
           }
         }
       }
@@ -575,7 +578,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         }
       } catch (err) {
         console.error('Failed to load session:', err);
-        window.alert('Failed to load chat history');
+        toast.error('Failed to load chat history');
       } finally {
         setIsLoading(false);
       }
@@ -856,10 +859,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         window.dispatchEvent(new PopStateEvent('popstate'));
         onSessionIdChange?.(cr.session_id);
       } else {
-        window.alert('Failed to create new chat');
+        toast.error('Failed to create new chat');
       }
     } catch {
-      window.alert('Failed to create new chat');
+      toast.error('Failed to create new chat');
     }
   };
 
@@ -901,11 +904,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           return updated;
         });
       } else if (!res.success) {
-        window.alert(`Error: ${res.error || 'Failed to refresh response'}`);
+        toast.error(`Error: ${res.error || 'Failed to refresh response'}`);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to refresh response';
-      window.alert(`Error: ${message}`);
+      toast.error(`Error: ${message}`);
     } finally {
       setIsLoading(false);
     }
@@ -1243,6 +1246,27 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       }
     } catch (err) {
       console.error('Failed to load project sessions:', err);
+    }
+  };
+
+  const [deletingProjectSessionId, setDeletingProjectSessionId] = useState<string | null>(null);
+  const handleDeleteProjectSession = async (session: SessionInfo) => {
+    const name = formatSessionName(session);
+    if (!(await confirm({ title: 'Delete chat?', message: `Delete "${name}"? This removes the chat and its files. This can't be undone.`, confirmLabel: 'Delete', danger: true }))) return;
+    setDeletingProjectSessionId(session.session_id);
+    try {
+      await deleteChatSession(session.session_id);
+      setProjectSessions((prev) => prev.filter((s) => s.session_id !== session.session_id));
+      if (sessionId === session.session_id && selectedProject) {
+        window.history.pushState({}, '', `/chat/${selectedProject.id}`);
+        window.dispatchEvent(new PopStateEvent('popstate'));
+        if (onSessionIdChange) onSessionIdChange(null);
+      }
+      window.dispatchEvent(new Event('projectSessionsUpdated'));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete chat');
+    } finally {
+      setDeletingProjectSessionId(null);
     }
   };
 
@@ -1624,39 +1648,55 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               {projectSessions.length} chats
             </div>
             <div className="card" style={{ overflow: 'hidden' }}>
-              {projectSessions.map((session, index) => (
-                <button
-                  key={session.session_id}
-                  onClick={() => {
-                    if (selectedProject) {
-                      window.history.pushState({}, '', `/chat/${selectedProject.id}/${session.session_id}`);
-                    } else {
-                      window.history.pushState({}, '', `/chat/${session.session_id}`);
-                    }
-                    window.dispatchEvent(new PopStateEvent('popstate'));
-                    if (onSessionIdChange) onSessionIdChange(session.session_id);
-                  }}
-                  type="button"
-                  className="focusable"
-                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 13, padding: '14px 18px', textAlign: 'left', borderTop: index ? '1px solid var(--border)' : 'none', background: 'transparent', border: 'none', borderTopWidth: index ? 1 : 0 }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                >
-                  <span style={{ width: 34, height: 34, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
-                    <Icons.NewChat size={16} />
-                  </span>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'block', fontSize: 14.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatSessionName(session)}</span>
-                    {sessionPreviews[session.session_id] && (
-                      <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sessionPreviews[session.session_id]}</span>
+              {projectSessions.map((session, index) => {
+                const deleting = deletingProjectSessionId === session.session_id;
+                return (
+                <div key={session.session_id} style={{ position: 'relative', display: 'flex', alignItems: 'center', borderTop: index ? '1px solid var(--border)' : 'none' }}>
+                  <button
+                    onClick={() => {
+                      if (selectedProject) {
+                        window.history.pushState({}, '', `/chat/${selectedProject.id}/${session.session_id}`);
+                      } else {
+                        window.history.pushState({}, '', `/chat/${session.session_id}`);
+                      }
+                      window.dispatchEvent(new PopStateEvent('popstate'));
+                      if (onSessionIdChange) onSessionIdChange(session.session_id);
+                    }}
+                    type="button"
+                    className="focusable"
+                    style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 13, padding: '14px 50px 14px 18px', textAlign: 'left', background: 'transparent', border: 'none' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <span style={{ width: 34, height: 34, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+                      <Icons.NewChat size={16} />
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: 'block', fontSize: 14.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatSessionName(session)}</span>
+                      {sessionPreviews[session.session_id] && (
+                        <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sessionPreviews[session.session_id]}</span>
+                      )}
+                    </span>
+                    {session.created_at && (
+                      <span style={{ fontSize: 12, color: 'var(--text-faint)', flexShrink: 0 }}>{formatDate(session.created_at)}</span>
                     )}
-                  </span>
-                  {session.created_at && (
-                    <span style={{ fontSize: 12, color: 'var(--text-faint)', flexShrink: 0 }}>{formatDate(session.created_at)}</span>
-                  )}
-                  <Icons.ChevronRight size={17} style={{ color: 'var(--text-faint)', flexShrink: 0 }} />
-                </button>
-              ))}
+                  </button>
+                  <button
+                    type="button"
+                    className="focusable"
+                    aria-label={`Delete chat ${formatSessionName(session)}`}
+                    title="Delete chat"
+                    disabled={deleting}
+                    onClick={(e) => { e.stopPropagation(); void handleDeleteProjectSession(session); }}
+                    style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', width: 30, height: 30, display: 'grid', placeItems: 'center', borderRadius: 7, border: 'none', background: 'transparent', color: 'var(--text-faint)', cursor: deleting ? 'not-allowed' : 'pointer', flexShrink: 0 }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-3)'; e.currentTarget.style.color = 'var(--danger)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-faint)'; }}
+                  >
+                    <Icons.Trash size={15} />
+                  </button>
+                </div>
+                );
+              })}
             </div>
           </div>
         </div>

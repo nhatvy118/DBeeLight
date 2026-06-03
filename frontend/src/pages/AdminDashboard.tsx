@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Icons, type IconComponent } from '../icons';
+import { toast } from '../components/Toaster';
+import { confirm } from '../components/ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
 import {
   getAdminUsers,
@@ -107,14 +109,14 @@ export default function AdminDashboard() {
 
   const handleToggle = async (u: AdminUser) => {
     const next = !u.disabled;
-    if (next && !window.confirm(`Disable ${u.name || u.email || 'this user'}? They won't be able to sign in.`)) return;
+    if (next && !(await confirm({ title: 'Disable account?', message: `Disable ${u.name || u.email || 'this user'}? They won't be able to sign in.`, confirmLabel: 'Disable', danger: true }))) return;
     setBusyId(u.id);
     try {
       const disabled = await setUserDisabled(u.id, next);
       setUsers((prev) => prev.map((x) => (x.id === u.id ? { ...x, disabled } : x)));
       setStats((prev) => prev ? { ...prev, disabled_users: prev.disabled_users + (disabled ? 1 : -1) } : prev);
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : 'Failed to update user');
+      toast.error(e instanceof Error ? e.message : 'Failed to update user');
     } finally {
       setBusyId(null);
     }

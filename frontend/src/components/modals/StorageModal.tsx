@@ -11,6 +11,7 @@ import {
   type UserFileInventoryRow,
 } from '../../services/api';
 import { Icons } from '../../icons';
+import { confirm } from '../ConfirmDialog';
 
 type Props = {
   open: boolean;
@@ -91,11 +92,12 @@ export default function StorageModal({ open, onClose }: Props) {
   }, [open]);
 
   async function handleDeleteImport(file: UserFileInventoryRow) {
-    if (
-      !window.confirm(
-        `Remove “${file.filename}” from storage? This frees quota and removes it from the chat session.`,
-      )
-    ) {
+    if (!(await confirm({
+      title: 'Remove file?',
+      message: `Remove “${file.filename}” from storage? This frees quota and removes it from the chat session.`,
+      confirmLabel: 'Remove',
+      danger: true,
+    }))) {
       return;
     }
     setDeletingId(file.id);
@@ -124,11 +126,12 @@ export default function StorageModal({ open, onClose }: Props) {
   }
 
   async function handleDeleteExport(row: ExportFileInventoryRow) {
-    if (
-      !window.confirm(
-        `Remove “${row.filename}” (chat export)? This frees quota and removes download links in that session.`,
-      )
-    ) {
+    if (!(await confirm({
+      title: 'Remove export?',
+      message: `Remove “${row.filename}” (chat export)? This frees quota and removes download links in that session.`,
+      confirmLabel: 'Remove',
+      danger: true,
+    }))) {
       return;
     }
     setDeletingExportId(row.id);
