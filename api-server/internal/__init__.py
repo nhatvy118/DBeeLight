@@ -108,7 +108,7 @@ def main():
     """Entry point for running the server."""
     port = int(os.getenv("PORT", "5001"))
     logger.info(f"Starting FastAPI server on port {port}")
-    uvicorn.run("internal:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("internal:app", host="0.0.0.0", port=port, reload=False)
 
 
 if __name__ == "__main__":

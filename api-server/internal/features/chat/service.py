@@ -275,7 +275,7 @@ class ChatService:
                 client.chat.completions.create(
                     model=model,
                     temperature=0,
-                    max_tokens=20,
+                    max_completion_tokens=20,
                     messages=[
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": query[:2000]},

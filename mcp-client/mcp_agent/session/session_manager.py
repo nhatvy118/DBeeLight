@@ -126,7 +126,7 @@ class SessionManager:
                         },
                         {"role": "user", "content": s[:2000]},
                     ],
-                    max_tokens=30,
+                    max_completion_tokens=30,
                     temperature=0.3,
                 )
                 content = (response.choices[0].message.content or "").strip()
