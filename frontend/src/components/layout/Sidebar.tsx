@@ -20,7 +20,7 @@ import ProjectModal from '../modals/ProjectModal';
 import DeleteProjectModal from '../modals/DeleteProjectModal';
 import DatabaseConnectPopup, { type DatabaseConnectionData } from '../modals/DatabaseConnectPopup';
 import StorageModal from '../modals/StorageModal';
-import HelpModal from '../modals/HelpModal';
+import { useOnboarding } from '../../context/OnboardingContext';
 import { encryptPassword, decryptPassword } from '../../utils/crypto';
 import { Icons, BeeBadge, type IconComponent } from '../../icons';
 import { toast } from '../Toaster';
@@ -208,6 +208,7 @@ function ProfileMenu({
 
 export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCloseDrawer }: SidebarProps) {
   const { user } = useAuth();
+  const onboarding = useOnboarding();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [receivedShares, setReceivedShares] = useState<ReceivedShare[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -218,7 +219,6 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isDatabasePopupOpen, setIsDatabasePopupOpen] = useState(false);
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
-  const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   const [connectedDb, setConnectedDb] = useState<DatabaseConnectionData | null>(null);
 
   const saveConnectedDb = async (data: DatabaseConnectionData) => {
@@ -752,7 +752,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
           user={user}
           onNavigate={navigate}
           onOpenStorage={() => { onRequestCloseDrawer?.(); setIsStorageModalOpen(true); }}
-          onOpenHelp={() => { onRequestCloseDrawer?.(); setIsHelpModalOpen(true); }}
+          onOpenHelp={() => { onRequestCloseDrawer?.(); onboarding.open(); }}
           onLogout={() => { void handleLogout(); }}
         />
       </aside>
@@ -773,8 +773,6 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
       />
 
       <StorageModal open={isStorageModalOpen} onClose={() => setIsStorageModalOpen(false)} />
-
-      <HelpModal open={isHelpModalOpen} onClose={() => setIsHelpModalOpen(false)} />
 
       {projectToDelete && (
         <DeleteProjectModal
