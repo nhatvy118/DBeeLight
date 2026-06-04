@@ -606,7 +606,15 @@ class ChatService:
         )
         return dict(raw_out) if isinstance(raw_out, dict) else {}
 
-    async def _persist_turn(self, agent, original_user_query: str, response_text: str) -> None:
+    async def _persist_turn(
+        self,
+        agent,
+        original_user_query: str,
+        response_text: str,
+        *,
+        tool_events: list[dict] | None = None,
+        pending_workflow_resume: bool = False,
+    ) -> None:
         """Append the user + assistant turn to JSONB (UI mirror). The LangGraph
         checkpoint is the source of truth for LLM context and is written by
         ``chat_graph`` itself."""
@@ -615,7 +623,13 @@ class ChatService:
         if (original_user_query or "").strip():
             await agent.session_manager.add_message("user", original_user_query)
         if (response_text or "").strip():
-            await agent.session_manager.add_message("assistant", response_text)
+            events = tool_events if isinstance(tool_events, list) else []
+            await agent.session_manager.add_message(
+                "assistant",
+                response_text,
+                tool_events=events or None,
+                pending_workflow_resume=pending_workflow_resume,
+            )
 
     async def _finalize_chat_turn(
         self, agent, out: dict, current_session_id: str | None,
@@ -656,11 +670,17 @@ class ChatService:
             current_session_id, agent_id, success,
         )
 
-        await self._persist_turn(agent, original_user_query, response_text)
-
         tool_events = out.get("tool_events") or []
         if not isinstance(tool_events, list):
             tool_events = []
+
+        await self._persist_turn(
+            agent,
+            original_user_query,
+            response_text,
+            tool_events=tool_events,
+            pending_workflow_resume=pending_workflow_resume,
+        )
 
         await self._persist_pending_approval_from_workflow(
             agent,
@@ -1024,7 +1044,12 @@ class ChatService:
         )
 
         if (response_text or "").strip():
-            await agent.session_manager.add_message("assistant", response_text)
+            await agent.session_manager.add_message(
+                "assistant",
+                response_text,
+                tool_events=tool_events or None,
+                pending_workflow_resume=pending_workflow_resume,
+            )
 
         try:
             await agent.merge_resume_into_chat_checkpoint(sid, uvm, response_text)
@@ -1299,7 +1324,12 @@ class ChatService:
 
             # Persist assistant execution result so it survives page reload/history fetch.
             if agent.session_manager and (result_text or "").strip():
-                await agent.session_manager.add_message("assistant", result_text)
+                await agent.session_manager.add_message(
+                    "assistant",
+                    result_text,
+                    tool_events=tool_events or None,
+                    pending_workflow_resume=pending_workflow_resume,
+                )
 
             if success:
                 logger.info(f"UseCase: SQL executed successfully, session_id={current_session_id}")

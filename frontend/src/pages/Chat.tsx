@@ -236,6 +236,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const isDqlStatement = (typeSql?: string) => (typeSql ?? '').trim().toUpperCase() === 'DQL';
 
+  const pendingWorkflowResumeFromMessage = (msg: { pending_workflow_resume?: boolean }) =>
+    Boolean(msg?.pending_workflow_resume);
+
   /** Structured SQL from ``tool_events`` (type ``sql_statement``; payload: sql, explain, type_sql). */
   const extractSqlPayloadFromToolEvents = (events?: ToolEvent[]): SqlPreviewData | null => {
     if (!events || !Array.isArray(events)) return null;
@@ -595,7 +598,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                   : null;
               const sqlAction =
                 msg.role === 'assistant'
-                  ? resolveSqlExecuteAction((msg as any).tool_events, false)
+                  ? resolveSqlExecuteAction(
+                      (msg as any).tool_events,
+                      pendingWorkflowResumeFromMessage(msg as { pending_workflow_resume?: boolean }),
+                    )
                   : { sqlToExecute: null, sqlActionState: undefined };
               const sqlToExecute = sqlAction.sqlToExecute;
               const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
@@ -1351,7 +1357,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                   : null;
               const sqlAction =
                 msg.role === 'assistant'
-                  ? resolveSqlExecuteAction((msg as any).tool_events, false)
+                  ? resolveSqlExecuteAction(
+                      (msg as any).tool_events,
+                      pendingWorkflowResumeFromMessage(msg as { pending_workflow_resume?: boolean }),
+                    )
                   : { sqlToExecute: null, sqlActionState: undefined };
               const sqlToExecute = sqlAction.sqlToExecute;
               const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;

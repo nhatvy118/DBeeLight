@@ -294,11 +294,22 @@ class SessionManager:
 
         return [m for m in all_messages if m.get("role") in ("user", "assistant")]
 
-    async def add_message(self, role: str, content: str, tool_calls: Optional[List] = None):
+    async def add_message(
+        self,
+        role: str,
+        content: str,
+        tool_calls: Optional[List] = None,
+        *,
+        tool_events: Optional[List[Dict[str, Any]]] = None,
+        pending_workflow_resume: Optional[bool] = None,
+    ):
         """
         Add a message to the current session using Redis stack.
         Only saves 'user' and 'assistant' messages, not 'tool' messages.
         When stack reaches batch_size (20), automatically flushes to DB.
+
+        Assistant messages may include ``tool_events`` and ``pending_workflow_resume``
+        so the UI can restore Execute / schema gates after reload.
         """
         if not self.current_session_id:
             return
@@ -325,7 +336,12 @@ class SessionManager:
         }
         if tool_calls:
             message["tool_calls"] = tool_calls
-        
+        if role == "assistant":
+            if tool_events:
+                message["tool_events"] = tool_events
+            if pending_workflow_resume is not None:
+                message["pending_workflow_resume"] = bool(pending_workflow_resume)
+
         # For guest users (no DB), use in-memory storage
         if self._pool is None:
             if self.current_session_id not in self._memory:
