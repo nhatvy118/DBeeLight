@@ -9,7 +9,9 @@ from openai import OpenAI
 from langgraph.graph import END, StateGraph
 
 from mcp_agent.graph.database_utils import (
-    build_query_result_message,
+    OUTPUT_DATA_RESULT,
+    OUTPUT_SQL_STATEMENT,
+    build_sql_statement_message,
     build_readonly_schema_context_block,
     detect_db_type,
     extract_attached_files_context_block,
@@ -391,7 +393,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                             "sql": None,
                             "query_result": desc,
                             "output": {
-                                "type": "query_result",
+                                "type": OUTPUT_DATA_RESULT,
                                 "data": desc,
                                 "message": desc,
                             },
@@ -427,7 +429,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                             "sql": None,
                             "query_result": desc,
                             "output": {
-                                "type": "query_result",
+                                "type": OUTPUT_DATA_RESULT,
                                 "data": desc,
                                 "message": desc,
                             },
@@ -442,7 +444,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                     "sql": None,
                     "query_result": lt,
                     "output": {
-                        "type": "query_result",
+                        "type": OUTPUT_DATA_RESULT,
                         "data": lt,
                         "message": lt,
                     },
@@ -459,7 +461,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
             "sql": None,
             "query_result": response,
             "output": {
-                "type": "query_result",
+                "type": OUTPUT_DATA_RESULT,
                 "data": response,
                 "message": response,
             },
@@ -475,7 +477,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
             **state,
             "sql": None,
             "query_result": msg,
-            "output": {"type": "query_result", "data": msg, "message": msg},
+            "output": {"type": OUTPUT_DATA_RESULT, "data": msg, "message": msg},
         }
 
     # Export to Excel — must call MCP tool (do not fall through to SELECT + markdown table).
@@ -551,7 +553,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
             **state,
             "sql": None,
             "query_result": msg,
-            "output": {"type": "query_result", "data": msg, "message": msg},
+            "output": {"type": OUTPUT_DATA_RESULT, "data": msg, "message": msg},
         }
 
     # Schema/info requests should return table description.
@@ -578,7 +580,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                         "sql": None,
                         "query_result": desc,
                         "output": {
-                            "type": "query_result",
+                            "type": OUTPUT_DATA_RESULT,
                             "data": desc,
                             "message": desc,
                         },
@@ -708,21 +710,29 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
         result_markdown = json_query_rows_to_markdown_table(query_result)
         rendered_result = result_markdown if result_markdown else f"```text\n{query_result}\n```"
 
-        response = build_query_result_message(
+        response = build_sql_statement_message(
             select_sql,
             explain_summary=explain_summary or None,
             result_md=rendered_result,
         )
-        output_type = "error" if is_execute_query_error_response(query_result) else "query_result"
-        out: Dict[str, Any] = {
-            "type": output_type,
-            "data": response,
-            "message": response,
-        }
-        if explain_summary:
-            out["explain_summary"] = explain_summary
-        if type_sql:
-            out["type_sql"] = type_sql
+        if is_execute_query_error_response(query_result):
+            output_type = "error"
+            out: Dict[str, Any] = {
+                "type": output_type,
+                "data": response,
+                "message": response,
+            }
+        else:
+            out = {
+                "type": OUTPUT_SQL_STATEMENT,
+                "executed": True,
+                "data": response,
+                "message": response,
+            }
+            if explain_summary:
+                out["explain_summary"] = explain_summary
+            if type_sql:
+                out["type_sql"] = type_sql
         return {
             **state,
             "sql": select_sql,

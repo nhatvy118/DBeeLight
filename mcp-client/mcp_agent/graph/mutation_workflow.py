@@ -10,9 +10,10 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
 from mcp_agent.graph.database_utils import (
+    OUTPUT_SQL_STATEMENT,
     alter_sql_to_select_preview,
     build_mutation_schema_context_block,
-    build_sql_preview_message,
+    build_sql_statement_message,
     delete_sql_to_select_preview,
     detect_db_type,
     drop_sql_to_select_preview,
@@ -375,7 +376,7 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
     }
 
 
-async def sql_preview(state: AgentState, llm, agent) -> AgentState:
+async def sql_statement(state: AgentState, llm, agent) -> AgentState:
     """Generate SQL and show preview with affected rows."""
     intent = state.get("intent", {})
     effective_message = str(intent.get("resolved_query") or state.get("user_message", ""))
@@ -455,7 +456,8 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
             break
 
         out: Dict = {
-            "type": "sql_preview",
+            "type": OUTPUT_SQL_STATEMENT,
+            "executed": False,
             "sql": sql,
             "message": "Please review and click Execute",
         }
@@ -505,10 +507,11 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
 
     # SQL + EXPLAIN summary + row preview for frontend Execute affordance.
     preview_md = out.get("mutation_preview_markdown")
-    out["message"] = build_sql_preview_message(
+    out["message"] = build_sql_statement_message(
         sql,
         explain_summary=out.get("explain_summary"),
         preview_md=preview_md if isinstance(preview_md, str) else None,
+        footer="Please review and click Execute",
     )
 
     return {
@@ -660,7 +663,8 @@ async def sql_approval(state: AgentState, _llm, _agent) -> AgentState:
     sql = state.get("sql")
     prev_out = state.get("output") if isinstance(state.get("output"), dict) else {}
     wait_output: Dict = {
-        "type": "sql_preview",
+        "type": OUTPUT_SQL_STATEMENT,
+        "executed": False,
         "sql": sql,
         "message": "Please review the SQL and click Execute to run",
     }
@@ -670,7 +674,7 @@ async def sql_approval(state: AgentState, _llm, _agent) -> AgentState:
     es = prev_out.get("explain_summary")
     if isinstance(es, str) and es.strip():
         wait_output["explain_summary"] = es.strip()
-    wait_output["message"] = build_sql_preview_message(
+    wait_output["message"] = build_sql_statement_message(
         sql or "",
         explain_summary=es if isinstance(es, str) else None,
         preview_md=mp if isinstance(mp, str) else None,
@@ -838,8 +842,8 @@ class MutationWorkflow:
         async def schema_discovery_node(state):
             return await schema_discovery(state, self.llm, self.agent)
 
-        async def sql_preview_node(state):
-            return await sql_preview(state, self.llm, self.agent)
+        async def sql_statement_node(state):
+            return await sql_statement(state, self.llm, self.agent)
 
         async def sql_approval_node(state):
             return await sql_approval(state, self.llm, self.agent)
@@ -858,14 +862,14 @@ class MutationWorkflow:
             return "SQL_PREVIEW"
 
         def route_after_preview(state):
-            """Skip approval only when sql_preview returned an error output."""
+            """Skip approval only when SQL_PREVIEW returned an error output."""
             if (state.get("output") or {}).get("type") == "error":
                 return StageType.DONE.value
             return "SQL_APPROVAL"
 
         workflow.add_node("INTENT_PARSE", intent_parse_node)
         workflow.add_node("SCHEMA_DISCOVERY", schema_discovery_node)
-        workflow.add_node("SQL_PREVIEW", sql_preview_node)
+        workflow.add_node("SQL_PREVIEW", sql_statement_node)
         workflow.add_node("SQL_APPROVAL", sql_approval_node)
         workflow.add_node("SQL_EXECUTION", sql_execution_node)
         workflow.add_node(StageType.DONE.value, done_handler)

@@ -178,25 +178,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return `sqlact_${hashString(base)}`;
   };
 
-  const extractLastMutationSqlBlock = (text: string): string | null => {
-    // Allow optional space/newline after language tag: ```sql or ``` sql
-    const regex = /```\s*sql\s*([\s\S]*?)```/gi;
-    let match: RegExpExecArray | null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let last: string | null = null;
-    // eslint-disable-next-line no-cond-assign
-    while ((match = regex.exec(text)) !== null) {
-      last = match[1].trim();
-    }
-    if (!last) return null;
-    const firstToken = last.split(/\s+/)[0]?.toUpperCase() ?? '';
-    const readOnlyVerbs = new Set(['SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN', 'WITH', 'PRAGMA']);
-    if (readOnlyVerbs.has(firstToken)) {
-      return null;
-    }
-    return last;
-  };
-
   const extractSchemaPreviewFromToolEvents = (events?: ToolEvent[]): SchemaPreviewData | null => {
     if (!events || !Array.isArray(events)) return null;
 
@@ -253,44 +234,45 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return { sql, explain, type_sql, mutationPreviewMarkdown };
   };
 
-  /** SQL + explain for display (readonly results and mutation previews). */
-  const extractSqlPreviewFromToolEvents = (events?: ToolEvent[]): SqlPreviewData | null => {
-    if (!events || !Array.isArray(events)) return null;
-    const sqlEvent = events.find(
-      (e) => (e?.type === 'sql_preview' || e?.type === 'query_result') && e?.payload,
-    );
-    return parseSqlPreviewPayload(sqlEvent?.payload as SqlPreviewPayload | undefined);
-  };
+  const isDqlStatement = (typeSql?: string) => (typeSql ?? '').trim().toUpperCase() === 'DQL';
 
-  /** Human-in-the-loop gate only — mutation/create_table ``sql_preview``, not readonly ``query_result``. */
-  const extractPendingSqlFromToolEvents = (events?: ToolEvent[]): SqlPreviewData | null => {
+  /** Structured SQL from ``tool_events`` (type ``sql_statement``; payload: sql, explain, type_sql). */
+  const extractSqlPayloadFromToolEvents = (events?: ToolEvent[]): SqlPreviewData | null => {
     if (!events || !Array.isArray(events)) return null;
-    const sqlEvent = events.find((e) => e?.type === 'sql_preview' && e?.payload);
-    return parseSqlPreviewPayload(sqlEvent?.payload as SqlPreviewPayload | undefined);
-  };
-
-  const isSqlAlreadyExecutedInToolEvents = (events?: ToolEvent[]): boolean => {
-    if (!events || !Array.isArray(events)) return false;
-    return events.some((e) => e?.type === 'query_result' || e?.type === 'sql_execution');
+    const sqlPayloadEvents = events.filter((e) => {
+      if (e?.type === 'sql_execution') return false;
+      if (e?.tool && e.tool !== 'execute_query') return false;
+      const p = e?.payload as Record<string, unknown> | undefined;
+      return p && typeof p.sql === 'string' && p.sql.trim().length > 0;
+    });
+    const withTypeSql = sqlPayloadEvents.find((e) => {
+      const ts = (e?.payload as Record<string, unknown> | undefined)?.type_sql;
+      return typeof ts === 'string' && ts.trim().length > 0;
+    });
+    const chosen = withTypeSql ?? sqlPayloadEvents[0];
+    return parseSqlPreviewPayload(chosen?.payload as SqlPreviewPayload | undefined);
   };
 
   const resolveSqlExecuteAction = (
     events: ToolEvent[] | undefined,
-    responseText: string,
     pendingWorkflowResume: boolean,
   ): { sqlToExecute: string | null; sqlActionState: 'pending' | 'executed' | undefined } => {
-    if (isSqlAlreadyExecutedInToolEvents(events)) {
+    if (events?.some((e) => e?.type === 'sql_execution')) {
       return { sqlToExecute: null, sqlActionState: 'executed' };
     }
-    const pending = extractPendingSqlFromToolEvents(events);
-    if (pending?.sql) {
-      return { sqlToExecute: pending.sql, sqlActionState: 'pending' };
+    const payload = extractSqlPayloadFromToolEvents(events);
+    if (!payload?.sql) {
+      return { sqlToExecute: null, sqlActionState: undefined };
+    }
+    const typeSql = payload.type_sql?.trim() ?? '';
+    if (!typeSql) {
+      return { sqlToExecute: null, sqlActionState: undefined };
+    }
+    if (isDqlStatement(typeSql)) {
+      return { sqlToExecute: null, sqlActionState: 'executed' };
     }
     if (pendingWorkflowResume) {
-      const fromText = extractLastMutationSqlBlock(responseText);
-      if (fromText) {
-        return { sqlToExecute: fromText, sqlActionState: 'pending' };
-      }
+      return { sqlToExecute: payload.sql, sqlActionState: 'pending' };
     }
     return { sqlToExecute: null, sqlActionState: undefined };
   };
@@ -606,14 +588,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               const rawContent = msg.content || '';
               const cleanedText = stripInternalPayloads(rawContent);
               const sqlPreview =
-                msg.role === 'assistant' ? extractSqlPreviewFromToolEvents((msg as any).tool_events) : null;
+                msg.role === 'assistant' ? extractSqlPayloadFromToolEvents((msg as any).tool_events) : null;
               const schemaPreview =
                 msg.role === 'assistant'
                   ? extractSchemaPreviewFromToolEvents((msg as any).tool_events) || extractSchemaPreview(rawContent)
                   : null;
               const sqlAction =
                 msg.role === 'assistant'
-                  ? resolveSqlExecuteAction((msg as any).tool_events, rawContent, false)
+                  ? resolveSqlExecuteAction((msg as any).tool_events, false)
                   : { sqlToExecute: null, sqlActionState: undefined };
               const sqlToExecute = sqlAction.sqlToExecute;
               const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
@@ -748,12 +730,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           {
             text: buildAssistantTextFromSqlPreview(
               stripInternalPayloads(res.response),
-              extractSqlPreviewFromToolEvents((res as any).tool_events),
+              extractSqlPayloadFromToolEvents((res as any).tool_events),
             ),
             isUser: false,
             ...(() => {
               const pendingResume = !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume;
-              const sqlAction = resolveSqlExecuteAction((res as any).tool_events, res.response, pendingResume);
+              const sqlAction = resolveSqlExecuteAction((res as any).tool_events, pendingResume);
               return {
                 sqlToExecute: sqlAction.sqlToExecute,
                 sqlActionState: sqlAction.sqlActionState,
@@ -944,12 +926,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           updated[aiIndex] = {
             text: buildAssistantTextFromSqlPreview(
               stripInternalPayloads(resText),
-              extractSqlPreviewFromToolEvents((res as any).tool_events),
+              extractSqlPayloadFromToolEvents((res as any).tool_events),
             ),
             isUser: false,
             ...(() => {
               const pendingResume = !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume;
-              const sqlAction = resolveSqlExecuteAction((res as any).tool_events, resText, pendingResume);
+              const sqlAction = resolveSqlExecuteAction((res as any).tool_events, pendingResume);
               return {
                 sqlToExecute: sqlAction.sqlToExecute,
                 sqlActionState: sqlAction.sqlActionState,
@@ -1079,12 +1061,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           {
             text: buildAssistantTextFromSqlPreview(
               stripInternalPayloads(resText),
-              extractSqlPreviewFromToolEvents((res as any).tool_events),
+              extractSqlPayloadFromToolEvents((res as any).tool_events),
             ),
             isUser: false,
             ...(() => {
               const pendingResume = !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume;
-              const sqlAction = resolveSqlExecuteAction((res as any).tool_events, resText, pendingResume);
+              const sqlAction = resolveSqlExecuteAction((res as any).tool_events, pendingResume);
               return {
                 sqlToExecute: sqlAction.sqlToExecute,
                 sqlActionState: sqlAction.sqlActionState,
@@ -1167,12 +1149,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             {
               text: buildAssistantTextFromSqlPreview(
                 cleanedRaw,
-                extractSqlPreviewFromToolEvents((res as any).tool_events),
+                extractSqlPayloadFromToolEvents((res as any).tool_events),
               ),
               isUser: false,
               ...(() => {
                 const pendingResume = !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume;
-                const sqlAction = resolveSqlExecuteAction((res as any).tool_events, resText, pendingResume);
+                const sqlAction = resolveSqlExecuteAction((res as any).tool_events, pendingResume);
                 return {
                   sqlToExecute: sqlAction.sqlToExecute,
                   sqlActionState: sqlAction.sqlActionState,
@@ -1361,21 +1343,30 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             .map((msg: any, msgIndex: number) => {
               const rawContent = msg.content || '';
               const cleanedText = stripInternalPayloads(rawContent);
+              const sqlPreview =
+                msg.role === 'assistant' ? extractSqlPayloadFromToolEvents((msg as any).tool_events) : null;
               const schemaPreview =
                 msg.role === 'assistant'
                   ? extractSchemaPreviewFromToolEvents((msg as any).tool_events) || extractSchemaPreview(rawContent)
                   : null;
-              const sqlToExecute = msg.role === 'assistant' ? extractLastMutationSqlBlock(rawContent) : null;
+              const sqlAction =
+                msg.role === 'assistant'
+                  ? resolveSqlExecuteAction((msg as any).tool_events, false)
+                  : { sqlToExecute: null, sqlActionState: undefined };
+              const sqlToExecute = sqlAction.sqlToExecute;
               const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
               const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
               const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
               return {
-                text: cleanedText,
+                text:
+                  msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
                 isUser: msg.role === 'user',
                 attachments: msg.role === 'user' ? extractUploadAttachments(rawContent) : undefined,
                 sqlToExecute,
                 sqlActionId,
-                sqlActionState: sqlToExecute ? (persistedSqlState ?? ('pending' as const)) : undefined,
+                sqlActionState: sqlToExecute
+                  ? (persistedSqlState ?? sqlAction.sqlActionState ?? ('pending' as const))
+                  : sqlAction.sqlActionState,
                 exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
                 schemaPreview,
                 schemaLocked:

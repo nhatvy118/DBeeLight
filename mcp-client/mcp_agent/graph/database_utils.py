@@ -924,13 +924,21 @@ def looks_like_missing_sql_info(err: str) -> bool:
     return any(h in e for h in hints)
 
 
-def build_sql_preview_message(
+# Workflow ``output["type"]`` for structured SQL (+ optional result / HITL).
+OUTPUT_SQL_STATEMENT = "sql_statement"
+# Readonly responses without generated SQL (list tables, describe, etc.).
+OUTPUT_DATA_RESULT = "data_result"
+
+
+def build_sql_statement_message(
     sql: str,
     *,
     explain_summary: str | None = None,
+    result_md: str | None = None,
     preview_md: str | None = None,
-    footer: str = "Please review and click Execute",
+    footer: str | None = None,
 ) -> str:
+    """Assistant markdown for ``OUTPUT_SQL_STATEMENT`` (HITL footer and/or result table)."""
     msg_parts: list[str] = []
     if sql and str(sql).strip():
         msg_parts.append(f"```sql\n{sql}\n```")
@@ -938,25 +946,10 @@ def build_sql_preview_message(
         msg_parts.append(explain_summary.strip())
     if isinstance(preview_md, str) and preview_md.strip():
         msg_parts.append(preview_md.strip())
-    if footer.strip():
-        msg_parts.append(footer.strip())
-    return "\n\n".join(p for p in msg_parts if p).strip()
-
-
-def build_query_result_message(
-    sql: str,
-    *,
-    explain_summary: str | None = None,
-    result_md: str | None = None,
-) -> str:
-    """Assemble readonly SELECT response: SQL block + EXPLAIN summary + result table."""
-    msg_parts: list[str] = []
-    if sql and str(sql).strip():
-        msg_parts.append(f"```sql\n{sql}\n```")
-    if isinstance(explain_summary, str) and explain_summary.strip():
-        msg_parts.append(explain_summary.strip())
     if isinstance(result_md, str) and result_md.strip():
         msg_parts.append(result_md.strip())
+    if isinstance(footer, str) and footer.strip():
+        msg_parts.append(footer.strip())
     return "\n\n".join(p for p in msg_parts if p).strip()
 
 

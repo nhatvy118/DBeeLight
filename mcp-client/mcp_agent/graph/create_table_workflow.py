@@ -8,8 +8,9 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
 from mcp_agent.graph.database_utils import (
+    OUTPUT_SQL_STATEMENT,
     build_create_table_columns_sql,
-    build_sql_preview_message,
+    build_sql_statement_message,
     detect_db_type,
     get_create_table_system_prompt,
     is_execute_query_error_response,
@@ -276,7 +277,7 @@ async def schema_approval(state: AgentState, _llm, _agent) -> AgentState:
     return {**state, "wait_user": False, "approved": True, "current_stage": "SCHEMA_APPROVAL"}
 
 
-async def sql_preview(state: AgentState, llm, agent) -> AgentState:
+async def sql_statement(state: AgentState, llm, agent) -> AgentState:
     """Generate CREATE TABLE SQL for user review (no execution yet)."""
     if not state.get("approved"):
         prev = state.get("output") if isinstance(state.get("output"), dict) else {}
@@ -395,9 +396,14 @@ async def sql_preview(state: AgentState, llm, agent) -> AgentState:
         break
 
     out = {
-        "type": "sql_preview",
+        "type": OUTPUT_SQL_STATEMENT,
+        "executed": False,
         "sql": sql,
-        "message": build_sql_preview_message(sql, explain_summary=explain_summary or None),
+        "message": build_sql_statement_message(
+            sql,
+            explain_summary=explain_summary or None,
+            footer="Please review and click Execute",
+        ),
     }
     if explain_summary:
         out["explain_summary"] = explain_summary
@@ -419,9 +425,10 @@ async def sql_approval(state: AgentState, _llm, _agent) -> AgentState:
     es = out.get("explain_summary")
     ts = out.get("type_sql")
     wait_output = {
-        "type": "sql_preview",
+        "type": OUTPUT_SQL_STATEMENT,
+        "executed": False,
         "sql": sql,
-        "message": build_sql_preview_message(
+        "message": build_sql_statement_message(
             sql or "",
             explain_summary=es if isinstance(es, str) else None,
             footer="Please review the SQL and click Execute to run",
@@ -654,8 +661,8 @@ class CreateTableWorkflow:
         async def schema_approval_node(state):
             return await schema_approval(state, self.llm, self.agent)
 
-        async def sql_preview_node(state):
-            return await sql_preview(state, self.llm, self.agent)
+        async def sql_statement_node(state):
+            return await sql_statement(state, self.llm, self.agent)
 
         async def sql_approval_node(state):
             return await sql_approval(state, self.llm, self.agent)
@@ -669,7 +676,7 @@ class CreateTableWorkflow:
         workflow.add_node("INTENT_PARSE", intent_parse_node)
         workflow.add_node("SCHEMA_PREVIEW", schema_preview_node)
         workflow.add_node("SCHEMA_APPROVAL", schema_approval_node)
-        workflow.add_node("SQL_PREVIEW", sql_preview_node)
+        workflow.add_node("SQL_PREVIEW", sql_statement_node)
         workflow.add_node("SQL_APPROVAL", sql_approval_node)
         workflow.add_node("SQL_EXECUTION", sql_execution_node)
         workflow.add_node(StageType.DONE.value, done_handler)

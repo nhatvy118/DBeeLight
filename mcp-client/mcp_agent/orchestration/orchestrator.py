@@ -9,6 +9,7 @@ from langgraph.graph import END, StateGraph
 
 from mcp_agent.agents.base_agent import BaseAgent
 from mcp_agent.session.session_manager import SessionManager
+from mcp_agent.graph.database_utils import OUTPUT_SQL_STATEMENT
 from mcp_agent.orchestration.intent_service import IntentService
 from mcp_agent.progress import emit as _progress_emit
 
@@ -400,9 +401,9 @@ class Orchestrator:
                 "payload": output.get("message", ""),
             })
 
-        if output_type == "sql_preview":
+        if output_type == OUTPUT_SQL_STATEMENT:
             payload: Dict[str, Any] = {
-                "sql": state.get("sql") or output.get("sql"),
+                "sql": state.get("sql") or output.get("sql") or "",
                 "explain": output.get("explain_summary") or "",
                 "type_sql": output.get("type_sql") or "",
             }
@@ -410,19 +411,8 @@ class Orchestrator:
                 payload["mutation_preview_markdown"] = output.get("mutation_preview_markdown")
             events.append({
                 "tool": "execute_query",
-                "type": "sql_preview",
+                "type": "sql_statement",
                 "payload": payload,
-            })
-
-        if output_type == "query_result":
-            events.append({
-                "tool": "execute_query",
-                "type": "query_result",
-                "payload": {
-                    "sql": state.get("sql") or "",
-                    "explain": output.get("explain_summary") or "",
-                    "type_sql": output.get("type_sql") or "",
-                },
             })
 
         if output_type == "execution_complete":
@@ -489,11 +479,12 @@ class Orchestrator:
         pending_workflow_resume = current_stage in ("SCHEMA_PREVIEW", "SCHEMA_APPROVAL", "SQL_PREVIEW")
 
         # Workflow already ended at DONE with preview only (e.g. stale error routing) — run SQL directly.
-        if approved and output_type == "sql_preview" and not pending_workflow_resume:
+        if approved and output_type == OUTPUT_SQL_STATEMENT and not pending_workflow_resume:
             sql_to_run = (sql or workflow_state.get("sql") or "").strip()
             if sql_to_run:
                 logger.warning(
-                    "[Orchestrator] Resume returned sql_preview at stage=%s; executing SQL directly",
+                    "[Orchestrator] Resume returned %s at stage=%s; executing SQL directly",
+                    OUTPUT_SQL_STATEMENT,
                     current_stage,
                 )
                 return await self.execute_sql(sql_to_run)

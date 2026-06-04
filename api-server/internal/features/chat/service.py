@@ -230,17 +230,20 @@ class ChatService:
             return response_text
 
     @staticmethod
-    def _extract_sql_preview_from_tool_events(tool_events: list[dict]) -> str | None:
-        """Prefer structured sql_preview tool event over parsing assistant text."""
+    def _extract_pending_sql_from_tool_events(tool_events: list[dict]) -> str | None:
+        """SQL pending HITL: ``sql_statement`` payload (not DQL readonly)."""
         if not isinstance(tool_events, list):
             return None
         for e in tool_events:
             if not isinstance(e, dict):
                 continue
-            if str(e.get("type") or "") != "sql_preview":
+            if str(e.get("tool") or "") != "execute_query":
                 continue
             payload = e.get("payload")
             if not isinstance(payload, dict):
+                continue
+            type_sql = str(payload.get("type_sql") or "").strip().upper()
+            if type_sql == "DQL":
                 continue
             sql = payload.get("sql")
             if isinstance(sql, str) and sql.strip():
@@ -335,7 +338,7 @@ class ChatService:
         if stage not in {"SQL_PREVIEW", "SCHEMA_PREVIEW"}:
             # We only care about these two gates for now.
             return
-        sql = self._extract_sql_preview_from_tool_events(tool_events)
+        sql = self._extract_pending_sql_from_tool_events(tool_events)
         payload = {
             "kind": "workflow_langgraph_interrupt",
             "interrupt_stage": stage,
@@ -639,8 +642,8 @@ class ChatService:
         session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
         current_session_id = session_info.get("session_id") if session_info else current_session_id
 
-        sql_preview = self._extract_last_mutation_sql_block(response_text)
-        if sql_preview:
+        pending_sql = self._extract_last_mutation_sql_block(response_text)
+        if pending_sql:
             action_id = str(uuid.uuid4())
             response_text = self._attach_sql_action_id_marker(response_text, action_id)
 
@@ -1011,8 +1014,8 @@ class ChatService:
                 warnings = [w for w in ws_warnings if isinstance(w, dict)]
             success = bool(workflow_state.get("success", True))
 
-        sql_preview = self._extract_last_mutation_sql_block(response_text)
-        if sql_preview:
+        pending_sql = self._extract_last_mutation_sql_block(response_text)
+        if pending_sql:
             action_id = str(uuid.uuid4())
             response_text = self._attach_sql_action_id_marker(response_text, action_id)
 
@@ -1236,7 +1239,7 @@ class ChatService:
                         ws_output = ws.get("output") or {}
                 still_preview = (
                     isinstance(ws_output, dict)
-                    and ws_output.get("type") == "sql_preview"
+                    and ws_output.get("type") == "sql_statement"
                     and not any(
                         (e or {}).get("type") == "sql_execution"
                         for e in (result.get("tool_events") or [])
