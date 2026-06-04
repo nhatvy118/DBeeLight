@@ -72,7 +72,8 @@ type ChatProps = {
 export default function Chat({ projectId: propProjectId, sessionId: propSessionId, onSessionIdChange }: ChatProps) {
   const [query, setQuery] = useState<string>('');
   const [messages, setMessages] = useState<UiMessage[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isSending, setIsSending] = useState<boolean>(false);
+  const [isSessionLoading, setIsSessionLoading] = useState<boolean>(false);
   // Don't init from propSessionId: so on reload with URL like /chat/projectId/sessionId,
   // the "load session" effect sees propSessionId set but sessionId null and fetches messages.
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -231,13 +232,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     mutationPreviewMarkdown?: string | null;
   };
 
-  const extractSqlPreviewFromToolEvents = (events?: ToolEvent[]): SqlPreviewData | null => {
-    if (!events || !Array.isArray(events)) return null;
-    const sqlEvent = events.find(
-      (e) => (e?.type === 'sql_preview' || e?.type === 'query_result') && e?.payload,
-    );
-    if (!sqlEvent?.payload) return null;
-    const payload = sqlEvent.payload as SqlPreviewPayload;
+  const parseSqlPreviewPayload = (payload: SqlPreviewPayload | undefined): SqlPreviewData | null => {
+    if (!payload) return null;
     const sql = typeof payload.sql === 'string' ? payload.sql.trim() : '';
     if (!sql) return null;
     const explain =
@@ -255,6 +251,48 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           ? payload.mutationPreviewMarkdown.trim()
           : null;
     return { sql, explain, type_sql, mutationPreviewMarkdown };
+  };
+
+  /** SQL + explain for display (readonly results and mutation previews). */
+  const extractSqlPreviewFromToolEvents = (events?: ToolEvent[]): SqlPreviewData | null => {
+    if (!events || !Array.isArray(events)) return null;
+    const sqlEvent = events.find(
+      (e) => (e?.type === 'sql_preview' || e?.type === 'query_result') && e?.payload,
+    );
+    return parseSqlPreviewPayload(sqlEvent?.payload as SqlPreviewPayload | undefined);
+  };
+
+  /** Human-in-the-loop gate only — mutation/create_table ``sql_preview``, not readonly ``query_result``. */
+  const extractPendingSqlFromToolEvents = (events?: ToolEvent[]): SqlPreviewData | null => {
+    if (!events || !Array.isArray(events)) return null;
+    const sqlEvent = events.find((e) => e?.type === 'sql_preview' && e?.payload);
+    return parseSqlPreviewPayload(sqlEvent?.payload as SqlPreviewPayload | undefined);
+  };
+
+  const isSqlAlreadyExecutedInToolEvents = (events?: ToolEvent[]): boolean => {
+    if (!events || !Array.isArray(events)) return false;
+    return events.some((e) => e?.type === 'query_result' || e?.type === 'sql_execution');
+  };
+
+  const resolveSqlExecuteAction = (
+    events: ToolEvent[] | undefined,
+    responseText: string,
+    pendingWorkflowResume: boolean,
+  ): { sqlToExecute: string | null; sqlActionState: 'pending' | 'executed' | undefined } => {
+    if (isSqlAlreadyExecutedInToolEvents(events)) {
+      return { sqlToExecute: null, sqlActionState: 'executed' };
+    }
+    const pending = extractPendingSqlFromToolEvents(events);
+    if (pending?.sql) {
+      return { sqlToExecute: pending.sql, sqlActionState: 'pending' };
+    }
+    if (pendingWorkflowResume) {
+      const fromText = extractLastMutationSqlBlock(responseText);
+      if (fromText) {
+        return { sqlToExecute: fromText, sqlActionState: 'pending' };
+      }
+    }
+    return { sqlToExecute: null, sqlActionState: undefined };
   };
 
   const buildAssistantTextFromSqlPreview = (
@@ -341,6 +379,28 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     };
   };
 
+  const SCHEMA_CONFIRM_USER_RE = /^Confirm schema table /i;
+
+  /** Locked only after the user explicitly confirmed schema in chat history. */
+  const deriveSchemaLockedFromHistory = (
+    rawMessages: Array<{ role: string; content?: string }>,
+    assistantIndex: number,
+  ): boolean => {
+    for (let i = assistantIndex + 1; i < rawMessages.length; i += 1) {
+      const m = rawMessages[i];
+      if (m.role === 'user' && SCHEMA_CONFIRM_USER_RE.test((m.content || '').trim())) {
+        return true;
+      }
+      if (m.role === 'assistant') {
+        const text = m.content || '';
+        if (/```\s*sql[\s\S]*CREATE\s+TABLE/i.test(text)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
   const getSqlActionStatesFromSessionResponse = (res: GetSessionResponse): Record<string, 'pending' | 'running' | 'executed' | 'failed' | 'cancelled'> => {
     if (!res.success) return {};
     const raw = (res.session_info as any)?.sql_action_states;
@@ -416,7 +476,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return cleaned.trim();
   };
 
-  const isStopVisible = isLoading || isAssistantTyping;
+  const isStopVisible = isSending || isAssistantTyping;
 
   const isViewOnlyShare = shareInfo?.permission === 'view_only' || shareInfo?.revoked === true;
 
@@ -531,16 +591,18 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   useEffect(() => {
     const loadSession = async (sid: string) => {
       try {
-        setIsLoading(true);
+        setIsSessionLoading(true);
         const res = await getSession(sid);
         if (res.success && res.messages) {
           const sqlActionStates = getSqlActionStatesFromSessionResponse(res);
           let sqlOrdinal = 0;
-          const convertedMessages: UiMessage[] = res.messages
+          const filteredMessages = res.messages.filter(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .filter((msg: any) => msg.role === 'user' || msg.role === 'assistant')
+            (msg: any) => msg.role === 'user' || msg.role === 'assistant',
+          );
+          const convertedMessages: UiMessage[] = filteredMessages
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map((msg: any) => {
+            .map((msg: any, msgIndex: number) => {
               const rawContent = msg.content || '';
               const cleanedText = stripInternalPayloads(rawContent);
               const sqlPreview =
@@ -549,10 +611,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 msg.role === 'assistant'
                   ? extractSchemaPreviewFromToolEvents((msg as any).tool_events) || extractSchemaPreview(rawContent)
                   : null;
-              const sqlToExecute =
+              const sqlAction =
                 msg.role === 'assistant'
-                  ? (sqlPreview?.sql || extractLastMutationSqlBlock(rawContent))
-                  : null;
+                  ? resolveSqlExecuteAction((msg as any).tool_events, rawContent, false)
+                  : { sqlToExecute: null, sqlActionState: undefined };
+              const sqlToExecute = sqlAction.sqlToExecute;
               const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
               const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
               const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
@@ -562,10 +625,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 attachments: msg.role === 'user' ? extractUploadAttachments(rawContent) : undefined,
                 sqlToExecute,
                 sqlActionId,
-                sqlActionState: sqlToExecute ? (persistedSqlState ?? ('pending' as const)) : undefined,
+                sqlActionState: sqlToExecute
+                  ? (persistedSqlState ?? sqlAction.sqlActionState ?? ('pending' as const))
+                  : sqlAction.sqlActionState,
                 exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
                 schemaPreview,
-                schemaLocked: msg.role === 'assistant' ? !!schemaPreview : undefined,
+                schemaLocked:
+                  msg.role === 'assistant' && schemaPreview
+                    ? deriveSchemaLockedFromHistory(filteredMessages, msgIndex)
+                    : undefined,
               };
             })
             .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
@@ -580,7 +648,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         console.error('Failed to load session:', err);
         toast.error('Failed to load chat history');
       } finally {
-        setIsLoading(false);
+        setIsSessionLoading(false);
       }
     };
 
@@ -655,7 +723,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   }, [query]);
 
   const doSend = async (text: string) => {
-    setIsLoading(true);
+    setIsSending(true);
     setIsAssistantTyping(false);
     setStreamingStage('Processing');
     const controller = new AbortController();
@@ -683,16 +751,19 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               extractSqlPreviewFromToolEvents((res as any).tool_events),
             ),
             isUser: false,
-            sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response),
+            ...(() => {
+              const pendingResume = !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume;
+              const sqlAction = resolveSqlExecuteAction((res as any).tool_events, res.response, pendingResume);
+              return {
+                sqlToExecute: sqlAction.sqlToExecute,
+                sqlActionState: sqlAction.sqlActionState,
+                workflowResumePending: pendingResume,
+              };
+            })(),
             sqlActionId: extractSqlActionId(res.response),
-            sqlActionState:
-              (extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(res.response))
-                ? ('pending' as const)
-                : undefined,
             exportToExcel: extractExportData(res.response),
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
             schemaLocked: false,
-            workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
           },
         ]);
         
@@ -734,7 +805,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);
     } finally {
       sendAbortControllerRef.current = null;
-      setIsLoading(false);
+      setIsSending(false);
       setStreamingStage(null);
     }
   };
@@ -747,22 +818,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (isAssistantTyping) {
       setTypingStopSignal((prev) => prev + 1);
     }
-    setIsLoading(false);
+    setIsSending(false);
     setIsAssistantTyping(false);
     setStreamingStage(null);
-  };
-
-  const lockAllSchemaPreviews = () => {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.schemaPreview
-          ? {
-              ...m,
-              schemaLocked: true,
-            }
-          : m
-      )
-    );
   };
 
   const handleSend = async () => {
@@ -782,7 +840,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         ...inputAttachedFiles.map((f) => ({ name: f.filename, fileId: f.id })),
         ...stagedFiles.map((f) => ({ name: f.filename })),
       ];
-      lockAllSchemaPreviews();
       setMessages((prev) => [
         ...prev,
         {
@@ -803,7 +860,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       ...inputAttachedFiles.map((f) => ({ name: f.filename, fileId: f.id })),
       ...stagedFiles.map((f) => ({ name: f.filename })),
     ];
-    lockAllSchemaPreviews();
     setMessages((prev) => [
       ...prev,
       {
@@ -872,7 +928,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const userMsg = messages[userIndex];
     if (!userMsg?.isUser) return;
 
-    setIsLoading(true);
+    setIsSending(true);
     try {
       const sendPayload = buildChatMessageWithSessionFiles(
         userMsg.text,
@@ -891,15 +947,18 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               extractSqlPreviewFromToolEvents((res as any).tool_events),
             ),
             isUser: false,
-            sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(resText),
+            ...(() => {
+              const pendingResume = !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume;
+              const sqlAction = resolveSqlExecuteAction((res as any).tool_events, resText, pendingResume);
+              return {
+                sqlToExecute: sqlAction.sqlToExecute,
+                sqlActionState: sqlAction.sqlActionState,
+                workflowResumePending: pendingResume,
+              };
+            })(),
             sqlActionId: extractSqlActionId(resText),
-            sqlActionState:
-              (extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(resText))
-                ? ('pending' as const)
-                : undefined,
             exportToExcel: extractExportData(resText),
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
-            workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
           };
           return updated;
         });
@@ -910,7 +969,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       const message = err instanceof Error ? err.message : 'Failed to refresh response';
       toast.error(`Error: ${message}`);
     } finally {
-      setIsLoading(false);
+      setIsSending(false);
     }
   };
 
@@ -982,7 +1041,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const handleConfirmSchema = async (aiIndex: number) => {
     const msg = messages[aiIndex];
-    if (!msg?.schemaPreview || isLoading) return;
+    if (!msg?.schemaPreview || isSending) return;
 
     setMessages((prev) => {
       const updated = [...prev];
@@ -1005,7 +1064,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       { text: `Confirm schema table ${schema.tableName}`, isUser: true },
     ]);
 
-    setIsLoading(true);
+    setIsSending(true);
     try {
       const res = await resumeWorkflow(
         sessionId,
@@ -1023,15 +1082,18 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               extractSqlPreviewFromToolEvents((res as any).tool_events),
             ),
             isUser: false,
-            sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(resText),
+            ...(() => {
+              const pendingResume = !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume;
+              const sqlAction = resolveSqlExecuteAction((res as any).tool_events, resText, pendingResume);
+              return {
+                sqlToExecute: sqlAction.sqlToExecute,
+                sqlActionState: sqlAction.sqlActionState,
+                workflowResumePending: pendingResume,
+              };
+            })(),
             sqlActionId: extractSqlActionId(resText),
-            sqlActionState:
-              (extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(resText))
-                ? ('pending' as const)
-                : undefined,
             exportToExcel: extractExportData(resText),
             schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
-            workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
           },
         ]);
 
@@ -1053,13 +1115,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       const message = err instanceof Error ? err.message : 'Failed to confirm schema';
       setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);
     } finally {
-      setIsLoading(false);
+      setIsSending(false);
     }
   };
 
   const handleExecuteSql = async (aiIndex: number) => {
     const msg = messages[aiIndex];
-    if (!msg || !msg.sqlToExecute || isLoading || msg.sqlActionState === 'running' || msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled') return;
+    if (!msg || !msg.sqlToExecute || isSending || msg.sqlActionState === 'running' || msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled') return;
 
     // Show a loading state while the query runs (reference SqlPreview "running").
     setMessages((prev) => {
@@ -1071,7 +1133,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       return updated;
     });
 
-    setIsLoading(true);
+    setIsSending(true);
     try {
       const fallbackActionId =
         msg.sqlActionId || buildSqlActionId(
@@ -1108,11 +1170,18 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 extractSqlPreviewFromToolEvents((res as any).tool_events),
               ),
               isUser: false,
-              sqlToExecute: extractSqlPreviewFromToolEvents((res as any).tool_events)?.sql || extractLastMutationSqlBlock(resText),
+              ...(() => {
+                const pendingResume = !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume;
+                const sqlAction = resolveSqlExecuteAction((res as any).tool_events, resText, pendingResume);
+                return {
+                  sqlToExecute: sqlAction.sqlToExecute,
+                  sqlActionState: sqlAction.sqlActionState,
+                  workflowResumePending: pendingResume,
+                };
+              })(),
               sqlActionId: extractSqlActionId(resText),
               exportToExcel: extractExportData(resText),
               schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
-                workflowResumePending: !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume,
             },
           ];
         });
@@ -1147,7 +1216,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         return [...updated, { text: `Error: ${message}`, isUser: false }];
       });
     } finally {
-      setIsLoading(false);
+      setIsSending(false);
     }
   };
 
@@ -1278,16 +1347,18 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     hasRestoredSessionRef.current = true;
     const loadSession = async (sid: string) => {
       try {
-        setIsLoading(true);
+        setIsSessionLoading(true);
         const res = await getSession(sid);
         if (res.success && res.messages) {
           const sqlActionStates = getSqlActionStatesFromSessionResponse(res);
           let sqlOrdinal = 0;
-          const convertedMessages: UiMessage[] = res.messages
+          const filteredMessages = res.messages.filter(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .filter((msg: any) => msg.role === 'user' || msg.role === 'assistant')
+            (msg: any) => msg.role === 'user' || msg.role === 'assistant',
+          );
+          const convertedMessages: UiMessage[] = filteredMessages
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map((msg: any) => {
+            .map((msg: any, msgIndex: number) => {
               const rawContent = msg.content || '';
               const cleanedText = stripInternalPayloads(rawContent);
               const schemaPreview =
@@ -1307,7 +1378,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 sqlActionState: sqlToExecute ? (persistedSqlState ?? ('pending' as const)) : undefined,
                 exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
                 schemaPreview,
-                schemaLocked: msg.role === 'assistant' ? !!schemaPreview : undefined,
+                schemaLocked:
+                  msg.role === 'assistant' && schemaPreview
+                    ? deriveSchemaLockedFromHistory(filteredMessages, msgIndex)
+                    : undefined,
               };
             })
             .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
@@ -1320,7 +1394,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       } catch {
         hasRestoredSessionRef.current = false;
       } finally {
-        setIsLoading(false);
+        setIsSessionLoading(false);
       }
     };
     void loadSession(last);

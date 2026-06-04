@@ -171,7 +171,7 @@ export default function MessageList({
               <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '11px 16px', borderBottom: '1px solid var(--border)', background: msg.schemaLocked ? 'var(--green-soft)' : 'var(--surface-2)' }}>
                 {msg.schemaLocked ? <Icons.Check size={16} style={{ color: 'var(--green-ink)' }} /> : <Icons.Table size={16} style={{ color: 'var(--text-soft)' }} />}
                 <span style={{ fontSize: 13.5, fontWeight: 700, color: msg.schemaLocked ? 'var(--green-ink)' : 'var(--text)' }}>
-                  {msg.schemaLocked ? 'Table created' : 'Proposed table'}
+                  {msg.schemaLocked ? 'Schema confirmed' : 'Proposed table'}
                 </span>
                 <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-soft)', background: 'var(--surface)', padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border)' }}>
                   {msg.schemaPreview.tableName}

@@ -143,7 +143,7 @@ def build_readonly_schema_context_block(
         return ""
 
     lines: list[str] = [
-        "TARGET TABLES + COLUMNS (READ-ONLY) — generate SELECT using ONLY names below.",
+        "TARGET TABLES + COLUMNS (READ-ONLY) — use these table names; SELECT * or columns listed below.",
         "Do NOT invent table/column names. Prefer these tables over system metadata tables.",
         "",
     ]
@@ -158,6 +158,34 @@ def build_readonly_schema_context_block(
     if len(lines) <= 3:
         return ""
     return "\n".join(lines).strip()
+
+
+_SQLITE_DIALECT_RULES = """
+DIALECT RULES (mandatory — target engine is SQLite):
+- random() returns a pseudo-random 64-bit integer, NOT a float in [0, 1).
+  For a random integer in [min, max] inclusive: abs(random()) % (max - min + 1) + min
+  Do NOT use floor(random() * n + min) (that pattern is PostgreSQL).
+- Do NOT use PostgreSQL-only syntax: ALTER COLUMN ... TYPE ..., USING (...), SERIAL/BIGSERIAL,
+  ::type casts, ILIKE, RETURNING (unless SQLite 3.35+ and you know it applies), BOOLEAN type name.
+- SQLite cannot change a column's type in place. Use table rebuild: CREATE new table, INSERT SELECT, DROP, RENAME.
+  Supported ALTER: ADD COLUMN, DROP COLUMN (3.35+), RENAME COLUMN, RENAME TABLE.
+- Use INTEGER (not INT) for integers; store booleans as 0/1.
+"""
+
+_POSTGRESQL_DIALECT_RULES = """
+DIALECT RULES (mandatory — target engine is PostgreSQL):
+- random() returns a float in [0, 1). For random integer in [min, max]: floor(random() * (max - min + 1)) + min
+  or (random() * (max - min + 1) + min)::int.
+- ALTER COLUMN ... TYPE ... USING (...) is valid for type changes with expression.
+- Use SERIAL/BIGSERIAL for auto-increment; TRUE/FALSE; ILIKE for case-insensitive match.
+- Do NOT use SQLite-only patterns: AUTOINCREMENT keyword, abs(random()) % n for ranges.
+"""
+
+
+def _dialect_rules_block(db_type: str) -> str:
+    if db_type in {"postgresql", "postgres"}:
+        return _POSTGRESQL_DIALECT_RULES
+    return _SQLITE_DIALECT_RULES
 
 
 def get_sql_system_prompt(db_type: str, *, operation: str = "") -> str:
@@ -175,6 +203,11 @@ def get_sql_system_prompt(db_type: str, *, operation: str = "") -> str:
             "New or renamed columns are defined in the user request. "
             "Return ONLY the SQL, no markdown."
         )
+        if db_type not in {"postgresql", "postgres"}:
+            schema_rule += (
+                " On SQLite, prefer ADD COLUMN / RENAME COLUMN; for type changes use table rebuild, "
+                "not ALTER COLUMN TYPE."
+            )
     else:
         insert_values_rule = ""
         if op == "INSERT":
@@ -190,17 +223,20 @@ def get_sql_system_prompt(db_type: str, *, operation: str = "") -> str:
             + "For INSERT, include every NOT NULL column that has no DEFAULT unless it is auto-generated. "
             "Return ONLY the SQL, no markdown."
         )
+    dialect = _dialect_rules_block(db_type)
     if db_type == "postgresql":
         return (
             "You are a PostgreSQL expert. Generate SQL query using PostgreSQL syntax. "
             "Use SERIAL or BIGSERIAL for auto-increment primary keys, not AUTOINCREMENT. "
             + schema_rule
+            + dialect
         )
     # Default to SQLite
     return (
         "You are a SQLite expert. Generate SQL query using SQLite syntax. "
         "Use INTEGER PRIMARY KEY AUTOINCREMENT for auto-increment primary keys. "
         + schema_rule
+        + dialect
     )
 
 
@@ -209,20 +245,23 @@ def get_select_system_prompt(db_type: str) -> str:
     attached_rule = (
         "If the additional context includes a section "
         "'AVAILABLE SQLITE TABLES (use these EXACT names in SQL)', you MUST use the "
-        "exact `table` backtick name shown there and only columns listed under "
-        "`columns:` for that table. Do NOT invent table or column names."
+        "exact `table` backtick name shown there. For columns, use SELECT * or only names listed under "
+        "`columns:`. Do NOT invent table or column names."
     )
+    dialect = _dialect_rules_block(db_type)
     if db_type == "postgresql":
         return (
             "You are a PostgreSQL expert. Generate exactly one read-only SELECT statement "
             "using PostgreSQL syntax for the user's request. Return ONLY SQL, no markdown. "
             + attached_rule
+            + dialect
         )
     # Default to SQLite
     return (
         "You are a SQLite expert. Generate exactly one read-only SELECT statement "
         "using SQLite syntax for the user's request. Return ONLY SQL, no markdown. "
         + attached_rule
+        + dialect
     )
 
 
@@ -246,17 +285,20 @@ def extract_attached_files_context_block(user_message: str) -> str:
 
 def get_create_table_system_prompt(db_type: str) -> str:
     """Return CREATE TABLE system prompt for the given database type."""
+    dialect = _dialect_rules_block(db_type)
     if db_type == "postgresql":
         return (
             "You are a PostgreSQL expert. Generate CREATE TABLE SQL using PostgreSQL syntax. "
             "Use SERIAL or BIGSERIAL for auto-increment primary keys. "
             "Return ONLY the SQL."
+            + dialect
         )
     # Default to SQLite
     return (
         "You are a SQLite expert. Generate CREATE TABLE SQL using SQLite syntax. "
         "Use INTEGER PRIMARY KEY AUTOINCREMENT for auto-increment primary keys. "
         "Return ONLY the SQL."
+        + dialect
     )
 
 

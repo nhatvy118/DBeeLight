@@ -1205,22 +1205,30 @@ class ChatService:
 
         logger.info(f"UseCase: Executing SQL (first 200 chars): {query[:200]}...")
         try:
-            # HybridOrchestrator may have approve_and_execute method
-            if hasattr(agent, 'approve_and_execute'):
-                session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
-                current_session_id = session_info.get("session_id") if session_info else None
+            session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
+            current_session_id = session_info.get("session_id") if session_info else None
+            pending_interrupt = None
+            if current_session_id and agent.session_manager:
+                pending_interrupt = await agent.session_manager.get_pending_approval(current_session_id)
+
+            # LangGraph human-in-the-loop (mutation / create_table SQL_PREVIEW) only.
+            use_workflow_resume = (
+                hasattr(agent, "approve_and_execute")
+                and isinstance(pending_interrupt, dict)
+                and pending_interrupt.get("kind") == "workflow_langgraph_interrupt"
+            )
+
+            if use_workflow_resume:
                 result = await agent.approve_and_execute(
                     session_id=current_session_id,
                     approved=True,
                     sql=query,
                 )
-
-                # Approval preview state is stored in SessionManager (persisted).
-                # If the server reloaded or state is missing, fallback to executing the SQL
-                # that the frontend already extracted from the preview message.
+                # If checkpoint/state is missing, fall back to the SQL the client sent.
                 approve_result_text = str(result.get("response", "")) if isinstance(result, dict) else str(result)
                 approve_missing_state = approve_result_text.strip().startswith("Session ") and " not found" in approve_result_text
-                approve_no_sql = (approve_result_text.strip() == "No SQL to execute")
+                approve_no_sql = approve_result_text.strip() == "No SQL to execute"
+                approve_resume_error = approve_result_text.strip().startswith("Resume error:")
                 ws_output = {}
                 if isinstance(result, dict):
                     ws = result.get("workflow_state") or {}
@@ -1235,22 +1243,25 @@ class ChatService:
                         if isinstance(e, dict)
                     )
                 )
-                if approve_missing_state or approve_no_sql or still_preview:
+                if approve_missing_state or approve_no_sql or still_preview or approve_resume_error:
                     logger.warning(
                         "UseCase: approval path unusable (%s), falling back to direct execute_sql. session_id=%s",
                         (
                             "no session"
                             if approve_missing_state
-                            else ("still preview" if still_preview else "no pending sql")
+                            else (
+                                "resume error"
+                                if approve_resume_error
+                                else ("still preview" if still_preview else "no pending sql")
+                            )
                         ),
                         current_session_id,
                     )
                     result = await agent.execute_sql(query)
-            else:
-                # Legacy: call execute_sql directly
+            elif hasattr(agent, "execute_sql"):
                 result = await agent.execute_sql(query)
-                session_info = await agent.session_manager.get_session_info() if agent.session_manager else None
-                current_session_id = session_info.get("session_id") if session_info else None
+            else:
+                raise HTTPException(status_code=500, detail="Agent cannot execute SQL")
 
             pending_workflow_resume = False
             warnings: list[dict] = []

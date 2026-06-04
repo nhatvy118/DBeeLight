@@ -3,6 +3,7 @@
 from typing import Optional
 
 from mcp_agent.agents.base_agent import BaseAgent
+from mcp_agent.graph.database_utils import _dialect_rules_block, detect_db_type
 from mcp_agent.session.session_manager import SessionManager
 
 
@@ -26,8 +27,25 @@ class DatabaseAgent(BaseAgent):
             session_manager=session_manager,
         )
 
+    async def process_query(
+        self,
+        query: str,
+        verbose: bool = False,
+        persist_history: bool = True,
+    ) -> str:
+        """Refresh dialect rules from ``connection_info`` before each tool loop."""
+        db_type = detect_db_type(self)
+        self.system_prompt = self._build_system_prompt() + _dialect_rules_block(db_type)
+        return await super().process_query(
+            query,
+            verbose=verbose,
+            persist_history=persist_history,
+        )
+
     def _build_system_prompt(self) -> str:
         return """You are a Database Agent. You help users interact with PostgreSQL and SQLite databases.
+
+Engine-specific DIALECT RULES are appended below based on the connected database (SQLite vs PostgreSQL). Follow them for any SQL you write or suggest.
 
 ## CRITICAL RULE: Two-Step Process
 
