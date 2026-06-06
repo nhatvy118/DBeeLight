@@ -214,7 +214,7 @@ class Orchestrator:
         """Run database path: three workflows from intent, else DatabaseAgent."""
         session_id = str(state.get("session_id") or "")
         intent_result = state.get("intent_result") or {}
-        # Keep the full augmented user message (including [ATTACHED FILES CONTEXT])
+        # Keep the full augmented user message (including [UPLOADED SPREADSHEET SCHEMA])
         # for DB workflows. ``nl_query`` is normalized and may drop RAG table hints.
         message = str(state.get("user_message") or intent_result.get("nl_query") or "")
         database_route = self._database_route_from_intent(intent_result)

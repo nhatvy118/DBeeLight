@@ -29,7 +29,7 @@ App dùng **3 tầng lưu trữ** với mục đích khác nhau:
 | `chat_shares` | Sự kiện share của owner |
 | `chat_share_recipients` | Người được share, permission, forked session |
 | `files` | File upload metadata (path, mime type, sqlite table) |
-| `file_chunks` | Text chunks với `vector(1536)` embedding — dùng cho RAG |
+| ~~`file_chunks`~~ | Đã gỡ (RAG/pgvector); tabular dùng SQLite + schema trong prompt |
 
 `session.content` có dạng:
 ```json

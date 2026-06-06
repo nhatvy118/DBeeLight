@@ -40,11 +40,19 @@ export type SessionShareInfo = {
   share_id: string;
 };
 
+/** Raw message row from GET /session (matches session.content JSON). */
+export type SessionMessage = {
+  role: string;
+  content?: string;
+  tool_events?: ToolEvent[];
+  pending_workflow_resume?: boolean;
+};
+
 export type GetSessionResponse =
   | {
       success: true;
       session_info: unknown;
-      messages: unknown[];
+      messages: SessionMessage[];
       share_info: SessionShareInfo | null;
     }
   | { success: false; error: string };

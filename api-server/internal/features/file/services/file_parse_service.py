@@ -1,9 +1,10 @@
-"""Parse uploaded files into structured payloads for chunking."""
+"""Parse uploaded files into structured payloads for SQLite import and summaries."""
 
 from __future__ import annotations
 
 import csv
 import logging
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -175,3 +176,27 @@ def _parse_plain(path: Path, filename: str, mime_type: str) -> ParsedFile:
         summary=f"Text file {filename}, {len(text)} chars.",
         document_parts=[{"page": 1, "text": text}],
     )
+
+
+def _sanitize_table_base(filename: str) -> str:
+    base = filename.rsplit(".", 1)[0]
+    s = re.sub(r"[^a-zA-Z0-9_]+", "_", base).strip("_")
+    if not s:
+        s = "uploaded_data"
+    if s[0].isdigit():
+        s = "t_" + s
+    return s[:60].lower()
+
+
+def suggested_sqlite_table_names(parsed: ParsedFile) -> list[tuple[str, str]]:
+    """Return list of (sheet_label, safe_table_name) for tabular imports."""
+    base = _sanitize_table_base(parsed.filename)
+    out: list[tuple[str, str]] = []
+    for i, sheet in enumerate(parsed.tabular_sheets):
+        label = str(sheet.get("label") or f"sheet{i}")
+        slug = re.sub(r"[^a-zA-Z0-9_]+", "_", label).strip("_") or f"sheet{i}"
+        name = f"{base}_{slug}"[:63]
+        if name[0].isdigit():
+            name = "t_" + name
+        out.append((label, name[:63]))
+    return out

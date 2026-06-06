@@ -1,4 +1,4 @@
-"""Upload, index, retrieve, and cleanup session-attached files (RAG + SQLite hybrid)."""
+"""Upload, import to SQLite, and cleanup session-attached files."""
 
 from __future__ import annotations
 
@@ -20,23 +20,21 @@ from fastapi import HTTPException, UploadFile
 
 from internal.features.file.repository import FileRepository
 from internal.features.project.repository import ProjectRepository
-from internal.features.file.services.chunking_service import (
-    chunk_parsed_file,
+from internal.features.file.services.file_parse_service import (
+    parse_file,
     suggested_sqlite_table_names,
 )
-from internal.features.file.services.embedding_service import EmbeddingService
-from internal.features.file.services.file_parse_service import parse_file
-from internal.features.file.services.retrieval_service import (
-    ChunkResult,
-    format_chunks_as_context_block,
+from internal.features.file.schema_context import (
+    fetch_table_schema_entry,
+    format_session_schema_block,
+    normalize_schema_snapshot,
 )
-
 logger = logging.getLogger(__name__)
 
 # Indexed session files (``/api/files/upload``) — total stored bytes per user.
 USER_STORAGE_LIMIT_BYTES = 5 * 1024 * 1024 * 1024
 
-# Session files (RAG import + chat export) under ``file_handle/{user}/{session_id}/import|export/``.
+# Session files (upload import + chat export) under ``file_handle/{user}/{session_id}/import|export/``.
 SESSION_IMPORT_SUBDIR = "import"
 SESSION_EXPORT_SUBDIR = "export"
 
@@ -67,7 +65,7 @@ def _path_is_file_handle_subdir(parts: tuple[str, ...], user_key: str, subdir: s
 
 
 def classify_session_stored_path(local_path: str, user_key: str) -> str:
-    """``import`` (RAG upload), ``chat_export`` (assistant Excel), or ``other``."""
+    """``import`` (session upload), ``chat_export`` (assistant Excel), or ``other``."""
     parts = _path_parts(local_path)
     if not parts:
         return "other"
@@ -128,21 +126,6 @@ def _sqlite_engine_url_from_stored(stored: str | None) -> str | None:
     return _sqlite_url_from_path(Path(s))
 
 
-def _collect_columns_sync(engine_url: str, table_name: str) -> list[str]:
-    """Sync column names from SQLite (runs in thread pool)."""
-    try:
-        from sqlalchemy import create_engine, inspect
-    except ImportError:
-        return []
-    eng = create_engine(engine_url)
-    try:
-        insp = inspect(eng)
-        cols = insp.get_columns(table_name)
-        return [str(c["name"]) for c in cols]
-    finally:
-        eng.dispose()
-
-
 class FileService:
     def __init__(
         self,
@@ -152,7 +135,6 @@ class FileService:
         self._pool = pool
         self._files = FileRepository(pool)
         self._project_repo = project_repo
-        self._embed = EmbeddingService()
 
     async def _require_session(self, session_id: str, user_id: str) -> dict[str, Any]:
         row = await self._pool.fetchrow(
@@ -332,23 +314,6 @@ class FileService:
             logger.exception("parse failed")
             raise HTTPException(status_code=400, detail=f"Could not parse file: {e}") from e
 
-        text_chunks = chunk_parsed_file(parsed)
-        if not text_chunks:
-            dest_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail="No indexable content in file")
-
-        texts = [c.text for c in text_chunks]
-        try:
-            embeddings = await self._embed.embed_batch(texts)
-        except Exception as e:
-            dest_path.unlink(missing_ok=True)
-            logger.exception("embedding failed")
-            raise HTTPException(status_code=502, detail=f"Embedding failed: {e}") from e
-
-        if len(embeddings) != len(text_chunks):
-            dest_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=500, detail="Embedding count mismatch")
-
         sqlite_table_name: str | None = None
         sqlite_db_path: str | None = None
 
@@ -374,6 +339,19 @@ class FileService:
                 engine_url,
                 temp_fs_path,
             )
+            if not sqlite_table_name:
+                dest_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=400,
+                    detail="Could not import spreadsheet into SQLite for SQL queries.",
+                )
+        else:
+            has_text = any(
+                str(p.get("text") or "").strip() for p in (parsed.document_parts or [])
+            )
+            if not (parsed.summary or "").strip() and not has_text:
+                dest_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=400, detail="No readable content in file")
 
         file_id = await self._files.insert_file(
             session_id=session_id,
@@ -387,13 +365,29 @@ class FileService:
             summary=parsed.summary[:2000] if parsed.summary else None,
         )
 
-        batch: list[tuple[str, list[float], dict[str, Any]]] = []
-        for tc, emb in zip(text_chunks, embeddings, strict=True):
-            meta = dict(tc.metadata)
-            meta["file_id"] = str(file_id)
-            batch.append((tc.text, emb, meta))
-
-        await self._files.insert_chunks_batch(file_id=file_id, session_id=session_id, chunks=batch)
+        if sqlite_table_name and sqlite_db_path:
+            engine_url = _sqlite_engine_url_from_stored(str(sqlite_db_path))
+            if engine_url:
+                dtypes: dict[str, str] = {}
+                sheet = ""
+                if parsed.kind == "tabular" and parsed.tabular_sheets:
+                    sheet = str(parsed.tabular_sheets[0].get("label") or "")
+                    df = parsed.tabular_sheets[0].get("dataframe")
+                    if df is not None:
+                        for c in df.columns:
+                            dtypes[str(c)] = str(df[c].dtype)
+                try:
+                    snap = await asyncio.to_thread(
+                        fetch_table_schema_entry,
+                        engine_url=engine_url,
+                        table_name=str(sqlite_table_name),
+                        filename=original_name,
+                        sheet=sheet,
+                        dtypes=dtypes,
+                    )
+                    await self._files.update_schema_snapshot(file_id, user_key, snap)
+                except Exception as e:
+                    logger.warning("schema_snapshot at upload failed: %s", e)
 
         return {
             "id": str(file_id),
@@ -528,7 +522,9 @@ class FileService:
         pairs = suggested_sqlite_table_names(parsed)
         primary_table: str | None = None
         for sheet, (_label, suggested) in zip(parsed.tabular_sheets, pairs, strict=False):
-            df = sheet["dataframe"]
+            df = sheet["dataframe"].copy()
+            if "__row_id" not in df.columns:
+                df.insert(0, "__row_id", range(1, len(df) + 1))
             tname = f"{suggested}_{short}"[:63]
             try:
                 df.to_sql(tname, engine, if_exists="fail", index=False)
@@ -623,34 +619,27 @@ class FileService:
             )
         return out
 
-    def _sheet_hints_from_chunks(self, chunk_results: list[ChunkResult]) -> dict[str, str]:
-        """Map file_id -> sheet label from schema chunks (best-effort)."""
-        sheet_by_fid: dict[str, str] = {}
-        for c in chunk_results:
-            meta = c.metadata if isinstance(c.metadata, dict) else {}
-            if meta.get("kind") != "schema":
-                continue
-            fid = str(meta.get("file_id") or "").strip()
-            if not fid or fid in sheet_by_fid:
-                continue
-            sheet_by_fid[fid] = str(meta.get("sheet") or "").strip()
-        return sheet_by_fid
-
-    async def _build_available_tables_for_session(
+    async def build_session_schema_context_block(
         self,
         session_id: str,
         user_key: str,
-        chunk_results: list[ChunkResult],
+        *,
         active_file_ids: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> str:
+        """Schema + sample rows for tabular uploads (SQL-first context, no vector RAG)."""
+        await self._require_session(session_id, user_key)
         rows = await self._files.list_files_by_session(session_id, user_key)
-        # If the user explicitly selected specific files, only surface those tables.
         if active_file_ids:
-            selected_set = set(str(fid) for fid in active_file_ids)
-            rows = [r for r in rows if str(r.get("id", "")) in selected_set]
-        sheet_by_fid = self._sheet_hints_from_chunks(chunk_results)
-        out: list[dict[str, Any]] = []
+            selected = {str(fid) for fid in active_file_ids}
+            rows = [r for r in rows if str(r.get("id", "")) in selected]
+
+        entries: list[dict[str, Any]] = []
         for r in rows:
+            cached = normalize_schema_snapshot(r.get("schema_snapshot"))
+            if cached:
+                entries.append(cached)
+                continue
+
             tname = r.get("sqlite_table_name")
             dbp = r.get("sqlite_db_path")
             if not tname or not dbp:
@@ -658,51 +647,32 @@ class FileService:
             engine_url = _sqlite_engine_url_from_stored(str(dbp))
             if not engine_url:
                 continue
+            dtypes: dict[str, str] = {}
+            fname = str(r.get("filename") or "unknown")
+            sheet = ""
             try:
-                cols = await asyncio.to_thread(
-                    _collect_columns_sync, engine_url, str(tname)
-                )
-            except Exception as e:
-                logger.warning("column inspect failed for %s: %s", tname, e)
-                cols = []
-            fid = str(r["id"])
-            sheet = sheet_by_fid.get(fid, "")
-            out.append(
-                {
-                    "filename": r["filename"],
-                    "sheet": sheet,
-                    "sqlite_table_name": str(tname),
-                    "columns": cols,
-                }
+                path = Path(str(r.get("local_path") or ""))
+                if path.is_file():
+                    parsed = parse_file(path, fname, str(r.get("mime_type") or ""))
+                    if parsed.kind == "tabular" and parsed.tabular_sheets:
+                        sheet = str(parsed.tabular_sheets[0].get("label") or "")
+                        df = parsed.tabular_sheets[0].get("dataframe")
+                        if df is not None:
+                            for c in df.columns:
+                                dtypes[str(c)] = str(df[c].dtype)
+            except Exception:
+                pass
+            entry = await asyncio.to_thread(
+                fetch_table_schema_entry,
+                engine_url=engine_url,
+                table_name=str(tname),
+                filename=fname,
+                sheet=sheet,
+                dtypes=dtypes,
             )
-        return out
+            entries.append(entry)
 
-    async def retrieve_relevant_chunks(
-        self,
-        session_id: str,
-        query: str,
-        user_key: str,
-        top_k: int = 8,
-        active_file_ids: list[str] | None = None,
-    ) -> tuple[list[ChunkResult], str]:
-        await self._require_session(session_id, user_key)
-        if not (query or "").strip():
-            return [], ""
-        qemb = await self._embed.embed_query(query.strip())
-        rows = await self._files.search_chunks(session_id=session_id, query_embedding=qemb, top_k=top_k)
-        results = [
-            ChunkResult(
-                chunk_text=r["chunk_text"],
-                metadata=r.get("metadata") or {},
-                distance=float(r["distance"]),
-            )
-            for r in rows
-        ]
-        available_tables = await self._build_available_tables_for_session(
-            session_id, user_key, results, active_file_ids=active_file_ids
-        )
-        block = format_chunks_as_context_block(results, available_tables)
-        return results, block
+        return format_session_schema_block(entries)
 
     @staticmethod
     def _looks_like_parser_summary(text: str) -> bool:

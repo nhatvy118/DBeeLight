@@ -8,6 +8,7 @@ import os
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException
@@ -42,15 +43,58 @@ def _sse_format(event: dict) -> str:
 
 _READ_ONLY_SQL_VERBS = {"SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "PRAGMA"}
 
+_SESSION_FILE_ID_IN_MSG = re.compile(
+    r"\[SESSION_FILE_ID_START\](?P<fid>[^[\]]+?)\[SESSION_FILE_ID_END\]"
+)
+
+_EXCEL_WORKBOOK_SUFFIXES = (".xlsx", ".xlsm", ".xls")
+
+
+def _excel_path_marker(local_path: str) -> str | None:
+    """Absolute path marker for Excel agent when the upload is a workbook on disk."""
+    p = Path(local_path).expanduser()
+    if not p.is_file():
+        return None
+    if p.suffix.lower() not in _EXCEL_WORKBOOK_SUFFIXES:
+        return None
+    return f"[UPLOADED_EXCEL_PATH_START]{p.resolve()}[UPLOADED_EXCEL_PATH_END]"
+
+
+def _file_ids_from_message_markers(text: str) -> list[str]:
+    """File UUIDs embedded by the chat UI in the user message."""
+    out: list[str] = []
+    for m in _SESSION_FILE_ID_IN_MSG.finditer(text or ""):
+        fid = (m.group("fid") or "").strip()
+        if fid and fid not in out:
+            out.append(fid)
+    return out
+
 
 def _looks_like_summary_request(text: str) -> bool:
     q = (text or "").strip().lower()
     if not q:
         return False
-    # English
     if any(w in q for w in ("summarize", "summary", "summarise", "tl;dr")):
         return True
+    if any(w in q for w in ("tóm tắt", "tom tat", "tổng hợp", "tong hop")):
+        return True
     return False
+
+
+def _looks_like_tabular_data_query(text: str) -> bool:
+    """Heuristic: question likely needs uploaded tabular data (SQL path)."""
+    if _looks_like_summary_request(text):
+        return True
+    q = (text or "").lower()
+    if _SESSION_FILE_ID_IN_MSG.search(text or ""):
+        return True
+    keywords = (
+        "count", "how many", "bao nhiêu", "đếm", "filter", "lọc", "average", "avg",
+        "sum", "total", "min", "max", "group by", "distinct", "rows", "dòng", "cột",
+        "column", "select", "table", "aggregate", "trung bình", "tổng", "transaction",
+    )
+    return any(k in q for k in keywords)
+
 
 # Permission ladder: view_only < read_data < edit_data. A request is allowed
 
@@ -73,67 +117,6 @@ def _is_read_only_sql(sql: str) -> bool:
     if not first:
         return False
     return first[0].upper() in _READ_ONLY_SQL_VERBS
-
-
-def _classify_file_data_intent_heuristic(text: str) -> str:
-    """Return `yes` | `no` | `uncertain` for file-data intent."""
-    s = (text or "").strip().lower()
-    if not s:
-        return "no"
-
-    strong_yes = (
-        "from file",
-        "from uploaded file",
-        "uploaded file",
-        "in file",
-        "in excel",
-        "in sheet",
-        "trong file",
-        "trong excel",
-        "trong sheet",
-        "where ",
-        "group by",
-        "having",
-        "order by",
-        "count(",
-        "sum(",
-        "avg(",
-        "min(",
-        "max(",
-    )
-    if any(p in s for p in strong_yes):
-        return "yes"
-
-    likely_yes = (
-        "filter",
-        "column",
-        "sheet",
-        "row",
-        "dob",
-        " > ",
-        " < ",
-        " = ",
-        ">=",
-        "<=",
-    )
-    if any(p in s for p in likely_yes):
-        return "uncertain"
-
-    strong_no = (
-        "hello",
-        "hi ",
-        "thanks",
-        "thank you",
-        "explain architecture",
-        "debug",
-        "fix bug",
-        "deploy",
-        "help me",
-    )
-    if any(p in s for p in strong_no):
-        return "no"
-
-    return "uncertain"
 
 
 class ChatService:
@@ -265,10 +248,13 @@ class ChatService:
         model = os.getenv("FILE_INTENT_MODEL", "gpt-5.2")
         timeout_s = max(0.5, float(os.getenv("FILE_INTENT_TIMEOUT_S", "3.0")))
         prompt = (
-            "Decide if the user message needs data from an uploaded file in this chat session. "
+            "The chat session has uploaded spreadsheet/file data. Decide if this user message "
+            "needs that uploaded data to answer well. "
             "Return JSON only: {\"use_file_data\": true|false}. "
-            "True for filters/aggregations/column lookups over uploaded spreadsheets. "
-            "False for generic conversation, architecture, debugging, or unrelated DB questions."
+            "true: filters, aggregates, column/row lookups, comparisons, summaries, or SQL-style "
+            "questions over the uploaded tables (even if the user says 'excel' or 'sheet'). "
+            "false: greetings, thanks, off-topic chat, architecture/debugging help, or questions "
+            "only about the project database with no reference to uploaded session files."
         )
         try:
             resp = await asyncio.wait_for(
@@ -298,24 +284,22 @@ class ChatService:
         query: str,
         *,
         should_try_llm: bool,
-    ) -> tuple[bool, str, str, float | None]:
+    ) -> tuple[bool, str, float | None]:
         """
-        Resolve file-data intent using heuristic + optional LLM.
-        Returns: (decision, decision_source, heuristic_state, llm_latency_ms_or_none)
+        Resolve file-data intent via LLM when the session has uploaded files.
+        Returns: (decision, decision_source, llm_latency_ms_or_none)
         """
-        heuristic_state = _classify_file_data_intent_heuristic(query)
-        if heuristic_state == "yes":
-            return True, "heuristic", heuristic_state, None
-        if heuristic_state == "no":
-            return False, "heuristic", heuristic_state, None
+        if not (query or "").strip():
+            return False, "empty_query", None
         if not should_try_llm:
-            return False, "heuristic_uncertain_default", heuristic_state, None
+            return False, "no_session_files", None
 
         llm_decision, llm_latency_ms = await self._llm_file_data_intent_check(query)
         if llm_decision is None:
-            # Fallback policy requested: heuristic-only on LLM failure.
-            return False, "fallback_heuristic", heuristic_state, llm_latency_ms
-        return bool(llm_decision), "llm", heuristic_state, llm_latency_ms
+            if _file_ids_from_message_markers(query) or _looks_like_tabular_data_query(query):
+                return True, "fallback_data_query", llm_latency_ms
+            return False, "llm_error", llm_latency_ms
+        return bool(llm_decision), "llm", llm_latency_ms
 
     async def _persist_pending_approval_from_workflow(
         self,
@@ -474,12 +458,10 @@ class ChatService:
 
     async def _try_summary_shortcut(
         self, agent, current_session_id: str | None, user_key: str,
-        original_user_query: str, use_file_rag: bool,
+        original_user_query: str, has_session_files: bool,
     ) -> tuple[str, str | None, list[dict], bool, list[dict], bool] | None:
-        """Excel-route shortcut: "summarize" intent + exactly one attached
-        session file → bypass the tool loop and use ``FileUseCase.summarize_file``.
-        Returns the final chat result tuple, or None if the shortcut does not apply."""
-        if not (use_file_rag and self._file_usecase and current_session_id and user_key != "anonymous"):
+        """Summarize intent + exactly one session file → ``FileUseCase.summarize_file`` (no agent graph)."""
+        if not (has_session_files and self._file_usecase and current_session_id and user_key != "anonymous"):
             return None
         if not _looks_like_summary_request(original_user_query):
             return None
@@ -500,43 +482,46 @@ class ChatService:
             logger.warning("UseCase: summarize shortcut failed: %s", e)
             return None
 
-    async def _apply_file_rag(
-        self, agent, current_session_id: str | None, user_key: str,
-        query: str, original_user_query: str,
-        use_file_rag: bool, project_db_url: str | None,
+    async def _apply_file_sql_context(
+        self,
+        agent,
+        current_session_id: str | None,
+        user_key: str,
+        query: str,
+        *,
+        use_file_schema: bool,
+        connect_session_sqlite_as_primary: bool,
+        project_db_url: str | None,
         active_file_ids: list[str] | None = None,
     ) -> tuple[str, str | None]:
-        """When session-file RAG is enabled: (a) connect MCP servers to the
-        session's SQLite file if no project DB was selected, (b) retrieve
-        top-k chunks and prepend them as a context block.
-        Returns ``(augmented_query, possibly_updated_project_db_url)``."""
-        if not (use_file_rag and self._file_usecase and current_session_id and user_key != "anonymous"):
+        """Inject fixed schema + samples; optionally connect session SQLite as primary DB."""
+        if not (use_file_schema and self._file_usecase and current_session_id and user_key != "anonymous"):
             return query, project_db_url
         try:
-            session_sql_url = await self._file_usecase.get_session_sqlite_url(
-                current_session_id, user_key
-            )
-            if session_sql_url and not project_db_url:
-                project_db_url = session_sql_url
-                await self._push_db_to_agents(agent, session_sql_url, label="session-file")
-                try:
-                    if "sqlite" in (session_sql_url or "").lower():
-                        agent.connection_info = {"engine": "sqlite"}
-                    else:
-                        agent.connection_info = {"engine": "postgresql"}
-                except Exception:
-                    pass
+            if connect_session_sqlite_as_primary:
+                session_sql_url = await self._file_usecase.get_session_sqlite_url(
+                    current_session_id, user_key
+                )
+                if session_sql_url and not project_db_url:
+                    project_db_url = session_sql_url
+                    await self._push_db_to_agents(agent, session_sql_url, label="session-file")
+                    try:
+                        if "sqlite" in (session_sql_url or "").lower():
+                            agent.connection_info = {"engine": "sqlite"}
+                        else:
+                            agent.connection_info = {"engine": "postgresql"}
+                    except Exception:
+                        pass
 
-            # Pass active_file_ids so the ATTACHED FILES CONTEXT only lists
-            # tables from the files the user actually selected.
-            _chunks, block = await self._file_usecase.retrieve_relevant_chunks(
-                current_session_id, original_user_query, user_key, top_k=8,
+            block = await self._file_usecase.build_session_schema_context_block(
+                current_session_id,
+                user_key,
                 active_file_ids=active_file_ids or None,
             )
             if block:
                 return f"{block}\n\nUSER MESSAGE:\n{query}", project_db_url
         except Exception as e:
-            logger.warning("UseCase: session file RAG failed: %s", e)
+            logger.warning("UseCase: session file schema context failed: %s", e)
         return query, project_db_url
 
     async def _seed_share_session_messages(
@@ -739,6 +724,9 @@ class ChatService:
         ids = list(active_file_ids or [])
         user_selected_primary_db = "__primary_db__" in ids
         file_ids_selected = [fid for fid in ids if fid != "__primary_db__"]
+        marker_file_ids = _file_ids_from_message_markers(original_user_query)
+        if marker_file_ids:
+            file_ids_selected = list(dict.fromkeys([*file_ids_selected, *marker_file_ids]))
 
         active_file_table_hint: str | None = None   # comma-separated table names for multi-file
         active_file_sqlite_url: str | None = None
@@ -746,30 +734,75 @@ class ChatService:
         # file_meta_for_context: list of (filename, sqlite_table_name) for selected files
         # used later to inject a table-name context block when RAG is skipped (DB+file mode).
         file_meta_for_context: list[tuple[str, str]] = []
+        table_hints: list[str] = []
+        excel_path_markers: list[str] = []
 
         if file_ids_selected and self._file_usecase and current_session_id and user_key != "anonymous":
-            table_hints: list[str] = []
-            sqlite_url_seen: str | None = None
-            from internal.features.file.service import _sqlite_engine_url_from_stored
+            from collections import defaultdict
+
+            from internal.features.file.service import (
+                _sqlite_engine_url_from_stored,
+                _temp_db_path,
+            )
+
+            path_tables: dict[str, list[str]] = defaultdict(list)
+            path_urls: dict[str, str] = {}
+            marker_ids_set = set(marker_file_ids)
+            marker_db_path: str | None = None
+            validated_file_ids: list[str] = []
+
             for fid in file_ids_selected:
                 try:
                     file_row = await self._file_usecase.get_file(uuid.UUID(fid), user_key)
-                    if file_row:
-                        tname = file_row.get("sqlite_table_name")
-                        fname = file_row.get("filename") or ""
-                        if tname:
-                            table_hints.append(str(tname))
-                            file_meta_for_context.append((str(fname), str(tname)))
-                        raw_path = file_row.get("sqlite_db_path")
-                        if raw_path and not sqlite_url_seen:
-                            sqlite_url_seen = _sqlite_engine_url_from_stored(str(raw_path))
+                    if not file_row:
+                        continue
+                    if str(file_row.get("session_id") or "") != str(current_session_id):
+                        logger.warning(
+                            "UseCase: ignore active_file_id=%s (belongs to session %s, not %s)",
+                            fid,
+                            file_row.get("session_id"),
+                            current_session_id,
+                        )
+                        continue
+                    validated_file_ids.append(str(fid))
+                    tname = file_row.get("sqlite_table_name")
+                    fname = file_row.get("filename") or ""
+                    local_path = str(file_row.get("local_path") or "").strip()
+                    marker = _excel_path_marker(local_path) if local_path else None
+                    if marker and marker not in excel_path_markers:
+                        excel_path_markers.append(marker)
+                    raw_path = str(file_row.get("sqlite_db_path") or "").strip()
+                    if tname and raw_path:
+                        path_tables[raw_path].append(str(tname))
+                        path_urls[raw_path] = _sqlite_engine_url_from_stored(raw_path)
+                        file_meta_for_context.append((str(fname), str(tname)))
+                    if str(fid) in marker_ids_set and raw_path:
+                        marker_db_path = raw_path
                 except Exception as e:
                     logger.warning("UseCase: failed to resolve active_file_id=%s: %s", fid, e)
-            if table_hints:
-                active_file_sqlite_url = sqlite_url_seen
-                # Only force a table hint when the user chose file(s) WITHOUT the primary DB.
-                # When both DB + file(s) are selected, leave table_hint=None so the LLM
-                # sees all tables from both sources via list_tables and can query freely.
+
+            file_ids_selected = validated_file_ids
+
+            if path_tables:
+                if marker_db_path and marker_db_path in path_tables:
+                    chosen_path = marker_db_path
+                elif len(path_tables) == 1:
+                    chosen_path = next(iter(path_tables))
+                else:
+                    temp_fs = str(_temp_db_path(current_session_id).resolve())
+                    temp_keys = [p for p in path_tables if temp_fs in str(Path(p).expanduser())]
+                    chosen_path = temp_keys[0] if temp_keys else max(
+                        path_tables.keys(), key=lambda p: len(path_tables[p])
+                    )
+                    logger.warning(
+                        "UseCase: files span %s SQLite DBs; using %s (tables=%s)",
+                        len(path_tables),
+                        chosen_path,
+                        path_tables[chosen_path],
+                    )
+
+                table_hints = path_tables[chosen_path]
+                active_file_sqlite_url = path_urls.get(chosen_path)
                 if not user_selected_primary_db:
                     active_file_table_hint = ", ".join(table_hints)
             logger.info(
@@ -777,86 +810,87 @@ class ChatService:
                 file_ids_selected, active_file_table_hint, active_file_sqlite_url,
             )
 
-        # RAG gating: should we splice retrieved file chunks into the user turn?
         has_session_files = await self._has_session_files(current_session_id, user_key)
-        has_file_data_intent, decision_source, heuristic_state, llm_latency_ms = (
+        has_file_data_intent, decision_source, llm_latency_ms = (
             await self._resolve_file_data_intent(
                 original_user_query,
                 should_try_llm=has_session_files,
             )
         )
-        # Skip RAG entirely when user has selected their primary DB — don't override with session SQLite.
-        use_file_rag = (not user_selected_primary_db) and has_session_files and has_file_data_intent
+        use_file_schema = bool(file_ids_selected) or (
+            has_session_files and has_file_data_intent
+        )
+        connect_session_sqlite_as_primary = (
+            (use_file_schema or bool(active_file_sqlite_url))
+            and not user_selected_primary_db
+        )
         logger.info(
-            "UseCase: RAG gating "
+            "UseCase: file context gating "
             "has_file_data_intent=%s has_session_files=%s "
-            "use_file_rag=%s decision_source=%s heuristic_state=%s llm_latency_ms=%s "
-            "has_file_usecase=%s",
+            "use_file_schema=%s connect_session_sqlite_as_primary=%s "
+            "decision_source=%s llm_latency_ms=%s",
             has_file_data_intent,
             has_session_files,
-            use_file_rag,
+            use_file_schema,
+            connect_session_sqlite_as_primary,
             decision_source,
-            heuristic_state,
             f"{llm_latency_ms:.1f}" if isinstance(llm_latency_ms, float) else "n/a",
-            bool(self._file_usecase),
         )
 
         shortcut = await self._try_summary_shortcut(
-            agent, current_session_id, user_key, original_user_query, use_file_rag,
+            agent, current_session_id, user_key, original_user_query, has_session_files,
         )
         if shortcut is not None:
             return shortcut
 
-        # Connect the selected file's SQLite to the MCP server.
-        if active_file_sqlite_url:
-            if user_selected_primary_db:
-                # Both DB + file selected → attach file as session adapter (keeps primary intact).
-                # Pass the selected table names so list_tables only surfaces those tables,
-                # not every table that has ever been uploaded to this session's SQLite.
-                allowed_tables_str = ", ".join(table_hints) if table_hints else None
-                await self._push_session_file_to_agents(
-                    agent, active_file_sqlite_url,
-                    label="active-file-session",
-                    allowed_tables=allowed_tables_str,
-                )
-            else:
-                # File-only selected → connect as primary (no user DB to protect).
-                await self._push_db_to_agents(agent, active_file_sqlite_url, label="active-file")
-                if not project_db_url:
-                    project_db_url = active_file_sqlite_url
+        if active_file_sqlite_url and user_selected_primary_db:
+            allowed_tables_str = ", ".join(table_hints) if table_hints else None
+            await self._push_session_file_to_agents(
+                agent, active_file_sqlite_url,
+                label="active-file-session",
+                allowed_tables=allowed_tables_str,
+            )
+            try:
+                agent.connection_info = {"engine": "sqlite"}
+            except Exception:
+                pass
+        elif active_file_sqlite_url and not user_selected_primary_db:
+            await self._push_db_to_agents(agent, active_file_sqlite_url, label="active-file")
+            try:
+                agent.connection_info = {"engine": "sqlite"}
+            except Exception:
+                pass
+            if not project_db_url:
+                project_db_url = active_file_sqlite_url
         else:
-            # No file selected this turn — disconnect any leftover session adapter so
-            # list_tables / queries don't accidentally surface tables from a previous file.
             try:
                 await agent.disconnect_session_file_db()
             except Exception as _e:
                 logger.debug("UseCase: disconnect_session_file_db skipped: %s", _e)
 
-        rag_augmented_query, project_db_url = await self._apply_file_rag(
-            agent, current_session_id, user_key, query, original_user_query,
-            use_file_rag, project_db_url,
-            active_file_ids=file_ids_selected or None,
+        schema_ids = file_ids_selected or None
+        augmented_query, project_db_url = await self._apply_file_sql_context(
+            agent,
+            current_session_id,
+            user_key,
+            query,
+            use_file_schema=use_file_schema,
+            connect_session_sqlite_as_primary=connect_session_sqlite_as_primary,
+            project_db_url=project_db_url,
+            active_file_ids=schema_ids,
         )
-
-        # When DB + file(s) selected, RAG is skipped so LLM has no knowledge of the
-        # session-file table names. Inject a minimal hint so it uses exact table names.
-        if user_selected_primary_db and file_meta_for_context and rag_augmented_query == query:
-            table_lines = "\n".join(
-                f"  - file: {fname}  →  sqlite table: `{tname}`"
-                for fname, tname in file_meta_for_context
+        if excel_path_markers:
+            path_block = "\n".join(excel_path_markers)
+            augmented_query = (
+                f"{path_block}\n\n{augmented_query}"
+                if augmented_query.strip() != query.strip()
+                else f"{path_block}\n\nUSER MESSAGE:\n{query}"
             )
-            hint_block = (
-                "[SESSION FILE TABLES — use these EXACT table names in SQL queries]\n"
-                f"{table_lines}\n"
-                "[/SESSION FILE TABLES]"
-            )
-            rag_augmented_query = f"{hint_block}\n\nUSER MESSAGE:\n{query}"
-            logger.info("UseCase: injected session file table hints into query (DB+file mode)")
 
         logger.info(f"UseCase: Processing query: {query[:100]}...")
         try:
             out = await self._invoke_chat_graph(
-                agent, current_session_id, query, rag_augmented_query,
+                agent, current_session_id, query, augmented_query,
                 project_id_uuid, user_key, project_db_url,
                 share_ctx,
                 active_file_table_hint=active_file_table_hint,

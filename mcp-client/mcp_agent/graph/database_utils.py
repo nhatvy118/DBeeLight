@@ -5,6 +5,7 @@ Shared utilities for all database workflows (readonly, create_table, mutation).
 
 import json
 import logging
+import os
 import re
 from typing import Any, Awaitable, Callable, List, Optional
 
@@ -12,6 +13,13 @@ from typing import Any, Awaitable, Callable, List, Optional
 logger = logging.getLogger(__name__)
 
 _DELETE_PREVIEW_ROW_CAP = 200
+
+
+def agent_result_display_max_rows() -> int:
+    try:
+        return max(1, min(int(os.getenv("AGENT_RESULT_DISPLAY_MAX_ROWS", "50")), 500))
+    except ValueError:
+        return 50
 _INSERT_PREVIEW_MAX_ROWS = 80
 _INSERT_PREVIEW_CELL_MAX = 500
 
@@ -243,7 +251,7 @@ def get_sql_system_prompt(db_type: str, *, operation: str = "") -> str:
 def get_select_system_prompt(db_type: str) -> str:
     """Return SELECT generation system prompt for the given database type."""
     attached_rule = (
-        "If the additional context includes a section "
+        "If the additional context includes [UPLOADED SPREADSHEET SCHEMA] or "
         "'AVAILABLE SQLITE TABLES (use these EXACT names in SQL)', you MUST use the "
         "exact `table` backtick name shown there. For columns, use SELECT * or only names listed under "
         "`columns:`. Do NOT invent table or column names."
@@ -265,21 +273,24 @@ def get_select_system_prompt(db_type: str) -> str:
     )
 
 
-def extract_attached_files_context_block(user_message: str) -> str:
-    """Return the ``[ATTACHED FILES CONTEXT]`` block if present (for SQL generation).
+_UPLOAD_CONTEXT_MARKERS = ("[UPLOADED SPREADSHEET SCHEMA]",)
 
-    Chat augments turns as ``<block>\\n\\nUSER MESSAGE:\\n<query>``; we keep the
-    full block so SELECT generation sees AVAILABLE SQLITE TABLES + excerpts.
+
+def extract_attached_files_context_block(user_message: str) -> str:
+    """Return ``[UPLOADED SPREADSHEET SCHEMA]`` block if present.
+
+    Chat augments turns as ``<block>\\n\\nUSER MESSAGE:\\n<query>``.
     """
     msg = (user_message or "").strip()
-    if "[ATTACHED FILES CONTEXT]" not in msg:
+    marker = next((m for m in _UPLOAD_CONTEXT_MARKERS if m in msg), None)
+    if not marker:
         return ""
     sep = "\n\nUSER MESSAGE:\n"
     if sep in msg:
         head = msg.split(sep, 1)[0].strip()
-        if head.startswith("[ATTACHED FILES CONTEXT]"):
+        if any(head.startswith(m) for m in _UPLOAD_CONTEXT_MARKERS):
             return head
-    idx = msg.find("[ATTACHED FILES CONTEXT]")
+    idx = msg.find(marker)
     return msg[idx:].strip()
 
 
@@ -751,7 +762,33 @@ def preview_cell_for_table(value: Any) -> str:
     return s.replace("|", "\\|")
 
 
-def json_query_rows_to_markdown_table(text: str) -> Optional[str]:
+def result_rows_display_footer(
+    displayed_count: int,
+    *,
+    total_rows: int | None = None,
+    max_rows: int | None = None,
+) -> str:
+    """Footer: Showing X of Y rows."""
+    cap = max_rows or agent_result_display_max_rows()
+    n = max(0, int(displayed_count))
+    if total_rows is not None and total_rows >= n:
+        label = "row" if int(total_rows) == 1 else "rows"
+        return f"\n\n_Showing {n} of {int(total_rows)} {label}._"
+    if n < cap:
+        label = "row" if n == 1 else "rows"
+        return f"\n\n_Showing {n} of {n} {label}._"
+    return (
+        f"\n\n_Showing {n} rows (max {cap} per query; "
+        "use COUNT(*) if you need the full total)._"
+    )
+
+
+def json_query_rows_to_markdown_table(
+    text: str,
+    *,
+    max_rows: int | None = None,
+    total_rows: int | None = None,
+) -> Optional[str]:
     """Turn ``execute_query`` JSON (array of objects) into a GFM markdown table."""
     t = (text or "").strip()
     if not t:
@@ -775,11 +812,18 @@ def json_query_rows_to_markdown_table(text: str) -> Optional[str]:
                 keys.append(str(k))
     if not keys:
         return None
+    cap = max_rows or agent_result_display_max_rows()
+    full_count = len(data)
+    displayed = data[:cap]
     row_cells = [
         [preview_cell_for_table(row.get(k)) for k in keys]
-        for row in data[:_DELETE_PREVIEW_ROW_CAP]
+        for row in displayed
     ]
-    return markdown_table_from_rows(keys, row_cells)
+    table = markdown_table_from_rows(keys, row_cells)
+    if not table:
+        return None
+    total = total_rows if total_rows is not None else (full_count if full_count < cap else None)
+    return table + result_rows_display_footer(len(displayed), total_rows=total, max_rows=cap)
 
 
 def is_execute_query_error_response(text: str) -> bool:

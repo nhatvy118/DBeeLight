@@ -198,6 +198,19 @@ def tier1_static_analyze(sql: str, *, db_type: str = "sqlite") -> Tier1Result:
     return Tier1Result(ok=ok, kind=kind, errors=errors, warnings=warnings)
 
 
+def require_dql_only(sql: str, *, db_type: str = "sqlite") -> str | None:
+    """Return an error message if ``sql`` is not a single read-only SELECT/WITH statement."""
+    t1 = tier1_static_analyze(sql, db_type=db_type)
+    if t1.blocked:
+        return t1.errors[0] if t1.errors else "SQL blocked by static checks."
+    if t1.kind != SqlStatementKind.DQL:
+        return (
+            f"Only read-only SELECT queries are allowed here (got {t1.kind.value}). "
+            "Use INSERT/UPDATE/DELETE flows that require approval for writes."
+        )
+    return None
+
+
 async def tier2_explain_verify(
     agent,
     call_tool: Callable[..., Awaitable[str]],

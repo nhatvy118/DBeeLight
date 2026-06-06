@@ -74,8 +74,12 @@ _INTENT_CLASSIFICATION_PROMPT = """You are an orchestration router. Pick exactly
 **Decision order (important):**
 - For anything database-related, decide in this order: first try **1 → 2 → 3** (the three structured DB workflows). Only if the request clearly fits NONE of them, use **4** (general Database Agent).
 - Non-database topics: use **5** or **6** when appropriate.
-- If the user message includes uploaded dataset context (e.g. "[UPLOADED DATASETS]" or "[ATTACHED FILES CONTEXT]"), prefer **db_readonly** or **db_general** for filtering, comparing, aggregating, DISTINCT/JOIN questions over uploaded tabular data. Use **excel** only when the user explicitly wants spreadsheet formatting, in-cell charts, or workbook structure edits.
-- Set "semantic_retrieval" to true only when the user needs semantic grounding from unstructured document text (summaries, policy/contract interpretation, "what does this document say..."). For structured SQL-style analysis over uploaded tables, set "semantic_retrieval" to false.
+- If the user message includes **[UPLOADED SPREADSHEET SCHEMA]** (uploaded tabular data already in SQLite):
+  - **db_readonly** for count/filter/aggregate/avg/sum/min/max/distinct/join/compare/rank/lookup/SQL-style questions (keywords EN: count, filter, average, sum, how many, group by; VI: đếm, lọc, trung bình, tổng, bao nhiêu, nhóm theo).
+  - **excel** when the user wants workbook **formatting** (e.g. tô màu, đổi màu nền, bold, conditional formatting), in-cell **formulas**, chart **inside the Excel file**, or structural edits to the .xlsx. If **[UPLOADED_EXCEL_PATH_*]** or **[SESSION_FILE_ID_*]** is also present, the file is already uploaded — set needs_clarification=false and route **excel**; do NOT ask the user to upload again.
+  - **chart** when they ask for a **chart/plot/graph/biểu đồ/đồ thị** on data in the **connected database** (Vega-Lite), not mere table stats.
+  - Do **not** pick **excel** for numeric Q&A that SQL can answer on imported tables.
+- Set "semantic_retrieval" to false whenever **[UPLOADED SPREADSHEET SCHEMA]** is present. Set it to true only for unstructured document Q&A (policy/contract wording, "what does this PDF say") without tabular SQL.
 - If the user asks off-topic smalltalk/personal chat that is not related to this app's capabilities, set "needs_clarification" to true and set "clarification_question" exactly to: "Please ask questions related to the database."
 - If the user asks to **connect** or **disconnect** a database (action request, not just status/info), set "needs_clarification" to true and set "clarification_question" exactly to: "{connect_disconnect_reply}"
 

@@ -22,6 +22,7 @@ import {
   type SessionFileMeta,
   type ToolEvent,
   type GetSessionResponse,
+  type SessionMessage,
 } from '../services/api';
 import {
   buildChatMessageWithSessionFiles,
@@ -368,7 +369,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   /** Locked only after the user explicitly confirmed schema in chat history. */
   const deriveSchemaLockedFromHistory = (
-    rawMessages: Array<{ role: string; content?: string }>,
+    rawMessages: SessionMessage[],
     assistantIndex: number,
   ): boolean => {
     for (let i = assistantIndex + 1; i < rawMessages.length; i += 1) {
@@ -582,25 +583,23 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           const sqlActionStates = getSqlActionStatesFromSessionResponse(res);
           let sqlOrdinal = 0;
           const filteredMessages = res.messages.filter(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (msg: any) => msg.role === 'user' || msg.role === 'assistant',
+            (msg) => msg.role === 'user' || msg.role === 'assistant',
           );
           const convertedMessages: UiMessage[] = filteredMessages
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map((msg: any, msgIndex: number) => {
+            .map((msg, msgIndex) => {
               const rawContent = msg.content || '';
               const cleanedText = stripInternalPayloads(rawContent);
               const sqlPreview =
-                msg.role === 'assistant' ? extractSqlPayloadFromToolEvents((msg as any).tool_events) : null;
+                msg.role === 'assistant' ? extractSqlPayloadFromToolEvents(msg.tool_events) : null;
               const schemaPreview =
                 msg.role === 'assistant'
-                  ? extractSchemaPreviewFromToolEvents((msg as any).tool_events) || extractSchemaPreview(rawContent)
+                  ? extractSchemaPreviewFromToolEvents(msg.tool_events) || extractSchemaPreview(rawContent)
                   : null;
               const sqlAction =
                 msg.role === 'assistant'
                   ? resolveSqlExecuteAction(
-                      (msg as any).tool_events,
-                      pendingWorkflowResumeFromMessage(msg as { pending_workflow_resume?: boolean }),
+                      msg.tool_events,
+                      pendingWorkflowResumeFromMessage(msg),
                     )
                   : { sqlToExecute: null, sqlActionState: undefined };
               const sqlToExecute = sqlAction.sqlToExecute;
@@ -679,15 +678,20 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     listSessionFiles(sessionId)
       .then((files) => {
         setSessionFiles(files);
-        // Auto-select only when user hasn't made a choice yet
+        const fileIdSet = new Set(files.map((f) => f.id));
         setActiveDataSources((prev) => {
-          if (prev.length > 0) return prev;
+          // Drop selections from a previous session (file ids are session-scoped).
+          const kept = prev.filter((s) =>
+            s.type === 'primary_db'
+              ? !!connectedDbLabel
+              : s.type === 'file' && fileIdSet.has(s.id),
+          );
+          if (kept.length > 0) return kept;
+
           const hasPrimaryDb = !!connectedDbLabel;
-          // Only DB and no files → auto-select DB
           if (hasPrimaryDb && files.length === 0) {
             return [{ type: 'primary_db', label: 'Database', detail: connectedDbLabel! }];
           }
-          // Only 1 file and no DB → auto-select that file
           if (!hasPrimaryDb && files.length === 1) {
             const f = files[0];
             return [{ type: 'file', id: f.id, filename: f.filename, mime_type: f.mime_type, uploaded_at: f.uploaded_at ?? null }];
@@ -1341,25 +1345,23 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           const sqlActionStates = getSqlActionStatesFromSessionResponse(res);
           let sqlOrdinal = 0;
           const filteredMessages = res.messages.filter(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (msg: any) => msg.role === 'user' || msg.role === 'assistant',
+            (msg) => msg.role === 'user' || msg.role === 'assistant',
           );
           const convertedMessages: UiMessage[] = filteredMessages
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map((msg: any, msgIndex: number) => {
+            .map((msg, msgIndex) => {
               const rawContent = msg.content || '';
               const cleanedText = stripInternalPayloads(rawContent);
               const sqlPreview =
-                msg.role === 'assistant' ? extractSqlPayloadFromToolEvents((msg as any).tool_events) : null;
+                msg.role === 'assistant' ? extractSqlPayloadFromToolEvents(msg.tool_events) : null;
               const schemaPreview =
                 msg.role === 'assistant'
-                  ? extractSchemaPreviewFromToolEvents((msg as any).tool_events) || extractSchemaPreview(rawContent)
+                  ? extractSchemaPreviewFromToolEvents(msg.tool_events) || extractSchemaPreview(rawContent)
                   : null;
               const sqlAction =
                 msg.role === 'assistant'
                   ? resolveSqlExecuteAction(
-                      (msg as any).tool_events,
-                      pendingWorkflowResumeFromMessage(msg as { pending_workflow_resume?: boolean }),
+                      msg.tool_events,
+                      pendingWorkflowResumeFromMessage(msg),
                     )
                   : { sqlToExecute: null, sqlActionState: undefined };
               const sqlToExecute = sqlAction.sqlToExecute;

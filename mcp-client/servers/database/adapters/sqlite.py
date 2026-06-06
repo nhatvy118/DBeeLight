@@ -399,7 +399,12 @@ class SQLiteAdapter(DatabaseAdapter):
             return query
         if "LIMIT" in query_upper:
             return query
-        return f"{query} LIMIT 1000"
+        try:
+            cap = int(os.getenv("AGENT_SELECT_ROW_LIMIT", "50"))
+        except ValueError:
+            cap = 50
+        cap = max(1, min(cap, 10_000))
+        return f"{query} LIMIT {cap}"
 
     async def run_mutation(self, sql: str) -> str:
         sql_upper = sql.strip().upper()

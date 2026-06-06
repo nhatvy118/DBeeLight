@@ -8,6 +8,7 @@ from typing import Dict, Any
 from openai import OpenAI
 from langgraph.graph import END, StateGraph
 
+from mcp_agent.graph.sql_verification import _sql_log_snippet, require_dql_only
 from mcp_agent.graph.database_utils import (
     OUTPUT_DATA_RESULT,
     OUTPUT_SQL_STATEMENT,
@@ -147,34 +148,6 @@ def _export_slice_text_for_parsing(state: AgentState, effective_message: str, us
     return " ".join(p for p in parts if p)
 
 
-def _looks_schema_or_columns_question(text: str) -> bool:
-    """True when the user asks for columns, fields, or table structure (not row data)."""
-    q = (text or "").lower()
-    phrases = (
-        "column name",
-        "column names",
-        "list column",
-        "list columns",
-        "what column",
-        "what columns",
-        "which column",
-        "fields in",
-        "field names",
-        "list of fields",
-        "schema",
-        "structure of the table",
-        "structure of table",
-        "table structure",
-        "describe the table",
-        "describe table",
-        "show columns",
-        "table columns",
-    )
-    if any(p in q for p in phrases):
-        return True
-    return False
-
-
 # Nodes
 async def intent_parse(state: AgentState, llm, agent) -> AgentState:
     """Parse user intent and determine operation type."""
@@ -184,6 +157,9 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
     logger.info(f"[ReadOnly] Intent parse: {user_message[:50]}...")
     recent_context = await _get_recent_session_context(agent)
 
+    orch = state.get("orchestrator_intent") if isinstance(state.get("orchestrator_intent"), dict) else {}
+    classify_text = str(orch.get("nl_query") or "").strip() or _user_message_tail(user_message)
+
     response = llm.chat.completions.create(
         model="gpt-5.2",
         messages=[
@@ -192,7 +168,8 @@ async def intent_parse(state: AgentState, llm, agent) -> AgentState:
                 "content": """Analyze the database request and extract:
 - operation: SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, EXPORT, LIST_TABLES, DESCRIBE_TABLE, CONNECT, DISCONNECT, UNKNOWN
   Use **LIST_TABLES** when the user wants to see, list, show, count, or discover what tables exist (e.g. "show me all tables", "list tables", "how many tables", "what tables are there", "which tables", "display all tables", "liệt kê bảng", "bao nhiêu bảng"). Do NOT generate SQL for this — just use LIST_TABLES.
-  Use **DESCRIBE_TABLE** when the user wants to see the structure/schema/columns of a specific table.
+  Use **DESCRIBE_TABLE** ONLY when the user explicitly wants table structure/columns/schema (e.g. "describe table X", "what columns", "show schema of table"). Do NOT use DESCRIBE_TABLE for row counts, filters, aggregates, or data questions — use **SELECT** (e.g. "how many rows", "count records", "average total").
+  Ignore any **[UPLOADED SPREADSHEET SCHEMA]** prefix in the payload; classify from the user's actual question only.
   Use **EXPORT** (not SELECT) ONLY when the user explicitly asks to download, save, or export data as a file (e.g. "export to Excel", "download as xlsx", "save to csv", "export rows 10-20").
   Do NOT use EXPORT just because the user message contains an uploaded file marker or mentions reading/querying data from an uploaded file — that is SELECT.
   Use **CONNECT** when the user asks to connect to a database. Use **DISCONNECT** when the user asks to disconnect.
@@ -207,7 +184,7 @@ Return JSON."""
             {
                 "role": "user",
                 "content": (
-                    f"Latest user message: {user_message}\n\n"
+                    f"User question to classify: {classify_text}\n\n"
                     f"Recent conversation context:\n{recent_context or '(none)'}"
                 ),
             }
@@ -277,6 +254,7 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
         log_lines.append(f"list_tables error: {e}")
 
     actual_tables = _parse_table_names_from_list_tools(tables_result)
+    actual_set = set(actual_tables)
 
     # CREATE targets a new table — names in intent often do not exist yet; skip existence check.
     if op == "CREATE":
@@ -292,6 +270,7 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
     um = str(state.get("user_message") or "")
     if actual_tables:
         tables_work = _prioritize_tables_from_user_message(um, tables_work, actual_tables)
+        tables_work = [t for t in tables_work if t in actual_set]
     if not tables_work and len(actual_tables) == 1:
         tables_work = list(actual_tables)
         log_lines.append(f"[fallback] no table hint → using sole DB table `{tables_work[0]}`")
@@ -301,6 +280,10 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
     for t in tables_work:
         name = str(t).strip()
         if not name:
+            continue
+        if name not in actual_set:
+            missing.append(name)
+            log_lines.append(f"describe_table({name}): skipped — not in list_tables")
             continue
         try:
             d = await _call_tool(agent, "describe_table", {"table_name": name})
@@ -313,8 +296,13 @@ async def schema_discovery(state: AgentState, llm, agent) -> AgentState:
             log_lines.append(f"describe_table({name}) error: {e}")
             missing.append(name)
 
-    # Wrong hint (e.g. ``user``) but only one physical table — use it for the rest of the turn.
-    if missing and len(actual_tables) == 1:
+    # Single wrong hint + single physical table — remap (do not swap when user named a missing table).
+    if (
+        missing
+        and len(actual_tables) == 1
+        and len(tables_work) == 1
+        and tables_work[0] not in actual_set
+    ):
         only = actual_tables[0]
         try:
             d = await _call_tool(agent, "describe_table", {"table_name": only})
@@ -377,29 +365,6 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
     effective_message = str(intent.get("resolved_query") or user_message)
     operation = intent.get("operation", "SELECT").upper()
     logger.info(f"[ReadOnly] Query execution for: {operation}")
-
-    # Safety net if intent_parse still left UNKNOWN (e.g. table list populated only after merge).
-    if operation == "UNKNOWN":
-        combined = f"{effective_message} {user_message}"
-        if _looks_schema_or_columns_question(combined):
-            tables = (state.get("table_schema") or {}).get("tables") or intent.get("tables") or []
-            if tables and agent:
-                table_name = str(tables[0]).strip()
-                if table_name:
-                    try:
-                        desc = await _call_tool(agent, "describe_table", {"table_name": table_name})
-                        return {
-                            **state,
-                            "sql": None,
-                            "query_result": desc,
-                            "output": {
-                                "type": OUTPUT_DATA_RESULT,
-                                "data": desc,
-                                "message": desc,
-                            },
-                        }
-                    except Exception as e:
-                        logger.warning("[ReadOnly] UNKNOWN→describe_table fallback failed: %s", e)
 
     # Safe DB metadata/connect tools — prefer direct MCP calls when we already know the table
     # (avoids process_query failing on long RAG-prefixed user_message).
@@ -556,36 +521,6 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
             "output": {"type": OUTPUT_DATA_RESULT, "data": msg, "message": msg},
         }
 
-    # Schema/info requests should return table description.
-    if operation in {"SELECT", "DESCRIBE_TABLE"}:
-        ql = (effective_message + " " + str(user_message)).lower()
-        schema_like = (
-            "show info about table" in ql
-            or "describe table" in ql
-            or "table structure" in ql
-            or "schema of table" in ql
-            or "thông tin bảng" in ql
-            or "mô tả bảng" in ql
-            or "cấu trúc bảng" in ql
-            or _looks_schema_or_columns_question(ql)
-        )
-        if schema_like and agent:
-            tables = (state.get("table_schema") or {}).get("tables") or intent.get("tables") or []
-            if tables:
-                table_name = str(tables[0]).strip()
-                if table_name:
-                    desc = await _call_tool(agent, "describe_table", {"table_name": table_name})
-                    return {
-                        **state,
-                        "sql": None,
-                        "query_result": desc,
-                        "output": {
-                            "type": OUTPUT_DATA_RESULT,
-                            "data": desc,
-                            "message": desc,
-                        },
-                    }
-
     # Generate and execute SELECT
     if agent:
         db_type = detect_db_type(agent)
@@ -610,8 +545,8 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
 
         # Split all_db_tables into primary-DB tables and session-file tables.
         primary_db_tables = [t for t in all_db_tables if t not in session_file_table_names and not t.startswith("t_")]
-        # session file tables already in all_db_tables (via list_tables filter).
         session_tables_in_db = [t for t in all_db_tables if t.startswith("t_")]
+        all_db_set = set(all_db_tables)
 
         # Build constraint block whenever we have any table info.
         if all_db_tables or session_file_pairs:
@@ -630,7 +565,12 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                 constraint_lines.append("")
             # Session file tables — show with filename hint when available.
             session_tname_to_fname = {tname: fname for fname, tname in session_file_pairs}
-            all_session_tables = list(dict.fromkeys(session_tables_in_db + list(session_file_table_names)))
+            all_session_tables = list(
+                dict.fromkeys(
+                    session_tables_in_db
+                    + [t for t in session_file_table_names if t in all_db_set]
+                )
+            )
             if all_session_tables:
                 constraint_lines.append("Session-file tables (use these EXACT identifiers):")
                 for t in all_session_tables:
@@ -701,6 +641,26 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                     },
                 }
             break
+
+        dql_err = require_dql_only(select_sql, db_type=db_type)
+        if dql_err:
+            return {
+                **state,
+                "sql": None,
+                "query_result": None,
+                "output": {
+                    "type": "error",
+                    "message": sql_generation_failure_message(dql_err),
+                },
+            }
+
+        session_id = str(state.get("session_id") or "").strip()
+        logger.info(
+            "[ReadOnly] session=%s db_type=%s SQL: %s",
+            session_id or "unknown",
+            db_type,
+            _sql_log_snippet(select_sql),
+        )
 
         try:
             query_result = await _call_tool(agent, "execute_query", {"query": select_sql})
