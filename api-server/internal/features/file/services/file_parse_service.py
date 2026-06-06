@@ -1,4 +1,17 @@
-"""Parse uploaded files into structured payloads for SQLite import and summaries."""
+"""Parse uploaded files into structured payloads for SQLite import and summaries.
+
+Tabular loading stack (pandas = API + dtype/column cleanup, not the parser itself):
+
+    pandas DataFrame
+      ├── Excel/ODS (.xlsx, .xls, .xlsb, .ods)
+      │     └── engine=\"calamine\" (python-calamine / Rust)
+      │     └── fallback: pandas default engine (openpyxl / xlrd) if calamine fails
+      ├── CSV/TSV (.csv, .tsv, delimited .txt)
+      │     └── pd.read_csv → pandas built-in C parser (+ encoding/delimiter sniff)
+      └── (future) Parquet/Arrow → pyarrow, optional pipe to DuckDB
+
+All paths end in ``sanitize_dataframe_columns`` then ``df.to_sql`` for SQLite import.
+"""
 
 from __future__ import annotations
 
@@ -20,13 +33,6 @@ except ImportError:
     PANDAS_AVAILABLE = False
 
 try:
-    from python_calamine import CalamineWorkbook
-
-    CALAMINE_AVAILABLE = True
-except ImportError:
-    CALAMINE_AVAILABLE = False
-
-try:
     from pypdf import PdfReader
 
     PYPDF_AVAILABLE = True
@@ -36,8 +42,8 @@ except ImportError:
 
 Kind = Literal["tabular", "document"]
 
-# Formats read by python-calamine (Rust): xlsx/xlsm/xls/xlsb/ods + csv/tsv.
-CALAMINE_EXTENSIONS = frozenset({"xlsx", "xlsm", "xls", "xlsb", "ods", "xltx", "xltm", "tsv"})
+EXCEL_EXTENSIONS = frozenset({"xlsx", "xlsm", "xls", "xlsb", "ods", "xltx", "xltm"})
+DELIMITED_EXTENSIONS = frozenset({"csv", "tsv", "txt"})
 
 
 def sanitize_dataframe_columns(df: "pd.DataFrame") -> "pd.DataFrame":
@@ -73,17 +79,9 @@ class ParsedFile:
     document_parts: list[dict[str, Any]] = field(default_factory=list)
 
 
-def _detect_delimiter(sample: str) -> str:
-    try:
-        dialect = csv.Sniffer().sniff(sample[:8192], delimiters=",;\t|")
-        return dialect.delimiter
-    except csv.Error:
-        return ","
-
-
 def _is_spreadsheet_upload(filename: str, mime_type: str) -> bool:
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext in CALAMINE_EXTENSIONS:
+    if ext in EXCEL_EXTENSIONS:
         return True
     mime = (mime_type or "").lower()
     return "spreadsheet" in mime or "excel" in mime or "opendocument" in mime
@@ -98,56 +96,59 @@ def _default_spreadsheet_mime(filename: str) -> str:
     return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-def _sheet_rows_to_dataframe(rows: list[list[Any]]) -> "pd.DataFrame":
+def _looks_european(sample: str) -> bool:
+    return bool(re.search(r"\d+,\d{1,2}(?:[;\s]|$)", sample))
+
+
+def _read_csv_smart(path: Path) -> "pd.DataFrame":
+    """Pandas API + built-in C CSV parser (encoding/delimiter/decimal sniff on top)."""
     if not PANDAS_AVAILABLE:
-        raise RuntimeError("pandas is required for spreadsheet parsing")
-    if not rows:
-        return pd.DataFrame()
-    width = max((len(r) for r in rows), default=0)
-    normalized = [list(r) + [None] * (width - len(r)) for r in rows]
-    header = [str(c).strip() if c is not None else "" for c in normalized[0]]
-    if not any(h for h in header):
-        header = [f"column_{i}" for i in range(width)]
-    body = normalized[1:] if len(normalized) > 1 else []
-    df = pd.DataFrame(body, columns=header)
-    return sanitize_dataframe_columns(df)
+        raise RuntimeError("pandas is required for CSV parsing")
 
+    raw = path.read_bytes()
+    if raw.startswith(b"\xef\xbb\xbf"):
+        encoding = "utf-8-sig"
+    else:
+        encoding = "latin-1"
+        for enc in ("utf-8", "cp1258", "latin-1"):
+            try:
+                raw.decode(enc)
+                encoding = enc
+                break
+            except UnicodeDecodeError:
+                continue
 
-def _parse_spreadsheet_calamine(path: Path, filename: str, mime_type: str) -> ParsedFile:
-    """Primary reader: python-calamine (xlsx, xls, xlsb, ods, csv, tsv, …)."""
-    if not CALAMINE_AVAILABLE:
-        raise RuntimeError("python-calamine is required for spreadsheet parsing")
+    sample = raw[:8192].decode(encoding, errors="replace")
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        sep = dialect.delimiter
+    except csv.Error:
+        sep = "\t" if path.suffix.lower() == ".tsv" else ","
 
-    wb = CalamineWorkbook.from_path(str(path))
-    names = [str(n) for n in (wb.sheet_names or []) if str(n).strip()]
-    if not names:
-        raise ValueError("Spreadsheet has no readable sheets.")
+    decimal = "," if sep == ";" and _looks_european(sample) else "."
+    thousands = "." if decimal == "," else ","
 
-    sheets: list[dict[str, Any]] = []
-    parts: list[str] = []
-    for name in names:
-        sheet = wb.get_sheet_by_name(name)
-        rows = sheet.to_python(skip_empty_area=False)
-        df = _sheet_rows_to_dataframe(rows)
-        cols = [str(c) for c in df.columns.tolist()]
-        sheets.append({"label": name, "columns": cols, "dataframe": df})
-        parts.append(f"{name}: {len(df)} rows, columns {cols}")
-
-    summary = f"Spreadsheet {filename}: " + "; ".join(parts)
-    return ParsedFile(
-        kind="tabular",
-        filename=filename,
-        mime_type=mime_type or _default_spreadsheet_mime(filename),
-        summary=summary,
-        tabular_sheets=sheets,
+    return sanitize_dataframe_columns(
+        pd.read_csv(path, sep=sep, encoding=encoding, decimal=decimal, thousands=thousands)
     )
 
 
-def _parse_spreadsheet_pandas_calamine(path: Path, filename: str, mime_type: str) -> ParsedFile:
-    """Pandas wrapper around calamine engine (pandas >= 2.2)."""
+def _dataframe_to_sheet(label: str, df: "pd.DataFrame") -> dict[str, Any]:
+    cols = [str(c) for c in df.columns.tolist()]
+    return {"label": label, "columns": cols, "dataframe": df}
+
+
+def _parse_excel_sheets(
+    path: Path,
+    filename: str,
+    mime_type: str,
+    *,
+    engine: str | None,
+) -> ParsedFile:
     if not PANDAS_AVAILABLE:
         raise RuntimeError("pandas is required for spreadsheet parsing")
-    xl = pd.ExcelFile(path, engine="calamine")
+
+    xl = pd.ExcelFile(path, engine=engine) if engine else pd.ExcelFile(path)
     names = [str(n) for n in (xl.sheet_names or []) if str(n).strip()]
     if not names:
         raise ValueError("Spreadsheet has no readable sheets.")
@@ -155,10 +156,12 @@ def _parse_spreadsheet_pandas_calamine(path: Path, filename: str, mime_type: str
     sheets: list[dict[str, Any]] = []
     parts: list[str] = []
     for name in names:
-        df = sanitize_dataframe_columns(pd.read_excel(path, sheet_name=name, engine="calamine"))
-        cols = [str(c) for c in df.columns.tolist()]
-        sheets.append({"label": name, "columns": cols, "dataframe": df})
-        parts.append(f"{name}: {len(df)} rows, columns {cols}")
+        kwargs: dict[str, Any] = {"sheet_name": name}
+        if engine:
+            kwargs["engine"] = engine
+        df = sanitize_dataframe_columns(pd.read_excel(path, **kwargs))
+        sheets.append(_dataframe_to_sheet(name, df))
+        parts.append(f"{name}: {len(df)} rows, columns {sheets[-1]['columns']}")
 
     summary = f"Spreadsheet {filename}: " + "; ".join(parts)
     return ParsedFile(
@@ -170,63 +173,16 @@ def _parse_spreadsheet_pandas_calamine(path: Path, filename: str, mime_type: str
     )
 
 
-def _detect_excel_engine(path: Path) -> str:
-    head = path.read_bytes()[:8]
-    if head[:4] == b"\xd0\xcf\x11\xe0":
-        return "xlrd"
-    return "openpyxl"
-
-
-def _parse_spreadsheet_pandas_fallback(path: Path, filename: str, mime_type: str) -> ParsedFile:
-    """Legacy fallback when calamine cannot read the file."""
-    if not PANDAS_AVAILABLE:
-        raise RuntimeError("pandas is required for spreadsheet parsing")
-
-    engine = _detect_excel_engine(path)
-    engines = [engine, "xlrd" if engine == "openpyxl" else "openpyxl"]
-    last_err: Exception | None = None
-
-    for eng in engines:
-        try:
-            xl = pd.ExcelFile(path, engine=eng)
-            names = [str(n) for n in (xl.sheet_names or []) if str(n).strip()]
-            if not names:
-                last_err = ValueError(f"no sheets with engine={eng}")
-                continue
-            sheets: list[dict[str, Any]] = []
-            parts: list[str] = []
-            for name in names:
-                df = sanitize_dataframe_columns(pd.read_excel(path, sheet_name=name, engine=eng))
-                cols = [str(c) for c in df.columns.tolist()]
-                sheets.append({"label": name, "columns": cols, "dataframe": df})
-                parts.append(f"{name}: {len(df)} rows, columns {cols}")
-            summary = f"Spreadsheet {filename}: " + "; ".join(parts)
-            return ParsedFile(
-                kind="tabular",
-                filename=filename,
-                mime_type=mime_type or _default_spreadsheet_mime(filename),
-                summary=summary,
-                tabular_sheets=sheets,
-            )
-        except Exception as e:
-            last_err = e
-            logger.warning("Spreadsheet fallback engine=%s failed for %s: %s", eng, filename, e)
-
-    msg = str(last_err).strip() if last_err else "unknown error"
-    raise ValueError(f"Could not read spreadsheet ({msg}).") from last_err
-
-
 def _parse_spreadsheet(path: Path, filename: str, mime_type: str) -> ParsedFile:
-    if CALAMINE_AVAILABLE:
-        try:
-            return _parse_spreadsheet_calamine(path, filename, mime_type)
-        except Exception as e:
-            logger.warning("calamine direct read failed for %s: %s", filename, e)
-        try:
-            return _parse_spreadsheet_pandas_calamine(path, filename, mime_type)
-        except Exception as e:
-            logger.warning("pandas calamine engine failed for %s: %s", filename, e)
-    return _parse_spreadsheet_pandas_fallback(path, filename, mime_type)
+    """Pandas API; parser = calamine, then optional legacy openpyxl/xlrd."""
+    try:
+        return _parse_excel_sheets(path, filename, mime_type, engine="calamine")
+    except Exception as e:
+        logger.warning("calamine read failed for %s: %s", filename, e)
+    try:
+        return _parse_excel_sheets(path, filename, mime_type, engine=None)
+    except Exception as e:
+        raise ValueError(f"Could not read spreadsheet ({e}).") from e
 
 
 def parse_file(path: Path, filename: str, mime_type: str) -> ParsedFile:
@@ -234,13 +190,13 @@ def parse_file(path: Path, filename: str, mime_type: str) -> ParsedFile:
 
     if mime_type == "application/pdf" or ext == "pdf":
         return _parse_pdf(path, filename, mime_type)
-    if mime_type in ("text/csv",) or ext == "csv":
-        return _parse_csv(path, filename, mime_type)
+    if ext in DELIMITED_EXTENSIONS or mime_type in ("text/csv", "text/tab-separated-values"):
+        return _parse_delimited(path, filename, mime_type, ext)
     if _is_spreadsheet_upload(filename, mime_type):
         return _parse_spreadsheet(path, filename, mime_type)
     if mime_type == "application/x-sqlite3" or ext == "db":
         return _parse_sqlite(path, filename, mime_type)
-    if mime_type.startswith("text/") or ext in ("txt", "md", "markdown"):
+    if mime_type.startswith("text/") or ext in ("md", "markdown"):
         return _parse_plain(path, filename, mime_type)
 
     try:
@@ -249,20 +205,23 @@ def parse_file(path: Path, filename: str, mime_type: str) -> ParsedFile:
         raise ValueError(f"Unsupported file type: {mime_type} / {ext}") from None
 
 
-def _parse_csv(path: Path, filename: str, mime_type: str) -> ParsedFile:
-    if not PANDAS_AVAILABLE:
-        raise RuntimeError("pandas is required for CSV parsing")
-    sample = path.read_text(encoding="utf-8", errors="replace")[:8192]
-    delim = _detect_delimiter(sample)
-    df = sanitize_dataframe_columns(pd.read_csv(path, delimiter=delim))
+def _parse_delimited(path: Path, filename: str, mime_type: str, ext: str) -> ParsedFile:
+    if ext == "txt":
+        sample = path.read_bytes()[:8192]
+        if b"," not in sample and b";" not in sample and b"\t" not in sample:
+            return _parse_plain(path, filename, mime_type or "text/plain")
+
+    df = _read_csv_smart(path)
     cols = [str(c) for c in df.columns.tolist()]
-    summary = f"CSV with columns: {', '.join(cols)} ({len(df)} rows)."
+    label = "Sheet1" if ext != "tsv" else "TSV1"
+    summary = f"{ext.upper()} with columns: {', '.join(cols)} ({len(df)} rows)."
+    mime = mime_type or ("text/tab-separated-values" if ext == "tsv" else "text/csv")
     return ParsedFile(
         kind="tabular",
         filename=filename,
-        mime_type=mime_type or "text/csv",
+        mime_type=mime,
         summary=summary,
-        tabular_sheets=[{"label": "Sheet1", "columns": cols, "dataframe": df}],
+        tabular_sheets=[_dataframe_to_sheet(label, df)],
     )
 
 
