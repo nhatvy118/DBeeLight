@@ -646,6 +646,9 @@ export type SessionFileMeta = {
   summary?: string | null;
   sqlite_table_name?: string | null;
   uploaded_at?: string | null;
+  /** False when Excel was saved but SQLite import failed (Excel agent still works). */
+  sql_import_ok?: boolean;
+  sql_import_warning?: string | null;
 };
 
 export async function listSessionFiles(sessionId: string): Promise<SessionFileMeta[]> {

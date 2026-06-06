@@ -20,7 +20,7 @@ export default function AttachMenu({ onUploadDevice, onGoogleDrive, disabled }: 
     {
       icon: Icons.Monitor,
       label: 'Upload from device',
-      sub: 'Excel files only (.xlsx, .xls)',
+      sub: 'Spreadsheets (.xlsx, .xls, .xlsb, .ods, .csv)',
       act: () => { setOpen(false); onUploadDevice(); },
     },
     {

@@ -524,6 +524,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             useProjectDb,
           );
           uploaded.push({ id: up.id, filename: up.filename });
+          if (up.sql_import_ok === false) {
+            toast.warning(
+              `${up.filename}: saved for Excel edits; SQL Q&A unavailable (${up.sql_import_warning || 'import failed'}).`,
+            );
+          }
         } catch (err) {
           const e = err as Error & { code?: string };
           if (e.code === 'storage_quota_exceeded' || /5\s*GB|storage limit/i.test(e.message || '')) {
@@ -547,8 +552,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       setStagedFiles([]);
       setInputAttachedFiles((prev) => [...prev, ...uploaded]);
       // Refresh session files list for DataSource selector
-      if (sessionId && uploaded.length > 0) {
-        listSessionFiles(sessionId).then(setSessionFiles).catch(() => {});
+      if (sid && uploaded.length > 0) {
+        listSessionFiles(sid).then(setSessionFiles).catch(() => {});
       }
       return uploaded;
     } finally {
@@ -556,7 +561,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
   };
 
-  /** Stage file locally — actual upload happens on Enter. */
+  /** Stage file locally — upload sends the original file (Excel kept for formatting + SQL import on BE). */
   const handleExcelFileSelected = (file: File) => {
     const localId = `staged-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setStagedFiles((prev) => [...prev, { localId, file, filename: file.name }]);
@@ -1471,7 +1476,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         type="file"
         style={{ display: 'none' }}
         multiple={false}
-        accept=".xlsx,.xls,.csv,.pdf,.db,.sqlite,.txt,.md,application/pdf,application/x-sqlite3,text/csv,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+        accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.tsv,.pdf,.db,.sqlite,.txt,.md,application/pdf,application/x-sqlite3,text/csv,text/tab-separated-values,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.oasis.opendocument.spreadsheet"
         onChange={handleFileInputChange}
       />
 

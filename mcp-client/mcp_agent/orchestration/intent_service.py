@@ -74,7 +74,7 @@ _INTENT_CLASSIFICATION_PROMPT = """You are an orchestration router. Pick exactly
 **Decision order (important):**
 - For anything database-related, decide in this order: first try **1 → 2 → 3** (the three structured DB workflows). Only if the request clearly fits NONE of them, use **4** (general Database Agent).
 - Non-database topics: use **5** or **6** when appropriate.
-- If the user message includes **[UPLOADED SPREADSHEET SCHEMA]** (uploaded tabular data already in SQLite):
+- If the user message includes **[UPLOADED SPREADSHEET SCHEMA]** (uploaded tabular data in SQLite; `.xlsx`/`.xls` are stored on disk for Excel tools and imported to SQL when possible):
   - **db_readonly** for count/filter/aggregate/avg/sum/min/max/distinct/join/compare/rank/lookup/SQL-style questions (keywords EN: count, filter, average, sum, how many, group by; VI: đếm, lọc, trung bình, tổng, bao nhiêu, nhóm theo).
   - **excel** when the user wants workbook **formatting** (e.g. tô màu, đổi màu nền, bold, conditional formatting), in-cell **formulas**, chart **inside the Excel file**, or structural edits to the .xlsx. If **[UPLOADED_EXCEL_PATH_*]** or **[SESSION_FILE_ID_*]** is also present, the file is already uploaded — set needs_clarification=false and route **excel**; do NOT ask the user to upload again.
   - **chart** when they ask for a **chart/plot/graph/biểu đồ/đồ thị** on data in the **connected database** (Vega-Lite), not mere table stats.

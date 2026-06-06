@@ -21,6 +21,8 @@ from fastapi import HTTPException, UploadFile
 from internal.features.file.repository import FileRepository
 from internal.features.project.repository import ProjectRepository
 from internal.features.file.services.file_parse_service import (
+    ParsedFile,
+    _is_spreadsheet_upload,
     parse_file,
     suggested_sqlite_table_names,
 )
@@ -306,24 +308,41 @@ class FileService:
             )
 
         mime = upload.content_type or "application/octet-stream"
+        is_spreadsheet = _is_spreadsheet_upload(original_name, mime)
+        parse_skip_reason: str | None = None
 
         try:
             parsed = parse_file(dest_path, original_name, mime)
         except Exception as e:
-            dest_path.unlink(missing_ok=True)
-            logger.exception("parse failed")
-            raise HTTPException(status_code=400, detail=f"Could not parse file: {e}") from e
+            if is_spreadsheet:
+                parse_skip_reason = str(e).strip() or type(e).__name__
+                logger.warning(
+                    "Spreadsheet parse failed for %s; keeping file on disk: %s",
+                    original_name,
+                    parse_skip_reason,
+                )
+                parsed = ParsedFile(
+                    kind="tabular",
+                    filename=original_name,
+                    mime_type=mime
+                    or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    summary=f"Spreadsheet {original_name} (SQLite import skipped).",
+                    tabular_sheets=[],
+                )
+            else:
+                dest_path.unlink(missing_ok=True)
+                logger.exception("parse failed")
+                raise HTTPException(status_code=400, detail=f"Could not parse file: {e}") from e
 
         sqlite_table_name: str | None = None
         sqlite_db_path: str | None = None
+        sql_import_ok = True
+        sql_import_warning: str | None = None
 
         if parsed.kind == "tabular":
             engine_url: str | None = None
             temp_fs_path: str | None = None
             eff_pid = pid or sess.get("project_id")
-            # use_project_db=True  → always try project DB
-            # use_project_db=False → always use temp SQLite (user chose "lưu tạm")
-            # use_project_db=None  → legacy: auto-use project DB if available
             if use_project_db is not False and eff_pid and self._project_repo:
                 proj = await self._project_repo.get_project_by_id(eff_pid, user_key)
                 if proj and proj.get("db_url") and not str(proj["db_url"]).startswith("placeholder"):
@@ -333,18 +352,41 @@ class FileService:
                 engine_url = _sqlite_url_from_path(tp)
                 temp_fs_path = str(tp.resolve())
 
-            sqlite_db_path, sqlite_table_name = await asyncio.to_thread(
-                self._import_tabular_sync,
-                parsed,
-                engine_url,
-                temp_fs_path,
-            )
+            import_error: str | None = None
+            if parsed.tabular_sheets:
+                try:
+                    sqlite_db_path, sqlite_table_name = await asyncio.to_thread(
+                        self._import_tabular_sync,
+                        parsed,
+                        engine_url,
+                        temp_fs_path,
+                    )
+                except Exception as e:
+                    logger.exception("SQLite import failed for %s", original_name)
+                    import_error = str(e).strip() or type(e).__name__
+                    sqlite_db_path, sqlite_table_name = None, None
+
             if not sqlite_table_name:
-                dest_path.unlink(missing_ok=True)
-                raise HTTPException(
-                    status_code=400,
-                    detail="Could not import spreadsheet into SQLite for SQL queries.",
-                )
+                if is_spreadsheet:
+                    sql_import_ok = False
+                    sql_import_warning = (
+                        parse_skip_reason
+                        or import_error
+                        or "Could not import spreadsheet into SQLite for SQL queries."
+                    )
+                    logger.warning(
+                        "Keeping spreadsheet upload %s without SQLite table: %s",
+                        original_name,
+                        sql_import_warning,
+                    )
+                else:
+                    dest_path.unlink(missing_ok=True)
+                    detail = (
+                        import_error
+                        or parse_skip_reason
+                        or "Could not import spreadsheet into SQLite for SQL queries."
+                    )
+                    raise HTTPException(status_code=400, detail=detail) from None
         else:
             has_text = any(
                 str(p.get("text") or "").strip() for p in (parsed.document_parts or [])
@@ -397,6 +439,8 @@ class FileService:
             "summary": parsed.summary,
             "sqlite_table_name": sqlite_table_name,
             "sqlite_db_path": sqlite_db_path,
+            "sql_import_ok": sql_import_ok,
+            "sql_import_warning": sql_import_warning,
         }
 
     async def persist_session_export_xlsx(
@@ -526,11 +570,18 @@ class FileService:
             if "__row_id" not in df.columns:
                 df.insert(0, "__row_id", range(1, len(df) + 1))
             tname = f"{suggested}_{short}"[:63]
-            try:
-                df.to_sql(tname, engine, if_exists="fail", index=False)
-            except ValueError:
-                tname = f"{tname}_{uuid.uuid4().hex[:4]}"
-                df.to_sql(tname, engine, if_exists="fail", index=False)
+            last_err: Exception | None = None
+            for _ in range(3):
+                try:
+                    df.to_sql(tname, engine, if_exists="fail", index=False)
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    tname = f"{suggested}_{short}_{uuid.uuid4().hex[:4]}"[:63]
+            if last_err is not None:
+                label = sheet.get("label") or suggested
+                raise RuntimeError(f"sheet {label!r}: {last_err}") from last_err
             if primary_table is None:
                 primary_table = tname
         engine.dispose()
