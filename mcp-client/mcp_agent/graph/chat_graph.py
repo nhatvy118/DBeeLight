@@ -153,7 +153,7 @@ def build_chat_graph(orchestrator: Any, checkpointer: Any):
     summarization_model = init_chat_model(
         orchestrator._router_model,
         model_provider="openai",
-    ).bind(max_tokens=SUMMARY_MODEL_MAX_TOKENS)
+    ).bind(max_completion_tokens=SUMMARY_MODEL_MAX_TOKENS)
     summarization_node = SummarizationNode(
         token_counter=count_tokens_approximately,
         model=summarization_model,

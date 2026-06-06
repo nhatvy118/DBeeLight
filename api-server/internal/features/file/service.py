@@ -747,7 +747,7 @@ class FileService:
                 },
                 {"role": "user", "content": summary_input},
             ],
-            max_tokens=650,
+            max_completion_tokens=650,
             temperature=0.2,
         )
         text = (resp.choices[0].message.content or "").strip()

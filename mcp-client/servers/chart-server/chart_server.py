@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -420,5 +421,31 @@ def render_vega_lite_spec(
     return json.dumps(spec)
 
 
+# Errors the OS/anyio raise when the parent closes the stdio pipe on us.
+_TEARDOWN_ERRORS = (BrokenPipeError, ConnectionResetError, EOFError)
+
+
+def _is_teardown_noise(exc: BaseException) -> bool:
+    """True if ``exc`` is — or only wraps — expected stdio pipe-close errors.
+
+    anyio bundles the real cause inside an ``ExceptionGroup`` (``.exceptions``),
+    so recurse into groups; a group containing anything other than a pipe-close
+    error is a genuine fault and must propagate.
+    """
+    nested = getattr(exc, "exceptions", None)
+    if nested is not None:  # ExceptionGroup / BaseExceptionGroup
+        return all(_is_teardown_noise(e) for e in nested)
+    return isinstance(exc, _TEARDOWN_ERRORS)
+
+
 if __name__ == "__main__":
-    mcp.run()
+    # The parent (mcp-client) closes our stdio pipe when it evicts an idle agent
+    # or shuts down; the stdio server's final flush then raises BrokenPipeError
+    # (often wrapped in an ExceptionGroup). That is the expected stop signal, so
+    # exit cleanly instead of dumping a teardown traceback. Anything else raises.
+    try:
+        mcp.run()
+    except BaseException as exc:
+        if _is_teardown_noise(exc):
+            sys.exit(0)
+        raise
