@@ -38,7 +38,7 @@ except ImportError:
 # If not available, fallback to direct DB writes
 REDIS_STACK_AVAILABLE = False
 try:
-    from internal.infra.redis import (
+    from internal.infra.redis import (  # pyright: ignore[reportMissingImports]
         redis_stack_push,
         redis_stack_get_all,
         redis_stack_length,
@@ -48,13 +48,13 @@ try:
 except (ImportError, ModuleNotFoundError):
     REDIS_STACK_AVAILABLE = False
     # Fallback functions if Redis not available
-    async def redis_stack_push(*args, **kwargs):
+    async def redis_stack_push(*args, **kwargs) -> bool:
         return False
-    async def redis_stack_get_all(*args, **kwargs):
+    async def redis_stack_get_all(*args, **kwargs) -> list:
         return []
-    async def redis_stack_length(*args, **kwargs):
+    async def redis_stack_length(*args, **kwargs) -> int:
         return 0
-    async def redis_stack_clear(*args, **kwargs):
+    async def redis_stack_clear(*args, **kwargs) -> bool:
         return False
 
 
@@ -329,7 +329,7 @@ class SessionManager:
             user_count = sum(1 for m in current if m.get("role") == "user")
             is_first_user_message = user_count == 0
         
-        message = {
+        message: Dict[str, Any] = {
             "role": role,
             "content": content,
             "timestamp": datetime.now().isoformat(),
