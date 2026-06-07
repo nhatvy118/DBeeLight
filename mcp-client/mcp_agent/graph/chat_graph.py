@@ -149,7 +149,7 @@ def _truncate_messages_token_budget(messages: Sequence[BaseMessage], max_tokens:
 
 
 def build_chat_graph(orchestrator: Any, checkpointer: Any):
-    """Compile chat graph: ingest → maybe_summarize → orchestrate."""
+    """Compile chat graph: summarize → orchestrate."""
     summarization_model = init_chat_model(
         orchestrator._router_model,
         model_provider="openai",
@@ -163,9 +163,6 @@ def build_chat_graph(orchestrator: Any, checkpointer: Any):
         output_messages_key="messages_after_summarization",
         final_prompt=_NO_SUMMARY_INJECTION_FINAL_PROMPT,
     )
-
-    async def ingest_user(state: ChatGraphState) -> Dict[str, Any]:
-        return {}
 
     async def orchestrate_node(state: ChatGraphState) -> Dict[str, Any]:
         msgs = list(state.get("messages") or [])
@@ -270,11 +267,9 @@ def build_chat_graph(orchestrator: Any, checkpointer: Any):
         }
 
     graph = StateGraph(ChatGraphState)
-    graph.add_node("ingest_user", ingest_user)
     graph.add_node("summarize", summarization_node)
     graph.add_node("orchestrate", orchestrate_node)
-    graph.add_edge(START, "ingest_user")
-    graph.add_edge("ingest_user", "summarize")
+    graph.add_edge(START, "summarize")
     graph.add_edge("summarize", "orchestrate")
     graph.add_edge("orchestrate", END)
 

@@ -81,11 +81,10 @@ Orchestrator hiện tại là `StateGraph(OrchestratorState)` **không** có `me
 ```mermaid
 flowchart LR
   subgraph outer [ChatGraph có checkpointer]
-    ingest[ingest_user]
     sum[maybe_summarize]
     orch[orchestrate_node]
   end
-  ingest --> sum --> orch
+  sum --> orch
 ```
 
 - **Graph ngoài**: state có `messages` (+ summary nếu cần) + `AsyncPostgresSaver`, `thread_id = session_id`.
