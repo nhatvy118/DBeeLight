@@ -66,7 +66,7 @@ auth/        Google OAuth, token crypto
 sessions/    List/export sessions
 share/       Share + fork sessions
 project/     CRUD projects
-file/        Upload, chunk, embed files
+file/        Upload, parse files (SQLite + schema context)
 ```
 
 Mỗi feature có: `router.py` (HTTP), `service.py` (business logic), `repository.py` (DB), `schema.py` (Pydantic models).

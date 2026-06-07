@@ -79,7 +79,6 @@ _INTENT_CLASSIFICATION_PROMPT = """You are an orchestration router. Pick exactly
   - **excel** when the user wants workbook **formatting** (e.g. tô màu, đổi màu nền, bold, conditional formatting), in-cell **formulas**, chart **inside the Excel file**, or structural edits to the .xlsx. If **[UPLOADED_EXCEL_PATH_*]** or **[SESSION_FILE_ID_*]** is also present, the file is already uploaded — set needs_clarification=false and route **excel**; do NOT ask the user to upload again.
   - **chart** when they ask for a **chart/plot/graph/biểu đồ/đồ thị** on data in the **connected database** (Vega-Lite), not mere table stats.
   - Do **not** pick **excel** for numeric Q&A that SQL can answer on imported tables.
-- Set "semantic_retrieval" to false whenever **[UPLOADED SPREADSHEET SCHEMA]** is present. Set it to true only for unstructured document Q&A (policy/contract wording, "what does this PDF say") without tabular SQL.
 - If the user asks off-topic smalltalk/personal chat that is not related to this app's capabilities, set "needs_clarification" to true and set "clarification_question" exactly to: "Please ask questions related to the database."
 - If the user asks to **connect** or **disconnect** a database (action request, not just status/info), set "needs_clarification" to true and set "clarification_question" exactly to: "{connect_disconnect_reply}"
 
@@ -103,7 +102,6 @@ Return strict JSON with:
 - "chart_type": chart hint if visualization requested, else null
 - "table_hint": table/entity hint if mentioned, else null
 - "file_format": desired OUTPUT file format explicitly requested by the user (e.g. "save as csv", "export to xlsx"). Do NOT set this from the format of an uploaded/input file — only set when the user explicitly asks for output in a specific format.
-- "semantic_retrieval": true only when semantic document grounding is needed; false for SQL/filter/aggregate/ranking over structured uploaded tables
 
 Return JSON only."""
 
@@ -121,7 +119,6 @@ class IntentResult(BaseModel):
     chart_type: Optional[str] = None
     table_hint: Optional[str] = None
     file_format: Optional[str] = None
-    semantic_retrieval: bool = False
     agent_type: Optional[str] = None
     # Minimum permission needed to execute this route. Derived deterministically
     # from ``route``; not classified by the LLM.
@@ -237,7 +234,6 @@ class IntentService:
 
                 "table_hint": None,
                 "file_format": None,
-                "semantic_retrieval": False,
             }
 
         nl_query = str(result.get("nl_query") or prompt).strip() or prompt
@@ -280,7 +276,6 @@ class IntentService:
 
             table_hint=(str(result["table_hint"]).strip() if result.get("table_hint") else None),
             file_format=(str(result["file_format"]).strip().lower() if result.get("file_format") else None),
-            semantic_retrieval=bool(result.get("semantic_retrieval")),
             access_level=(ROUTE_ACCESS_LEVEL.get(route) if route else None),
         )
 
