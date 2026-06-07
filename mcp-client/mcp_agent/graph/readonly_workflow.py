@@ -15,6 +15,7 @@ from mcp_agent.graph.database_utils import (
     build_sql_statement_message,
     build_readonly_schema_context_block,
     detect_db_type,
+    effective_db_type_for_sql,
     extract_attached_files_context_block,
     get_select_system_prompt,
     is_execute_query_error_response,
@@ -525,10 +526,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
     if agent:
         db_type = detect_db_type(agent)
         attached = extract_attached_files_context_block(user_message)
-        messages = [{"role": "system", "content": get_select_system_prompt(db_type)}]
         schema_block = build_readonly_schema_context_block(state.get("table_schema") or {})
-        if schema_block:
-            messages.append({"role": "system", "content": schema_block})
 
         # --- Allowed tables injection ---
         # all_tables: every table returned by list_tables during schema_discovery.
@@ -547,6 +545,14 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
         primary_db_tables = [t for t in all_db_tables if t not in session_file_table_names and not t.startswith("t_")]
         session_tables_in_db = [t for t in all_db_tables if t.startswith("t_")]
         all_db_set = set(all_db_tables)
+
+        # Session-file-only discovery → SQLite dialect for LLM + verification.
+        if all_db_tables and not primary_db_tables:
+            db_type = "sqlite"
+
+        messages = [{"role": "system", "content": get_select_system_prompt(db_type)}]
+        if schema_block:
+            messages.append({"role": "system", "content": schema_block})
 
         # Build constraint block whenever we have any table info.
         if all_db_tables or session_file_pairs:
@@ -604,6 +610,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                 temperature=0,
             )
             select_sql = strip_sql_fences(sel_resp.choices[0].message.content or "")
+            sql_db_type = effective_db_type_for_sql(select_sql, db_type)
 
             ok, explain_err, explain_summary, type_sql = await validate_explain_and_summarize(
                 agent,
@@ -612,7 +619,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                 sql=select_sql,
                 operation=operation,
                 request=effective_message,
-                db_type=db_type,
+                db_type=sql_db_type,
             )
             if not ok:
                 last_error = explain_err
@@ -642,7 +649,8 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
                 }
             break
 
-        dql_err = require_dql_only(select_sql, db_type=db_type)
+        sql_db_type = effective_db_type_for_sql(select_sql, db_type)
+        dql_err = require_dql_only(select_sql, db_type=sql_db_type)
         if dql_err:
             return {
                 **state,
@@ -658,7 +666,7 @@ async def query_execution(state: AgentState, llm, agent) -> AgentState:
         logger.info(
             "[ReadOnly] session=%s db_type=%s SQL: %s",
             session_id or "unknown",
-            db_type,
+            sql_db_type,
             _sql_log_snippet(select_sql),
         )
 

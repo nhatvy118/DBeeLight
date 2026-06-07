@@ -25,13 +25,10 @@ _INSERT_PREVIEW_CELL_MAX = 500
 
 
 def detect_db_type(agent) -> str:
-    """Detect whether the connected database is SQLite or PostgreSQL.
+    """Return the active SQL dialect for workflow prompts and verification.
 
-    **Project rule (thesis):**
-    - If the current chat session belongs to a project_id → SQLite (project DB file)
-    - Otherwise → PostgreSQL
-
-    ChatUseCase sets ``agent.connection_info = {"engine": "sqlite" | "postgresql"}``.
+    Reads ``connection_info["engine"]`` set by ``Orchestrator.set_connection_engine``
+    (propagated to the database agent). Defaults to PostgreSQL when unset.
     """
     if not agent:
         return "postgresql"
@@ -42,10 +39,27 @@ def detect_db_type(agent) -> str:
         if engine in {"sqlite", "postgresql", "postgres"}:
             return "postgresql" if engine == "postgres" else engine
 
-    # Safe default for non-project chats: PostgreSQL.
     return "postgresql"
 
-    
+
+_SESSION_FILE_TABLE_RE = re.compile(r"\bt_[A-Za-z0-9_]+\b")
+
+
+def effective_db_type_for_sql(sql: str, fallback_db_type: str) -> str:
+    """Pick sqlglot/MCP dialect per statement when dual adapters are connected.
+
+    Session-file tables are always named ``t_<...>`` by the ingestion service.
+    When the SQL references such a table, use SQLite rules even if the primary
+    adapter is PostgreSQL.
+    """
+    if _SESSION_FILE_TABLE_RE.search(sql or ""):
+        return "sqlite"
+    fb = str(fallback_db_type or "").lower().strip()
+    if fb in {"sqlite", "postgresql", "postgres"}:
+        return "postgresql" if fb == "postgres" else fb
+    return "postgresql"
+
+
 def parse_table_names_from_list_tools(text: str) -> list[str]:
     """Parse MCP ``list_tables`` text like ``Tables in database: a, b``."""
     s = (text or "").strip()

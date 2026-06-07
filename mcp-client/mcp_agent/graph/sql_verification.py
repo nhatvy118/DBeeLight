@@ -26,6 +26,7 @@ from sqlglot import exp
 from mcp_agent.graph.database_utils import (
     describe_explain_plan_naturally,
     detect_db_type,
+    effective_db_type_for_sql,
     is_sql_tool_error,
     strip_sql_fences,
 )
@@ -327,7 +328,8 @@ async def verify_sql_for_preview(
     db_type: str | None = None,
 ) -> SqlVerifyResult:
     """Run Tier 1 → Tier 2 or Tier 3 → natural-language summary."""
-    db_type = db_type or detect_db_type(agent)
+    fallback_db_type = db_type or detect_db_type(agent)
+    db_type = effective_db_type_for_sql(sql, fallback_db_type)
     snippet = _sql_log_snippet(sql)
     logger.info(
         "[SqlVerify] start operation=%s db_type=%s sql=%r",

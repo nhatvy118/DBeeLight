@@ -350,6 +350,34 @@ class ChatService:
             raise HTTPException(status_code=500, detail="Session manager is not available for this agent")
         return agent
 
+    @staticmethod
+    def _set_connection_engine(agent, engine: str) -> None:
+        """Propagate dialect metadata to the database workflow agent (via orchestrator)."""
+        if hasattr(agent, "set_connection_engine"):
+            agent.set_connection_engine(engine)
+            return
+        try:
+            agent.connection_info = {"engine": engine}
+        except Exception:
+            pass
+
+    @staticmethod
+    def _resolve_connection_engine(
+        *,
+        project_id_uuid: str | None,
+        active_file_sqlite_url: str | None,
+        user_selected_primary_db: bool,
+        connect_session_sqlite_as_primary: bool,
+    ) -> str:
+        """Choose SQL dialect for workflow prompts and verification."""
+        if active_file_sqlite_url and not user_selected_primary_db:
+            return "sqlite"
+        if connect_session_sqlite_as_primary and not user_selected_primary_db:
+            return "sqlite"
+        if project_id_uuid:
+            return "sqlite"
+        return "postgresql"
+
     def _resolve_project_id_uuid(self, project_id: str | None, share_ctx: dict | None) -> str | None:
         """Validate ``project_id`` as UUID. For forked share sessions whose
         frontend doesn't know the owner's project, fall back to ``share_ctx``."""
@@ -505,13 +533,12 @@ class ChatService:
                 if session_sql_url and not project_db_url:
                     project_db_url = session_sql_url
                     await self._push_db_to_agents(agent, session_sql_url, label="session-file")
-                    try:
-                        if "sqlite" in (session_sql_url or "").lower():
-                            agent.connection_info = {"engine": "sqlite"}
-                        else:
-                            agent.connection_info = {"engine": "postgresql"}
-                    except Exception:
-                        pass
+                    engine = (
+                        "sqlite"
+                        if "sqlite" in (session_sql_url or "").lower()
+                        else "postgresql"
+                    )
+                    self._set_connection_engine(agent, engine)
 
             block = await self._file_usecase.build_session_schema_context_block(
                 current_session_id,
@@ -709,11 +736,6 @@ class ChatService:
         project_db_url = await self._auto_connect_project_db(
             agent, project_id_uuid, project_lookup_user,
         )
-        # Thesis rule: project sessions use SQLite; non-project sessions use PostgreSQL.
-        try:
-            agent.connection_info = {"engine": "sqlite" if project_id_uuid else "postgresql"}
-        except Exception:
-            pass
 
         current_session_id = await self._resolve_or_create_session(
             agent, session_id, project_id_uuid,
@@ -850,16 +872,8 @@ class ChatService:
                 label="active-file-session",
                 allowed_tables=allowed_tables_str,
             )
-            try:
-                agent.connection_info = {"engine": "sqlite"}
-            except Exception:
-                pass
         elif active_file_sqlite_url and not user_selected_primary_db:
             await self._push_db_to_agents(agent, active_file_sqlite_url, label="active-file")
-            try:
-                agent.connection_info = {"engine": "sqlite"}
-            except Exception:
-                pass
             if not project_db_url:
                 project_db_url = active_file_sqlite_url
         else:
@@ -879,6 +893,17 @@ class ChatService:
             project_db_url=project_db_url,
             active_file_ids=schema_ids,
         )
+
+        self._set_connection_engine(
+            agent,
+            self._resolve_connection_engine(
+                project_id_uuid=project_id_uuid,
+                active_file_sqlite_url=active_file_sqlite_url,
+                user_selected_primary_db=user_selected_primary_db,
+                connect_session_sqlite_as_primary=connect_session_sqlite_as_primary,
+            ),
+        )
+
         if excel_path_markers:
             path_block = "\n".join(excel_path_markers)
             augmented_query = (
@@ -1037,11 +1062,10 @@ class ChatService:
             except Exception as e:
                 logger.warning(f"UseCase: Failed to auto-connect project database in workflow_resume: {e}")
 
-        # Thesis rule: project sessions use SQLite; non-project sessions use PostgreSQL.
-        try:
-            agent.connection_info = {"engine": "sqlite" if project_id_uuid else "postgresql"}
-        except Exception:
-            pass
+        self._set_connection_engine(
+            agent,
+            "sqlite" if project_id_uuid else "postgresql",
+        )
 
         loaded = await agent.session_manager.load_session(sid)
         if not loaded:
@@ -1189,11 +1213,10 @@ class ChatService:
             except Exception as e:
                 logger.warning(f"UseCase: Failed to auto-connect project database in execute_sql: {e}")
 
-        # Thesis rule: project sessions use SQLite; non-project sessions use PostgreSQL.
-        try:
-            agent.connection_info = {"engine": "sqlite" if project_id_uuid else "postgresql"}
-        except Exception:
-            pass
+        self._set_connection_engine(
+            agent,
+            "sqlite" if project_id_uuid else "postgresql",
+        )
 
         # Load or create session (so history / project context is consistent)
         loaded = False

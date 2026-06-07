@@ -72,6 +72,24 @@ class Orchestrator:
 
         logger.info(f"[Orchestrator] Initialized with agents: {list(self._agents.keys())}")
 
+    def set_connection_engine(self, engine: str) -> None:
+        """Set SQL dialect metadata on the orchestrator and the database workflow agent.
+
+        ChatService calls this after resolving project vs session-file DB context.
+        Workflows (ReadOnly, Mutation, …) read ``connection_info`` from the database
+        agent, not from the orchestrator shell.
+        """
+        normalized = str(engine or "").lower().strip()
+        if normalized == "postgres":
+            normalized = "postgresql"
+        if normalized not in {"sqlite", "postgresql"}:
+            normalized = "postgresql"
+        info = {"engine": normalized}
+        self.connection_info = info
+        db_agent = self._agents.get("database")
+        if db_agent is not None:
+            db_agent.connection_info = info
+
     @property
     def sessions(self) -> Dict[str, Any]:
         """Expose sessions from the first agent."""

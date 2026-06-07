@@ -15,7 +15,6 @@ import {
   listUserFilesInventory,
   listSessionFiles,
   uploadSessionFile,
-  deleteSessionFile,
   downloadStoredSessionFile,
   type SessionInfo,
   type SessionShareInfo,
@@ -88,11 +87,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const previousPropSessionIdRef = useRef<string | null | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [isUploadingExcel, setIsUploadingExcel] = useState(false);
-  /** Session files already uploaded to server (have a server ID). */
-  const [inputAttachedFiles, setInputAttachedFiles] = useState<{ id: string; filename: string }[]>([]);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
   /** Files selected locally but not yet uploaded — staged until Enter is pressed. */
   const [stagedFiles, setStagedFiles] = useState<{ localId: string; file: File; filename: string }[]>([]);
+  /** Progress while uploading staged files after Send (null when idle). */
+  const [fileUploadProgress, setFileUploadProgress] = useState<{
+    done: number;
+    total: number;
+    filename: string;
+  } | null>(null);
   /** Whether to show the "Save data / Q&A only" question above the input. */
   const [pendingStorageChoice, setPendingStorageChoice] = useState(false);
   /** Message payload waiting to be sent after storage choice is made. */
@@ -407,8 +410,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return id || undefined;
   };
 
-  const extractUploadAttachments = extractSessionFileAttachments;
-
   const stripInternalPayloads = (text: string): string => {
     let cleaned = stripSessionFileMarkers(
       text
@@ -469,40 +470,45 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const canSend = useMemo(() => {
     const hasText = query.trim().length > 0;
     if (isViewOnlyShare) return false;
-    return !isStopVisible && !isUploadingExcel && !pendingStorageChoice && hasText;
-  }, [isStopVisible, isUploadingExcel, pendingStorageChoice, query, isViewOnlyShare]);
+    return !isStopVisible && !isUploadingFile && !pendingStorageChoice && hasText;
+  }, [isStopVisible, isUploadingFile, pendingStorageChoice, query, isViewOnlyShare]);
 
-  const handleRemoveInputAttachment = async (fileId: string) => {
-    // Staged files (not yet uploaded) — just remove locally
-    if (fileId.startsWith('staged-')) {
-      setStagedFiles((prev) => prev.filter((f) => f.localId !== fileId));
-      return;
-    }
-    // Uploaded files — delete from server
+  const handleRemoveStagedFile = (localId: string) => {
+    setStagedFiles((prev) => prev.filter((f) => f.localId !== localId));
+  };
+
+  const showStorageQuotaToast = async () => {
     try {
-      await deleteSessionFile(fileId);
-      setInputAttachedFiles((prev) => prev.filter((f) => f.id !== fileId));
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Remove failed');
+      const inv = await listUserFilesInventory();
+      const lines = inv.slice(0, 12).map(
+        (r) => `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — session ${r.session_id.slice(0, 8)}…`,
+      );
+      toast.error(
+        'Storage limit reached (5 GB). Delete some files and try again.\n\n' +
+          (lines.length ? `Recent files:\n${lines.join('\n')}` : ''),
+      );
+    } catch {
+      toast.error('Storage limit reached (5 GB). Delete some files and try again.');
     }
   };
 
-  /** Upload all staged files to server with the chosen storage destination. */
+  /** Upload staged files to server. Returns uploaded metadata only — does not mutate composer state. */
   const uploadStagedFiles = async (
     useProjectDb: boolean,
-    filesToUpload?: { localId: string; file: File; filename: string }[],
+    filesToUpload: { localId: string; file: File; filename: string }[],
   ): Promise<{ id: string; filename: string }[]> => {
-    const toUpload = filesToUpload ?? [...stagedFiles];
-    if (toUpload.length === 0) return [];
-    setIsUploadingExcel(true);
-    const uploaded: { id: string; filename: string }[] = [];
+    if (filesToUpload.length === 0) return [];
+
+    setIsUploadingFile(true);
+    setFileUploadProgress({ done: 0, total: filesToUpload.length, filename: filesToUpload[0].filename });
+
     try {
       let sid = sessionId;
       if (!sid) {
         const cr = await createSession(null, selectedProject?.id || propProjectId || null);
         if (!cr.success || !cr.session_id) {
           toast.error('Could not create a chat session for this upload');
-          return [];
+          throw new Error('session_create_failed');
         }
         sid = cr.session_id;
         setSessionId(sid);
@@ -515,54 +521,61 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         }
         window.dispatchEvent(new PopStateEvent('popstate'));
       }
-      for (const staged of toUpload) {
-        try {
-          const { file: up } = await uploadSessionFile(
+
+      const uploaded: { id: string; filename: string }[] = [];
+      let quotaToastShown = false;
+
+      const results = await Promise.allSettled(
+        filesToUpload.map((staged) =>
+          uploadSessionFile(
             sid!,
             staged.file,
             selectedProject?.id || propProjectId || null,
             useProjectDb,
-          );
+          ),
+        ),
+      );
+
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        const staged = filesToUpload[i];
+        setFileUploadProgress({ done: i + 1, total: filesToUpload.length, filename: staged.filename });
+
+        if (result.status === 'fulfilled') {
+          const up = result.value.file;
           uploaded.push({ id: up.id, filename: up.filename });
           if (up.sql_import_ok === false) {
             toast.warning(
               `${up.filename}: saved for Excel edits; SQL Q&A unavailable (${up.sql_import_warning || 'import failed'}).`,
             );
           }
-        } catch (err) {
-          const e = err as Error & { code?: string };
-          if (e.code === 'storage_quota_exceeded' || /5\s*GB|storage limit/i.test(e.message || '')) {
-            try {
-              const inv = await listUserFilesInventory();
-              const lines = inv.slice(0, 12).map(
-                (r) => `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — session ${r.session_id.slice(0, 8)}…`,
-              );
-              toast.error(
-                'Storage limit reached (5 GB). Delete some files and try again.\n\n' +
-                  (lines.length ? `Recent files:\n${lines.join('\n')}` : ''),
-              );
-            } catch {
-              toast.error('Storage limit reached (5 GB). Delete some files and try again.');
-            }
-          } else {
-            toast.error(e instanceof Error ? e.message : 'Failed to upload file');
+          continue;
+        }
+
+        const e = result.reason as Error & { code?: string };
+        if (e.code === 'storage_quota_exceeded' || /5\s*GB|storage limit/i.test(e.message || '')) {
+          if (!quotaToastShown) {
+            quotaToastShown = true;
+            await showStorageQuotaToast();
           }
+        } else {
+          toast.error(e instanceof Error ? e.message : `Failed to upload ${staged.filename}`);
         }
       }
-      setStagedFiles([]);
-      setInputAttachedFiles((prev) => [...prev, ...uploaded]);
-      // Refresh session files list for DataSource selector
+
       if (sid && uploaded.length > 0) {
         listSessionFiles(sid).then(setSessionFiles).catch(() => {});
       }
+
       return uploaded;
     } finally {
-      setIsUploadingExcel(false);
+      setIsUploadingFile(false);
+      setFileUploadProgress(null);
     }
   };
 
-  /** Stage file locally — upload sends the original file (Excel kept for formatting + SQL import on BE). */
-  const handleExcelFileSelected = (file: File) => {
+  /** Stage file locally — upload on Send sends the original file (Excel kept for formatting + SQL import on BE). */
+  const stageFileForUpload = (file: File) => {
     const localId = `staged-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setStagedFiles((prev) => [...prev, { localId, file, filename: file.name }]);
   };
@@ -572,7 +585,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     // allow re-selecting same file
     e.target.value = '';
     if (!file) return;
-    void handleExcelFileSelected(file);
+    stageFileForUpload(file);
   };
 
   // Load session when sessionId from URL (propSessionId) is set. Must run when URL has
@@ -614,7 +627,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               return {
                 text: msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
                 isUser: msg.role === 'user',
-                attachments: msg.role === 'user' ? extractUploadAttachments(rawContent) : undefined,
+                attachments: msg.role === 'user' ? extractSessionFileAttachments(rawContent) : undefined,
                 sqlToExecute,
                 sqlActionId,
                 sqlActionState: sqlToExecute
@@ -630,7 +643,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             })
             .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
           setMessages(convertedMessages);
-          setInputAttachedFiles([]);
+          setStagedFiles([]);
           setSessionId(sid);
           setShareInfo(res.share_info ?? null);
           onSessionIdChange?.(sid);
@@ -656,7 +669,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (sessionWasExplicitlyRemoved && sessionId) {
       // URL no longer has a session (e.g. navigated to /chat) — clear local state
       setMessages([]);
-      setInputAttachedFiles([]);
+      setStagedFiles([]);
       setSessionId(null);
       setShareInfo(null);
       onSessionIdChange?.(null);
@@ -821,22 +834,19 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   };
 
   const handleSend = async () => {
-    if (isStopVisible || isUploadingExcel) return;
+    if (isStopVisible || isUploadingFile) return;
     const hasText = query.trim().length > 0;
     if (!hasText) return;
 
     const displayText = query.trim();
     const activeProjectId = selectedProject?.id || propProjectId;
+    const attachmentsForUi = stagedFiles.map((f) => ({ name: f.filename }));
 
     // Ask "save data vs Q&A only" when there are staged files AND there's a
     // place to import into: inside a project always, or in a regular chat only
     // while a database is connected. With no project and no DB connection there's
     // nowhere to save, so skip the question and just do Q&A.
     if (stagedFiles.length > 0 && (activeProjectId || connectedDbLabel)) {
-      const attachmentsForUi = [
-        ...inputAttachedFiles.map((f) => ({ name: f.filename, fileId: f.id })),
-        ...stagedFiles.map((f) => ({ name: f.filename })),
-      ];
       setMessages((prev) => [
         ...prev,
         {
@@ -853,10 +863,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
 
     // Show message in chat immediately, then upload and send
-    const attachmentsForUi = [
-      ...inputAttachedFiles.map((f) => ({ name: f.filename, fileId: f.id })),
-      ...stagedFiles.map((f) => ({ name: f.filename })),
-    ];
     setMessages((prev) => [
       ...prev,
       {
@@ -868,35 +874,51 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     setQuery('');
     setInputKey((k) => k + 1);
 
-    // Capture and clear staged files immediately
     const captured = [...stagedFiles];
-    setStagedFiles([]);
-    const prevUploaded = [...inputAttachedFiles];
-    setInputAttachedFiles([]);
+    let uploaded: { id: string; filename: string }[] = [];
+    try {
+      uploaded = captured.length > 0 ? await uploadStagedFiles(false, captured) : [];
+    } catch (err) {
+      if (err instanceof Error && err.message === 'session_create_failed') return;
+      throw err;
+    }
 
-    // Upload staged files (if any) then send
-    const newUploaded = captured.length > 0 ? await uploadStagedFiles(false, captured) : [];
-    setInputAttachedFiles([]); // uploadStagedFiles adds to inputAttachedFiles internally — clear again
-    const allAttached = [...prevUploaded, ...newUploaded];
-    const sendPayload = buildChatMessageWithSessionFiles(displayText, allAttached);
+    if (captured.length > 0 && uploaded.length === 0) return;
+
+    setStagedFiles([]);
+    const sendPayload = buildChatMessageWithSessionFiles(displayText, uploaded);
     await doSend(sendPayload);
   };
 
   /** Called after user picks storage destination — upload staged files then send. */
   const handleStorageChoice = async (useProjectDb: boolean) => {
-    // Capture and clear staged files immediately so chips don't flash back
     const captured = [...stagedFiles];
     setStagedFiles([]);
     setPendingStorageChoice(false);
     const displayText = pendingSendPayloadRef.current ?? '';
     pendingSendPayloadRef.current = null;
 
-    const prevUploaded = [...inputAttachedFiles];
-    const newUploaded = await uploadStagedFiles(useProjectDb, captured);
-    setInputAttachedFiles([]); // uploadStagedFiles adds internally — clear again
-    const allAttached = [...prevUploaded, ...newUploaded];
+    let uploaded: { id: string; filename: string }[] = [];
+    try {
+      uploaded = await uploadStagedFiles(useProjectDb, captured);
+    } catch (err) {
+      if (err instanceof Error && err.message === 'session_create_failed') {
+        setStagedFiles(captured);
+        setPendingStorageChoice(true);
+        pendingSendPayloadRef.current = displayText;
+        return;
+      }
+      throw err;
+    }
 
-    const sendPayload = buildChatMessageWithSessionFiles(displayText, allAttached);
+    if (captured.length > 0 && uploaded.length === 0) {
+      setStagedFiles(captured);
+      setPendingStorageChoice(true);
+      pendingSendPayloadRef.current = displayText;
+      return;
+    }
+
+    const sendPayload = buildChatMessageWithSessionFiles(displayText, uploaded);
     await doSend(sendPayload);
   };
 
@@ -1264,7 +1286,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       setSessionId(null);
       setShareInfo(null);
       setMessages([]);
-      setInputAttachedFiles([]);
+      setStagedFiles([]);
       onSessionIdChange?.(null);
     }
     prevProjectIdRef.current = currentId;
@@ -1377,7 +1399,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 text:
                   msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
                 isUser: msg.role === 'user',
-                attachments: msg.role === 'user' ? extractUploadAttachments(rawContent) : undefined,
+                attachments: msg.role === 'user' ? extractSessionFileAttachments(rawContent) : undefined,
                 sqlToExecute,
                 sqlActionId,
                 sqlActionState: sqlToExecute
@@ -1393,7 +1415,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             })
             .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
           setMessages(convertedMessages);
-          setInputAttachedFiles([]);
+          setStagedFiles([]);
           setSessionId(sid);
           setShareInfo(res.share_info ?? null);
           onSessionIdChange?.(sid);
@@ -1467,7 +1489,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const greetHour = new Date().getHours();
   const greeting = greetHour < 12 ? 'Good morning' : greetHour < 18 ? 'Good afternoon' : 'Good evening';
-  const hasFiles = inputAttachedFiles.length > 0 || stagedFiles.length > 0;
+  const hasStagedFiles = stagedFiles.length > 0;
 
   const composer = (
     <div className="card soft-shadow" style={{ borderRadius: 'var(--r-lg)', padding: '14px 16px 12px', maxWidth: 760, margin: '0 auto', width: '100%' }}>
@@ -1480,33 +1502,43 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         onChange={handleFileInputChange}
       />
 
-      {/* Staged / attached files */}
-      {!pendingStorageChoice && hasFiles && (
+      {/* Upload progress (after Send, before chat request) */}
+      {isUploadingFile && fileUploadProgress && (
+        <div
+          className="scale-in"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            marginBottom: 10,
+            padding: '8px 10px',
+            borderRadius: 'var(--r-sm)',
+            border: '1px solid var(--accent-soft-2)',
+            background: 'var(--accent-soft)',
+            color: 'var(--accent-ink)',
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          <span style={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>…</span>
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            Uploading {fileUploadProgress.done} of {fileUploadProgress.total}
+            {fileUploadProgress.filename ? `: ${fileUploadProgress.filename}` : ''}…
+          </span>
+        </div>
+      )}
+
+      {/* Staged files (not yet uploaded) */}
+      {!pendingStorageChoice && !isUploadingFile && hasStagedFiles && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-          {inputAttachedFiles.map((f) => (
-            <div key={f.id} className="scale-in" style={{ display: 'inline-flex', alignItems: 'center', gap: 9, padding: '7px 9px 7px 8px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
-              <FileTypeBadge filename={f.filename} size={28} radius={7} />
-              <span style={{ fontSize: 13, fontWeight: 600, maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename}</span>
-              <button
-                type="button"
-                disabled={isViewOnlyShare || isUploadingExcel}
-                onClick={() => void handleRemoveInputAttachment(f.id)}
-                className="focusable"
-                aria-label={`Remove ${f.filename}`}
-                style={{ width: 22, height: 22, borderRadius: 6, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none', flexShrink: 0 }}
-              >
-                <Icons.Close size={14} />
-              </button>
-            </div>
-          ))}
           {stagedFiles.map((f) => (
             <div key={f.localId} className="scale-in" style={{ display: 'inline-flex', alignItems: 'center', gap: 9, padding: '7px 9px 7px 8px', borderRadius: 'var(--r-sm)', border: '1px dashed var(--border-strong)', background: 'var(--surface-2)' }}>
               <FileTypeBadge filename={f.filename} mimeType={f.file.type} size={28} radius={7} style={{ opacity: 0.7 }} />
               <span style={{ fontSize: 13, fontWeight: 600, maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename}</span>
               <button
                 type="button"
-                disabled={isViewOnlyShare || pendingStorageChoice || isUploadingExcel}
-                onClick={() => void handleRemoveInputAttachment(f.localId)}
+                disabled={isViewOnlyShare || pendingStorageChoice}
+                onClick={() => handleRemoveStagedFile(f.localId)}
                 className="focusable"
                 aria-label={`Remove ${f.filename}`}
                 style={{ width: 22, height: 22, borderRadius: 6, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none', flexShrink: 0 }}
@@ -1522,7 +1554,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         key={inputKey}
         ref={textareaRef}
         value={query}
-        disabled={isViewOnlyShare}
+        disabled={isViewOnlyShare || isUploadingFile}
         onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setQuery(e.target.value)}
         onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
           if (e.key === 'Enter' && !e.shiftKey) {
@@ -1554,7 +1586,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <AttachMenu
             onUploadDevice={() => fileInputRef.current?.click()}
-            disabled={isViewOnlyShare || isUploadingExcel}
+            disabled={isViewOnlyShare || isUploadingFile}
           />
           {/* Data source selector */}
           {(() => {
@@ -1614,8 +1646,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             key={String(opt.save)}
             type="button"
             onClick={() => void handleStorageChoice(opt.save)}
+            disabled={isUploadingFile}
             className="focusable"
-            style={{ display: 'flex', alignItems: 'flex-start', gap: 12, textAlign: 'left', padding: '12px 14px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)', transition: 'all .13s' }}
+            style={{ display: 'flex', alignItems: 'flex-start', gap: 12, textAlign: 'left', padding: '12px 14px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)', transition: 'all .13s', opacity: isUploadingFile ? 0.6 : 1, cursor: isUploadingFile ? 'default' : 'pointer' }}
             onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.background = 'var(--accent-soft)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--surface)'; }}
           >
