@@ -24,6 +24,7 @@ from app.features.files import service as files_service
 from app.features.projects import service as proj_service
 from app.features.sessions import repository as sess_repo
 from app.features.share import repository as share_repo
+from app.features.share import service as share_service
 
 logger = logging.getLogger("chat")
 
