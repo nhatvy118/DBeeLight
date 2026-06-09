@@ -1,9 +1,0 @@
-[project]
-name = "excel-server"
-version = "0.1.0"
-description = "Wrapper around excel-mcp-server (haris-musa) so the agent can connect to it as a stdio MCP server"
-readme = "README.md"
-requires-python = ">=3.10"
-dependencies = [
-    "excel-mcp-server>=0.1.8",
-]

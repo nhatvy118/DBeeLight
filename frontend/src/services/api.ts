@@ -88,7 +88,7 @@ export async function sendMessageStream(
   handlers: StreamHandlers,
   activeFileIds?: string[] | null,
 ): Promise<void> {
-  const response = await fetch(url('/api/chat/stream'), {
+  const response = await fetch(url('/api/chat'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
@@ -182,7 +182,7 @@ export async function resumeWorkflow(
   userVisibleMessage: string | null = null,
   signal?: AbortSignal
 ): Promise<ChatResponse> {
-  const response = await fetch(url('/api/chat/workflow-resume'), {
+  const response = await fetch(url('/api/chat/resume'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
@@ -217,7 +217,7 @@ export async function getSessions(projectId: string | null = null, unassignedOnl
 }
 
 export async function createSession(name: string | null = null, projectId: string | null = null): Promise<CreateSessionResponse> {
-  const response = await fetch(url('/api/sessions/new'), {
+  const response = await fetch(url('/api/sessions'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },

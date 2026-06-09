@@ -1,0 +1,149 @@
+"""ChatService — wires the per-request ContextVar with auth + project + history.
+
+db_url does NOT come from the client: resolved server-side from the project (after ownership/share check)
+→ matches the design principle (client/LLM never sees the DSN).
+
+Supports:
+- Session owner: full permission (edit).
+- Share recipient: gated by permission vs the route access_level.
+- Files uploaded in the session: attach a session adapter (DbContext.session).
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+from app.agent import summarization
+from app.agent.context import DbContext, RequestContext, reset_ctx, set_ctx
+from app.agent.orchestration import get_orchestrator
+from app.agent.orchestration.orchestrator import ChatResult
+from app.agent.pool import get_connection_pool
+from app.db import get_pool
+from app.features.auth import repository as auth_repo
+from app.features.files import service as files_service
+from app.features.projects import service as proj_service
+from app.features.sessions import repository as sess_repo
+from app.features.share import repository as share_repo
+
+logger = logging.getLogger("chat")
+
+
+class ChatError(Exception):
+    pass
+
+
+@dataclass
+class _Access:
+    project_id: str
+    db_url: str
+    permission: str  # 'edit_data' if owner; if recipient = the granted permission
+
+
+async def _authorize(user_id: str, session_id: str) -> _Access:
+    """Determine project + db_url + permission. A forked (shared) session is gated by permission."""
+    row = await get_pool().fetchrow(
+        "SELECT user_id, project_id, share_recipient_id FROM sessions WHERE id=$1", session_id
+    )
+    if row is None:
+        raise ChatError("Session does not exist.")
+    if row["user_id"] != user_id:
+        raise ChatError("You do not have access to this session.")
+    project_id = row["project_id"]
+
+    # Forked session (share recipient): permission from the share, db_url from the source project.
+    if row["share_recipient_id"]:
+        perm = await share_repo.permission_for_forked_session(session_id)
+        if not perm or perm["revoked"]:
+            raise ChatError("The shared chat has been revoked or is invalid.")
+        db_url = await _project_db_url_any(project_id)
+        if not db_url:
+            raise ChatError("The shared chat's project has no database connected.")
+        return _Access(project_id=project_id, db_url=db_url, permission=perm["permission"])
+
+    # Project-bound session: DB from the project.
+    if project_id:
+        db_url = await proj_service.resolve_db_url(project_id, user_id)
+        if not db_url:
+            raise ChatError("Project has no database connected. Please Connect DB first.")
+        return _Access(project_id=project_id, db_url=db_url, permission="edit_data")
+
+    # Global session (no project): DB from the user's active connection.
+    db_url = await auth_repo.get_active_db_url(user_id)
+    if not db_url or not proj_service.is_configured(db_url):
+        raise ChatError("No database connected. Please Connect DB first.")
+    # Pool key per user so global sessions of different users don't collide.
+    return _Access(project_id=f"user:{user_id}", db_url=db_url, permission="edit_data")
+
+
+async def _project_db_url_any(project_id: str) -> str | None:
+    """Project db_url regardless of owner (used for shared forked sessions)."""
+    row = await get_pool().fetchrow("SELECT db_url FROM projects WHERE id=$1", project_id)
+    db_url = row["db_url"] if row else None
+    return db_url if (db_url and proj_service.is_configured(db_url)) else None
+
+
+async def _build_ctx(user_id: str, session_id: str, access: _Access) -> RequestContext:
+    pool = get_connection_pool()
+    primary = await pool.adapter_for(access.project_id, access.db_url)
+
+    # session-file adapter (if there are uploads in the session)
+    session_adapter = None
+    allowed: frozenset[str] | None = None
+    sqlite_path, tables = await files_service.session_db(session_id)
+    if sqlite_path:
+        session_adapter = await pool.session_adapter_for(sqlite_path, allowed_tables=tables)
+        allowed = tables
+
+    return RequestContext(
+        user_id=user_id,
+        session_id=session_id,
+        project_id=access.project_id,
+        db=DbContext(
+            primary=primary,
+            session=session_adapter,
+            allowed_tables=allowed,
+            engine=primary.engine_name,
+        ),
+    )
+
+
+async def handle(user_id: str, session_id: str, message: str) -> ChatResult:
+    access = await _authorize(user_id, session_id)
+    history = await sess_repo.get_history(session_id)
+    orch = get_orchestrator()
+
+    # Gating: for share recipients (not owner-edit), check the route access_level.
+    intent = orch.classify(message, history)
+    if access.permission != "edit_data":
+        if not share_service.allows(access.permission, intent.access_level):
+            raise ChatError(
+                f"You only have '{access.permission}' permission, not enough for this operation "
+                f"(needs '{intent.access_level}')."
+            )
+
+    summary, recent = summarization.summarize(history)
+    ctx = await _build_ctx(user_id, session_id, access)
+    token = set_ctx(ctx)
+    try:
+        result = await orch.process_query(message, history=recent, intent=intent, summary=summary)
+    finally:
+        reset_ctx(token)
+
+    await sess_repo.add_message(session_id, "user", message)
+    await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
+    return result
+
+
+async def approve(user_id: str, session_id: str, approved: bool) -> ChatResult:
+    access = await _authorize(user_id, session_id)
+    if access.permission != "edit_data":
+        raise ChatError("You do not have permission to execute mutations on this session.")
+    ctx = await _build_ctx(user_id, session_id, access)
+    token = set_ctx(ctx)
+    try:
+        # SQL lives in the server-side checkpoint; only the bool decision is passed.
+        result = await get_orchestrator().resume(session_id, approved)
+    finally:
+        reset_ctx(token)
+    await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
+    return result

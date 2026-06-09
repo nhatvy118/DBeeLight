@@ -1,0 +1,74 @@
+"""Database adapter — wraps a SQLAlchemy AsyncEngine.
+
+Uses an async driver (aiosqlite / asyncpg) so it does NOT block the event loop — that is why
+the core path does not need asyncio.to_thread. The pool is managed by the AsyncEngine.
+"""
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+
+@dataclass
+class QueryResult:
+    columns: list[str]
+    rows: list[tuple]
+    rowcount: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "columns": self.columns,
+            "rows": [list(r) for r in self.rows],
+            "rowcount": self.rowcount,
+        }
+
+
+@dataclass
+class Column:
+    name: str
+    type: str
+    nullable: bool = True
+    pk: bool = False
+
+
+class DatabaseAdapter(ABC):
+    engine_name: str = "sql"
+
+    def __init__(self, sqlalchemy_url: str, allowed_tables: frozenset[str] | None = None):
+        self._engine: AsyncEngine = create_async_engine(sqlalchemy_url, pool_pre_ping=True)
+        self.allowed_tables = allowed_tables
+
+    async def dispose(self) -> None:
+        await self._engine.dispose()
+
+    async def ping(self) -> bool:
+        async with self._engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        return True
+
+    async def execute(self, sql: str, params: dict | None = None) -> QueryResult:
+        """Run any SQL. SELECT → returns rows; otherwise → rowcount."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(text(sql), params or {})
+            if result.returns_rows:
+                rows = result.fetchall()
+                cols = list(result.keys())
+                return QueryResult(columns=cols, rows=[tuple(r) for r in rows], rowcount=len(rows))
+            return QueryResult(columns=[], rows=[], rowcount=result.rowcount or 0)
+
+    def _filter_allowed(self, tables: list[str]) -> list[str]:
+        if self.allowed_tables is None:
+            return tables
+        return [t for t in tables if t in self.allowed_tables]
+
+    @abstractmethod
+    async def list_tables(self) -> list[str]: ...
+
+    @abstractmethod
+    async def describe_table(self, table_name: str) -> list[Column]: ...
+
+    @abstractmethod
+    async def explain(self, sql: str) -> str: ...
