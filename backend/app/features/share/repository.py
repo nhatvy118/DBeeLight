@@ -3,6 +3,7 @@
 The new design uses sessions + messages (normalized) → fork = clone session + copy messages.
 """
 from __future__ import annotations
+import logging
 
 import json
 import secrets
@@ -10,14 +11,18 @@ import uuid
 
 from app.db import get_pool
 
+logger = logging.getLogger("features.share.repository")
+
 VALID_PERMISSIONS = {"view_only", "read_data", "edit_data"}
 
 
 def _token() -> str:
+    logger.info("→ _token()")  # autolog
     return secrets.token_urlsafe(32)
 
 
 async def verify_session_owner(session_id: str, owner_sub: str) -> dict | None:
+    logger.info("→ verify_session_owner(session_id=%r owner_sub=%r)", session_id, owner_sub)  # autolog
     pool = get_pool()
     row = await pool.fetchrow(
         "SELECT id, user_id, project_id, title, share_recipient_id FROM sessions "
@@ -31,6 +36,7 @@ async def verify_session_owner(session_id: str, owner_sub: str) -> dict | None:
 
 async def create_share(owner_sub: str, session_id: str, project_id: str,
                        recipients: list[dict]) -> dict:
+    logger.info("→ create_share(owner_sub=%r session_id=%r project_id=%r recipients=%r)", owner_sub, session_id, project_id, recipients)  # autolog
     pool = get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -56,6 +62,7 @@ async def create_share(owner_sub: str, session_id: str, project_id: str,
 
 
 async def get_recipient_by_token(token: str) -> dict | None:
+    logger.info("→ get_recipient_by_token(token=***)")  # autolog
     pool = get_pool()
     row = await pool.fetchrow(
         """
@@ -75,6 +82,7 @@ async def get_recipient_by_token(token: str) -> dict | None:
 
 async def fork_session_for_recipient(recipient_id: str, recipient_sub: str,
                                      recipient_email: str) -> dict:
+    logger.info("→ fork_session_for_recipient(recipient_id=%r recipient_sub=%r recipient_email=%r)", recipient_id, recipient_sub, recipient_email)  # autolog
     pool = get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -130,6 +138,7 @@ async def fork_session_for_recipient(recipient_id: str, recipient_sub: str,
 
 
 async def list_sent_shares(owner_sub: str) -> list[dict]:
+    logger.info("→ list_sent_shares(owner_sub=%r)", owner_sub)  # autolog
     pool = get_pool()
     rows = await pool.fetch(
         """
@@ -162,6 +171,7 @@ async def list_sent_shares(owner_sub: str) -> list[dict]:
 
 
 async def list_received_shares(email: str) -> list[dict]:
+    logger.info("→ list_received_shares(email=%r)", email)  # autolog
     pool = get_pool()
     e = (email or "").strip().lower()
     if not e:
@@ -190,6 +200,7 @@ async def list_received_shares(email: str) -> list[dict]:
 
 
 async def revoke_share(share_id: str, owner_sub: str) -> bool:
+    logger.info("→ revoke_share(share_id=%r owner_sub=%r)", share_id, owner_sub)  # autolog
     pool = get_pool()
     res = await pool.execute(
         "UPDATE chat_shares SET revoked_at=now() WHERE id=$1 AND owner_user_id=$2 AND revoked_at IS NULL",
@@ -199,6 +210,7 @@ async def revoke_share(share_id: str, owner_sub: str) -> bool:
 
 
 async def revoke_recipient(recipient_id: str, owner_sub: str) -> bool:
+    logger.info("→ revoke_recipient(recipient_id=%r owner_sub=%r)", recipient_id, owner_sub)  # autolog
     pool = get_pool()
     res = await pool.execute(
         "UPDATE chat_share_recipients r SET revoked_at=now() FROM chat_shares s "
@@ -209,6 +221,7 @@ async def revoke_recipient(recipient_id: str, owner_sub: str) -> bool:
 
 
 async def get_recipient_for_owner(recipient_id: str, owner_sub: str) -> dict | None:
+    logger.info("→ get_recipient_for_owner(recipient_id=%r owner_sub=%r)", recipient_id, owner_sub)  # autolog
     pool = get_pool()
     row = await pool.fetchrow(
         """
@@ -224,6 +237,7 @@ async def get_recipient_for_owner(recipient_id: str, owner_sub: str) -> dict | N
 
 
 async def mark_email_sent(recipient_id: str) -> None:
+    logger.info("→ mark_email_sent(recipient_id=%r)", recipient_id)  # autolog
     pool = get_pool()
     await pool.execute(
         "UPDATE chat_share_recipients SET email_sent_at=now(), email_error=NULL WHERE id=$1",
@@ -232,6 +246,7 @@ async def mark_email_sent(recipient_id: str) -> None:
 
 
 async def mark_email_failed(recipient_id: str, error: str) -> None:
+    logger.info("→ mark_email_failed(recipient_id=%r error=%r)", recipient_id, error)  # autolog
     pool = get_pool()
     await pool.execute(
         "UPDATE chat_share_recipients SET email_error=$2, email_sent_at=NULL WHERE id=$1",
@@ -241,6 +256,7 @@ async def mark_email_failed(recipient_id: str, error: str) -> None:
 
 async def permission_for_forked_session(session_id: str) -> dict | None:
     """Permission of a forked session (to gate mutations). None if not a fork."""
+    logger.info("→ permission_for_forked_session(session_id=%r)", session_id)  # autolog
     pool = get_pool()
     row = await pool.fetchrow(
         """

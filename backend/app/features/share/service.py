@@ -16,11 +16,13 @@ RANK = {"view_only": 0, "read_data": 1, "edit_data": 2}
 
 
 def allows(granted: str, required: str | None) -> bool:
+    logger.info("→ allows(granted=%r required=%r)", granted, required)  # autolog
     return RANK.get(granted, -1) >= RANK.get(required or "read_data", 99)
 
 
 async def create_share(*, owner_sub: str, owner_name: str | None, owner_email: str | None,
                        session_id: str, recipients: list[dict], notify_via_email: bool) -> dict:
+    logger.info("→ create_share(owner_sub=%r owner_name=%r owner_email=%r session_id=%r recipients=%r notify_via_email=%r)", owner_sub, owner_name, owner_email, session_id, recipients, notify_via_email)  # autolog
     if not recipients:
         raise HTTPException(status_code=400, detail="At least one recipient is required")
     norm, seen = [], set()
@@ -54,6 +56,7 @@ async def create_share(*, owner_sub: str, owner_name: str | None, owner_email: s
 
 
 async def _send_emails_bg(recipients: list[dict], owner_name: str, session_name: str | None) -> None:
+    logger.info("→ _send_emails_bg(recipients=%r owner_name=%r session_name=%r)", recipients, owner_name, session_name)  # autolog
     for r in recipients:
         try:
             await email_service.send_share_notification(
@@ -67,16 +70,19 @@ async def _send_emails_bg(recipients: list[dict], owner_name: str, session_name:
 
 
 async def list_sent(owner_sub: str) -> dict:
+    logger.info("→ list_sent(owner_sub=%r)", owner_sub)  # autolog
     return {"success": True, "shares": await repo.list_sent_shares(owner_sub)}
 
 
 async def list_received(email: str | None) -> dict:
+    logger.info("→ list_received(email=%r)", email)  # autolog
     if not email:
         raise HTTPException(status_code=401, detail="Login required")
     return {"success": True, "shares": await repo.list_received_shares(email)}
 
 
 async def preview(token: str) -> dict:
+    logger.info("→ preview(token=***)")  # autolog
     rec = await repo.get_recipient_by_token(token)
     if rec is None:
         raise HTTPException(status_code=404, detail="Share link not found")
@@ -89,6 +95,7 @@ async def preview(token: str) -> dict:
 
 
 async def accept(token: str, recipient_sub: str, recipient_email: str | None) -> dict:
+    logger.info("→ accept(token=*** recipient_sub=%r recipient_email=%r)", recipient_sub, recipient_email)  # autolog
     if not recipient_email:
         raise HTTPException(status_code=401, detail="Login required")
     rec = await repo.get_recipient_by_token(token)
@@ -109,6 +116,7 @@ async def accept(token: str, recipient_sub: str, recipient_email: str | None) ->
 
 
 async def revoke_share(share_id: str, owner_sub: str) -> dict:
+    logger.info("→ revoke_share(share_id=%r owner_sub=%r)", share_id, owner_sub)  # autolog
     ok = await repo.revoke_share(share_id, owner_sub)
     if not ok:
         raise HTTPException(status_code=404, detail="Share not found")
@@ -116,6 +124,7 @@ async def revoke_share(share_id: str, owner_sub: str) -> dict:
 
 
 async def revoke_recipient(recipient_id: str, owner_sub: str) -> dict:
+    logger.info("→ revoke_recipient(recipient_id=%r owner_sub=%r)", recipient_id, owner_sub)  # autolog
     ok = await repo.revoke_recipient(recipient_id, owner_sub)
     if not ok:
         raise HTTPException(status_code=404, detail="Recipient not found")
@@ -123,6 +132,7 @@ async def revoke_recipient(recipient_id: str, owner_sub: str) -> dict:
 
 
 async def resend_email(recipient_id: str, owner_sub: str, owner_name: str | None) -> dict:
+    logger.info("→ resend_email(recipient_id=%r owner_sub=%r owner_name=%r)", recipient_id, owner_sub, owner_name)  # autolog
     rec = await repo.get_recipient_for_owner(recipient_id, owner_sub)
     if rec is None:
         raise HTTPException(status_code=404, detail="Recipient not found")

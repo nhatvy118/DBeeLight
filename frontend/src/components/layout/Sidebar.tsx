@@ -430,18 +430,22 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
     try {
       const res = await createProject(name, description);
       if (res.success && res.project) {
-        // Refetch projects from API so list stays per-user
-        const listRes = await getProjects();
-        if (listRes.success && listRes.projects) {
-          const projectList: Project[] = listRes.projects.map((p) => ({
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            createdAt: p.created_at ?? new Date().toISOString(),
-          }));
-          setProjects(projectList);
-          localStorage.setItem('projects', JSON.stringify(projectList));
-        }
+        // Optimistic: prepend the new project (API lists newest-first) — no refetch needed.
+        const p = res.project;
+        const newProject: Project = {
+          id: p.id,
+          name: p.name,
+          description: p.description ?? '',
+          createdAt: p.created_at ?? new Date().toISOString(),
+        };
+        const next = [newProject, ...projects];
+        // Write localStorage before navigating so the Chat project view can resolve it.
+        localStorage.setItem('projects', JSON.stringify(next));
+        setProjects(next);
+        // Land on the project view (empty state with "New chat in this project").
+        setSelectedProjectId(p.id);
+        navigate(`/chat/${p.id}`);
+        if (onSessionSelect) onSessionSelect(null as unknown as string);
       } else {
         console.error('Failed to create project:', res);
         toast.error('Failed to create project');
@@ -473,9 +477,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
         setSelectedProjectId(null);
         navigate('/');
       }
-      // Its sessions are gone — refresh the lists.
-      await fetchSessions();
-      window.dispatchEvent(new Event('projectSessionsUpdated'));
+      // No session refetch: deleting a project cascade-deletes only its assigned
+      // sessions; the sidebar shows unassigned sessions (project_id IS NULL), unchanged.
     } catch (err) {
       console.error('Failed to delete project:', err);
       toast.error('Failed to delete project');

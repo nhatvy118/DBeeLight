@@ -1,14 +1,18 @@
 from __future__ import annotations
+import logging
 
 import uuid
 
 from app.db import get_pool
+
+logger = logging.getLogger("features.files.repository")
 
 
 async def insert_file(
     user_id: str, session_id: str, filename: str, disk_path: str,
     sqlite_db_path: str | None, table_name: str | None, size_bytes: int = 0,
 ) -> dict:
+    logger.info("→ insert_file(user_id=%r session_id=%r filename=%r disk_path=%r sqlite_db_path=%r table_name=%r size_bytes=%r)", user_id, session_id, filename, disk_path, sqlite_db_path, table_name, size_bytes)  # autolog
     pool = get_pool()
     fid = str(uuid.uuid4())
     row = await pool.fetchrow(
@@ -23,6 +27,7 @@ async def insert_file(
 
 
 async def list_for_session(session_id: str) -> list[dict]:
+    logger.info("→ list_for_session(session_id=%r)", session_id)  # autolog
     pool = get_pool()
     rows = await pool.fetch(
         "SELECT id, filename, disk_path, sqlite_db_path, table_name, size_bytes, created_at "
@@ -33,6 +38,7 @@ async def list_for_session(session_id: str) -> list[dict]:
 
 
 async def list_for_user(user_id: str) -> list[dict]:
+    logger.info("→ list_for_user(user_id=%r)", user_id)  # autolog
     pool = get_pool()
     rows = await pool.fetch(
         "SELECT id, filename, table_name, size_bytes, created_at FROM files "
@@ -43,6 +49,7 @@ async def list_for_user(user_id: str) -> list[dict]:
 
 
 async def get_file(file_id: str, user_id: str) -> dict | None:
+    logger.info("→ get_file(file_id=%r user_id=%r)", file_id, user_id)  # autolog
     pool = get_pool()
     row = await pool.fetchrow(
         "SELECT id, filename, disk_path, size_bytes FROM files WHERE id=$1 AND user_id=$2",
@@ -52,6 +59,7 @@ async def get_file(file_id: str, user_id: str) -> dict | None:
 
 
 async def delete_file(file_id: str, user_id: str) -> bool:
+    logger.info("→ delete_file(file_id=%r user_id=%r)", file_id, user_id)  # autolog
     pool = get_pool()
     row = await pool.fetchrow(
         "DELETE FROM files WHERE id=$1 AND user_id=$2 RETURNING id", file_id, user_id
@@ -61,6 +69,7 @@ async def delete_file(file_id: str, user_id: str) -> bool:
 
 async def user_storage(user_id: str) -> tuple[int, int]:
     """(total size_bytes, file_count) for the user."""
+    logger.info("→ user_storage(user_id=%r)", user_id)  # autolog
     pool = get_pool()
     row = await pool.fetchrow(
         "SELECT COALESCE(SUM(size_bytes),0) AS b, COUNT(*) AS c FROM files WHERE user_id=$1",

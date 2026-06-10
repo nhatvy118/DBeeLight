@@ -22,10 +22,12 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
 def _frame(obj: dict) -> str:
+    logger.info("→ _frame(obj=%r)", obj)  # autolog
     return f"data: {json.dumps(obj, default=str)}\n\n"
 
 
 def _map_tool_events(events: list[dict]) -> list[dict]:
+    logger.info("→ _map_tool_events(events=%r)", events)  # autolog
     out = []
     for e in events or []:
         out.append({
@@ -37,6 +39,7 @@ def _map_tool_events(events: list[dict]) -> list[dict]:
 
 
 def _response(result, session_id: str) -> dict:
+    logger.info("→ _response(result=%r session_id=%r)", result, session_id)  # autolog
     return {
         "success": True,
         "response": result.response,
@@ -50,6 +53,7 @@ def _response(result, session_id: str) -> dict:
 
 
 async def _ensure_session(user_id: str, session_id: str | None, project_id: str | None) -> str:
+    logger.info("→ _ensure_session(user_id=%r session_id=%r project_id=%r)", user_id, session_id, project_id)  # autolog
     if session_id and await sess_repo.get_session(session_id, user_id):
         return session_id
     s = await sess_repo.create_session(user_id, project_id or None, "New chat")
@@ -58,9 +62,11 @@ async def _ensure_session(user_id: str, session_id: str | None, project_id: str 
 
 @router.post("")
 async def chat(req: ChatRequest, user_id: str = Depends(get_current_user_id)):
+    logger.info("→ chat(req=%r user_id=%r)", req, user_id)  # autolog
     session_id = await _ensure_session(user_id, req.session_id, req.project_id)
 
     async def gen():
+        logger.info("→ gen()")  # autolog
         yield _frame({"type": "stage", "message": "Processing..."})
         try:
             result = await service.handle(user_id, session_id, req.message)
@@ -78,6 +84,7 @@ async def chat(req: ChatRequest, user_id: str = Depends(get_current_user_id)):
 
 @router.post("/resume")
 async def resume(req: ResumeRequest, user_id: str = Depends(get_current_user_id)):
+    logger.info("→ resume(req=%r user_id=%r)", req, user_id)  # autolog
     try:
         result = await service.approve(user_id, req.session_id, req.approved)
     except service.ChatError as e:

@@ -19,6 +19,7 @@ router = APIRouter(prefix="/api/db", tags=["db"])
 
 @router.post("/connect")
 async def connect(body: dict, user_id: str = Depends(get_current_user_id)):
+    logger.info("→ connect(body=*** user_id=%r)", user_id)  # autolog
     dsn = (
         f"postgresql://{quote(body.get('username') or '')}:{quote(body.get('password') or '')}"
         f"@{body.get('host')}:{int(body.get('port') or 5432)}/{body.get('database')}"
@@ -33,11 +34,13 @@ async def connect(body: dict, user_id: str = Depends(get_current_user_id)):
 
 @router.get("/status")
 async def status(user_id: str = Depends(get_current_user_id)):
+    logger.info("→ status(user_id=%r)", user_id)  # autolog
     url = await auth_repo.get_active_db_url(user_id)
     return {"success": bool(url), "message": "connected" if url else "Not connected"}
 
 
 @router.post("/disconnect")
 async def disconnect(user_id: str = Depends(get_current_user_id)):
+    logger.info("→ disconnect(user_id=%r)", user_id)  # autolog
     await auth_repo.set_active_db_url(user_id, None)
     return {"success": True, "message": "Disconnected"}

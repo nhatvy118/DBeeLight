@@ -307,12 +307,13 @@ export type CreateProjectResponse =
   | { success: true; project: { id: string; name: string; description?: string; created_at?: string } }
   | { success: false; error: string };
 
-export async function createProject(name: string, description?: string, db_url: string = ''): Promise<CreateProjectResponse> {
+export async function createProject(name: string, description?: string): Promise<CreateProjectResponse> {
   const response = await fetch(url('/api/projects'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, db_url }),
+    // db_url cố tình bỏ: backend tự sinh SQLite khi tạo project
+    body: JSON.stringify({ name, description }),
   });
   if (!response.ok) {
     const data = (await response.json()) as { error?: string };

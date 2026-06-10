@@ -1455,15 +1455,16 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
   };
 
-  // Check if project has chat history
-  const projectHasHistory = selectedProject && projectSessions.length > 0 && !sessionId && messages.length === 0;
+  // Show the project landing view (header + "New chat in this project" + chats list)
+  // whenever a project is open with no active session — even if it has 0 chats yet.
+  const showProjectLanding = selectedProject && !sessionId && messages.length === 0;
 
   // Check if we're in "empty" state: no messages (regardless of project or sessionId)
   // This includes: 
   // - Project selected but no chat history yet (show empty state with project in header)
   // - No project and no chat
   // - New session created but no messages sent yet
-  const isEmptyState = messages.length === 0 && !projectHasHistory;
+  const isEmptyState = messages.length === 0 && !showProjectLanding;
 
   const shareBanner = shareInfo ? (
     <div
@@ -1720,7 +1721,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             </p>
           </div>
         </div>
-      ) : projectHasHistory ? null : (
+      ) : showProjectLanding ? null : (
         /* Active conversation: composer pinned below. (Project landing view
            has its own "New chat in this project" CTA, so no composer here.) */
         <div style={{ padding: '12px 24px 22px', background: 'var(--bg)' }}>
@@ -1734,8 +1735,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         </div>
       )}
 
-      {/* Project chat history */}
-      {projectHasHistory && (
+      {/* Project landing: header + new-chat CTA + chats list (or empty hint) */}
+      {showProjectLanding && (
         <div style={{ flex: 1, overflowY: 'auto', padding: '44px 24px 40px' }}>
           <div style={{ maxWidth: 760, margin: '0 auto' }}>
             {/* Project header */}
@@ -1761,6 +1762,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             <div style={{ fontSize: 12.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)', margin: '34px 0 12px' }}>
               {projectSessions.length} chats
             </div>
+            {projectSessions.length === 0 ? (
+              <div style={{ fontSize: 14.5, color: 'var(--text-muted)', padding: '4px 2px' }}>
+                No chats yet — start one with “New chat in this project”.
+              </div>
+            ) : (
             <div className="card" style={{ overflow: 'hidden' }}>
               {projectSessions.map((session, index) => {
                 const deleting = deletingProjectSessionId === session.session_id;
@@ -1812,6 +1818,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 );
               })}
             </div>
+            )}
           </div>
         </div>
       )}

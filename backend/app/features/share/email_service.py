@@ -12,11 +12,13 @@ logger = logging.getLogger("share.email")
 
 
 def is_configured() -> bool:
+    logger.info("→ is_configured()")  # autolog
     return bool(os.getenv("RESEND_API_KEY", "").strip())
 
 
 async def send_share_notification(*, to_email: str, owner_name: str, session_name: str | None,
                                   permission: str, accept_token: str) -> None:
+    logger.info("→ send_share_notification(to_email=%r owner_name=%r session_name=%r permission=%r accept_token=***)", to_email, owner_name, session_name, permission)  # autolog
     api_key = os.getenv("RESEND_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("Email not configured (RESEND_API_KEY)")

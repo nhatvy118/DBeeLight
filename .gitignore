@@ -75,3 +75,12 @@ api-server/internal/temp_dbs/*.db*
 api-server/internal/file_handle/*
 !api-server/internal/file_handle/.gitkeep
 test_file/*
+
+# DATA_ROOT runtime data (./_data) — provisioned project SQLite dbs, temp dbs, uploads.
+# Dirs are auto-created at startup (get_settings mkdir), so no .gitkeep needed.
+**/_data/
+
+# SQLite database files (provisioned per-project + session temp dbs)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

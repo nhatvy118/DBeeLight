@@ -17,6 +17,7 @@ from app.features.auth.deps import get_current_user_id
 from app.features.projects import service as proj_service
 from app.features.sessions import repository as sess_repo
 
+
 router = APIRouter(tags=["query"])
 
 
@@ -32,7 +33,7 @@ async def _resolve(user_id: str, session_id: str | None, project_id: str | None)
         if db_url:
             return pid, db_url
     db_url = await auth_repo.get_active_db_url(user_id)
-    if db_url and proj_service.is_configured(db_url):
+    if db_url:
         return f"user:{user_id}", db_url
     raise HTTPException(status_code=400, detail="No database connected")
 
@@ -42,7 +43,7 @@ async def _adapter(user_id: str, session_id: str | None, project_id: str | None)
     return await get_connection_pool().adapter_for(key, db_url)
 
 
-def _md(res) -> str:
+def _md(res) -> str:        
     if not res.columns:
         return f"_OK ({res.rowcount} rows affected)._"
     head = "| " + " | ".join(res.columns) + " |"

@@ -19,12 +19,14 @@ _google = GoogleOAuthRepository()
 
 
 def _redirect_uri(request: Request) -> str:
+    logger.info("→ _redirect_uri(request=%r)", request)  # autolog
     s = get_settings()
     base = (s.public_base_url or "").strip().rstrip("/")
     return f"{base}/api/auth/google/callback" if base else str(request.url_for("google_callback"))
 
 
 def google_login(request: Request, next_path: str) -> RedirectResponse:
+    logger.info("→ google_login(request=%r next_path=%r)", request, next_path)  # autolog
     client_id, _ = _google.require_client()
     state = secrets.token_urlsafe(16)
     request.session["google_oauth_state"] = state
@@ -34,6 +36,7 @@ def google_login(request: Request, next_path: str) -> RedirectResponse:
 
 
 async def google_callback(request: Request, code: str | None, state: str | None) -> RedirectResponse:
+    logger.info("→ google_callback(request=%r code=%r state=%r)", request, code, state)  # autolog
     s = get_settings()
     fe = s.frontend_url.rstrip("/")
     expected = request.session.get("google_oauth_state")
@@ -79,6 +82,7 @@ async def google_callback(request: Request, code: str | None, state: str | None)
 
 
 def me(request: Request) -> JSONResponse:
+    logger.info("→ me(request=%r)", request)  # autolog
     user = request.session.get("user")
     if not user:
         return JSONResponse({"success": True, "authenticated": False, "user": None})
@@ -86,6 +90,7 @@ def me(request: Request) -> JSONResponse:
 
 
 def logout(request: Request) -> JSONResponse:
+    logger.info("→ logout(request=%r)", request)  # autolog
     for k in ("user", "google_oauth_state", "google_oauth_next"):
         request.session.pop(k, None)
     return JSONResponse({"success": True})

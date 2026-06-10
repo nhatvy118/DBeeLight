@@ -17,16 +17,19 @@ logger = logging.getLogger("files")
 
 
 def _table_name(filename: str) -> str:
+    logger.info("→ _table_name(filename=%r)", filename)  # autolog
     stem = Path(filename).stem.lower()
     slug = re.sub(r"[^a-z0-9_]+", "_", stem).strip("_") or "data"
     return f"t_{slug}"
 
 
 def _session_sqlite_path(session_id: str) -> Path:
+    logger.info("→ _session_sqlite_path(session_id=%r)", session_id)  # autolog
     return get_settings().temp_dbs_dir / f"{session_id}.sqlite"
 
 
 async def save_and_import(user_id: str, session_id: str, filename: str, content: bytes) -> dict:
+    logger.info("→ save_and_import(user_id=%r session_id=%r filename=%r content=%r)", user_id, session_id, filename, content)  # autolog
     s = get_settings()
     uploads = Path(s.data_root) / "uploads" / session_id
     uploads.mkdir(parents=True, exist_ok=True)
@@ -51,6 +54,7 @@ async def save_and_import(user_id: str, session_id: str, filename: str, content:
         import sqlite3
 
         def _write():
+            logger.info("→ _write()")  # autolog
             con = sqlite3.connect(str(spath))
             try:
                 df.to_sql(table_name, con, if_exists="replace", index=False)
@@ -67,6 +71,7 @@ async def save_and_import(user_id: str, session_id: str, filename: str, content:
 
 async def session_db(session_id: str) -> tuple[str | None, frozenset[str] | None]:
     """(session SQLite path, allowed table set) — used to attach the session adapter."""
+    logger.info("→ session_db(session_id=%r)", session_id)  # autolog
     files = await repo.list_for_session(session_id)
     path = None
     tables: set[str] = set()

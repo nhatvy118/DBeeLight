@@ -1,9 +1,13 @@
 from __future__ import annotations
+import logging
 
 from app.db import get_pool
 
+logger = logging.getLogger("features.admin.repository")
+
 
 async def get_user_role(google_sub: str) -> dict | None:
+    logger.info("→ get_user_role(google_sub=%r)", google_sub)  # autolog
     pool = get_pool()
     row = await pool.fetchrow(
         "SELECT id, is_admin, disabled_at FROM users WHERE google_sub=$1", google_sub
@@ -12,6 +16,7 @@ async def get_user_role(google_sub: str) -> dict | None:
 
 
 async def list_users_with_stats() -> list[dict]:
+    logger.info("→ list_users_with_stats()")  # autolog
     pool = get_pool()
     rows = await pool.fetch(
         """
@@ -29,6 +34,7 @@ async def list_users_with_stats() -> list[dict]:
 
 
 async def get_overview_stats() -> dict:
+    logger.info("→ get_overview_stats()")  # autolog
     pool = get_pool()
     row = await pool.fetchrow(
         """
@@ -44,6 +50,7 @@ async def get_overview_stats() -> dict:
 
 
 async def set_user_disabled(user_id: int, disabled: bool) -> dict | None:
+    logger.info("→ set_user_disabled(user_id=%r disabled=%r)", user_id, disabled)  # autolog
     pool = get_pool()
     row = await pool.fetchrow(
         "UPDATE users SET disabled_at = CASE WHEN $2 THEN now() ELSE NULL END "

@@ -42,6 +42,7 @@ class _Access:
 
 async def _authorize(user_id: str, session_id: str) -> _Access:
     """Determine project + db_url + permission. A forked (shared) session is gated by permission."""
+    logger.info("→ _authorize(user_id=%r session_id=%r)", user_id, session_id)  # autolog
     row = await get_pool().fetchrow(
         "SELECT user_id, project_id, share_recipient_id FROM sessions WHERE id=$1", session_id
     )
@@ -78,12 +79,14 @@ async def _authorize(user_id: str, session_id: str) -> _Access:
 
 async def _project_db_url_any(project_id: str) -> str | None:
     """Project db_url regardless of owner (used for shared forked sessions)."""
+    logger.info("→ _project_db_url_any(project_id=%r)", project_id)  # autolog
     row = await get_pool().fetchrow("SELECT db_url FROM projects WHERE id=$1", project_id)
     db_url = row["db_url"] if row else None
     return db_url if (db_url and proj_service.is_configured(db_url)) else None
 
 
 async def _build_ctx(user_id: str, session_id: str, access: _Access) -> RequestContext:
+    logger.info("→ _build_ctx(user_id=%r session_id=%r access=%r)", user_id, session_id, access)  # autolog
     pool = get_connection_pool()
     primary = await pool.adapter_for(access.project_id, access.db_url)
 
@@ -109,6 +112,7 @@ async def _build_ctx(user_id: str, session_id: str, access: _Access) -> RequestC
 
 
 async def handle(user_id: str, session_id: str, message: str) -> ChatResult:
+    logger.info("→ handle(user_id=%r session_id=%r message=%r)", user_id, session_id, message)  # autolog
     access = await _authorize(user_id, session_id)
     history = await sess_repo.get_history(session_id)
     orch = get_orchestrator()
@@ -136,6 +140,7 @@ async def handle(user_id: str, session_id: str, message: str) -> ChatResult:
 
 
 async def approve(user_id: str, session_id: str, approved: bool) -> ChatResult:
+    logger.info("→ approve(user_id=%r session_id=%r approved=%r)", user_id, session_id, approved)  # autolog
     access = await _authorize(user_id, session_id)
     if access.permission != "edit_data":
         raise ChatError("You do not have permission to execute mutations on this session.")
