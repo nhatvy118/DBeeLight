@@ -76,6 +76,7 @@ type MessageListProps = {
   onCancelSql?: (aiIndex: number) => void;
   onExportFile?: (aiIndex: number) => void | Promise<void>;
   onSchemaTypeChange?: (aiIndex: number, variable: string, nextType: string) => void;
+  onSchemaTableNameChange?: (aiIndex: number, name: string) => void;
   onToggleSchemaOptions?: (aiIndex: number, variable: string) => void;
   onSchemaOptionChange?: (
     aiIndex: number,
@@ -95,6 +96,7 @@ export default function MessageList({
   onCancelSql,
   onExportFile,
   onSchemaTypeChange,
+  onSchemaTableNameChange,
   onToggleSchemaOptions,
   onSchemaOptionChange,
   onConfirmSchema,
@@ -173,9 +175,20 @@ export default function MessageList({
                 <span style={{ fontSize: 13.5, fontWeight: 700, color: msg.schemaLocked ? 'var(--green-ink)' : 'var(--text)' }}>
                   {msg.schemaLocked ? 'Schema confirmed' : 'Proposed table'}
                 </span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-soft)', background: 'var(--surface)', padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border)' }}>
-                  {msg.schemaPreview.tableName}
-                </span>
+                {msg.schemaLocked ? (
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-soft)', background: 'var(--surface)', padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border)' }}>
+                    {msg.schemaPreview.tableName}
+                  </span>
+                ) : (
+                  <input
+                    type="text"
+                    className="field focusable"
+                    style={{ fontFamily: 'var(--font-mono)', fontSize: 13, padding: '3px 8px', borderRadius: 6, maxWidth: 220 }}
+                    value={msg.schemaPreview.tableName}
+                    onChange={(e) => onSchemaTableNameChange?.(index, e.target.value)}
+                    placeholder="table name"
+                  />
+                )}
               </div>
               <div style={{ overflowX: 'auto' }}>
                 <table className="data-table">

@@ -34,11 +34,24 @@ class ChatResult:
 
 
 def _events_from_output(out: dict) -> list[dict]:
-    """Convert workflow output → tool_events for the frontend (SQL preview / execution)."""
+    """Convert workflow output → tool_events for the frontend (SQL preview / schema editor)."""
     t = out.get("type")
     if t in ("sql_statement", "execution_complete") and out.get("sql"):
         return [{"tool": "execute_query", "args": {"query": out["sql"]},
                  "result": out.get("message", ""), "is_error": False}]
+    # create_table schema preview → structured event the FE editor reads (no text marker).
+    if t == "schema_preview" and out.get("columns"):
+        cols = out["columns"]
+        pk = next((c.get("name") for c in cols if c.get("pk")), None)
+        return [{
+            "tool": "show_create_table_schema",
+            "type": "schema_preview",
+            "payload": {
+                "tableName": out.get("table") or "",
+                "primaryKey": pk,
+                "columns": [{"variable": c.get("name", ""), "type": c.get("type", "")} for c in cols],
+            },
+        }]
     return []
 
 
@@ -57,34 +70,35 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not load excel-server tools (%s) — will retry on use.", e)
 
-    def classify(self, user_message: str, history: list[dict] | None = None) -> intent_mod.Intent:
+    def classify(
+        self, user_message: str, history: list[dict] | None = None, summary: str = ""
+    ) -> intent_mod.Intent:
         """Classify intent (used for permission gating before running)."""
-        return intent_mod.classify(user_message, history or [])
+        return intent_mod.classify(user_message, history or [], summary=summary)
 
     async def process_query(
         self,
         user_message: str,
+        intent: intent_mod.Intent,
         history: list[dict] | None = None,
-        intent: intent_mod.Intent | None = None,
         summary: str = "",
     ) -> ChatResult:
+        """Execute the branch already chosen by `intent` (classified once by the caller).
+
+        The caller handles needs_clarification before calling — `intent` here always has a route.
+        """
         history = history or []
         engine = get_db().engine
-        it = intent or intent_mod.classify(user_message, history)
 
         def _sp(base: str) -> str:
             return f"[Previous conversation summary]\n{summary}\n\n{base}" if summary else base
 
-        if it.needs_clarification:
-            return ChatResult(response=it.clarification_question or "Could you clarify?",
-                              needs_clarification=True)
-
-        route = it.route or "db_general"
+        route = intent.route or "db_general"
 
         if route in ("db_mutation", "db_create_table"):
             session_id = get_ctx().session_id or "anon"
             wf = self.create_table_wf if route == "db_create_table" else self.mutation_wf
-            state, pending = await wf.run(session_id, user_message, engine)
+            state, pending = await wf.run(session_id, user_message + intent.nl_query, engine)
             out = state.get("output") or {}
             return ChatResult(
                 response=str(out.get("message") or ""),
@@ -124,17 +138,23 @@ class Orchestrator:
             tool_events=[asdict(e) for e in res.tool_events],
         )
 
-    async def resume(self, session_id: str, approved: bool) -> ChatResult:
+    async def resume(
+        self, session_id: str, approved: bool, edited_schema: dict | None = None
+    ) -> ChatResult:
         """Resume the workflow awaiting approval (mutation or create_table). The SQL lives in the
         server-side checkpoint, the client does NOT send SQL → cannot inject.
 
+        For create_table the client MAY send `edited_schema` (structured columns); the workflow
+        rebuilds + re-verifies the CREATE SQL from it. Mutation ignores it (resume is a bare bool).
         Routes to the correct workflow by checking which checkpoint is still pending."""
         engine = get_db().engine
         wf = self.mutation_wf
         route = "db_mutation"
+        resume_val: object = approved
         if await self.create_table_wf.pending(session_id):
             wf, route = self.create_table_wf, "db_create_table"
-        state, pending = await wf.run(session_id, "", engine, resume=approved)
+            resume_val = {"approved": approved, "schema": edited_schema}
+        state, pending = await wf.run(session_id, "", engine, resume=resume_val)
         out = state.get("output") or {}
         return ChatResult(
             response=str(out.get("message") or ""),

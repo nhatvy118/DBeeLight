@@ -26,6 +26,11 @@ def _frame(obj: dict) -> str:
 def _map_tool_events(events: list[dict]) -> list[dict]:
     out = []
     for e in events or []:
+        # Already FE-shaped (carries its own type + payload, e.g. schema_preview) → pass through
+        # unchanged so the structured payload survives. Same shape is persisted, so reload matches.
+        if e.get("type") and e.get("payload") is not None:
+            out.append(e)
+            continue
         out.append({
             "tool": e.get("tool", ""),
             "type": "sql_execution" if e.get("tool") == "execute_query" else "tool_result",
@@ -78,7 +83,7 @@ async def chat(req: ChatRequest, user_id: str = Depends(get_current_user_id)):
 @router.post("/resume")
 async def resume(req: ResumeRequest, user_id: str = Depends(get_current_user_id)):
     try:
-        result = await service.approve(user_id, req.session_id, req.approved)
+        result = await service.approve(user_id, req.session_id, req.approved, edited_schema=req.edited_schema)
     except service.ChatError as e:
         return {"success": False, "error": str(e)}
     return _response(result, req.session_id)

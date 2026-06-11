@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+from typing import cast
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
@@ -167,6 +169,10 @@ async def _sql_execution(state: AgentState) -> AgentState:
     return {**state, "current_stage": StageType.DONE.value, "output": out}
 
 
+async def _done(state: AgentState) -> AgentState:
+    return {**state, "current_stage": StageType.DONE.value}
+
+
 def _route_after_schema(state: AgentState) -> str:
     if state.get("schema_discovery_failed") or (state.get("output") or {}).get("type") == OUTPUT_ERROR:
         return StageType.DONE.value
@@ -191,7 +197,7 @@ class MutationWorkflow:
             g.add_node("SQL_PREVIEW", _sql_preview)
             g.add_node("SQL_APPROVAL", _sql_approval)
             g.add_node("EXECUTION", _sql_execution)
-            g.add_node(StageType.DONE.value, lambda s: {**s, "current_stage": StageType.DONE.value})
+            g.add_node(StageType.DONE.value, _done)
             g.set_entry_point("INTENT")
             g.add_edge("INTENT", "SCHEMA_DISCOVERY")
             g.add_conditional_edges("SCHEMA_DISCOVERY", _route_after_schema,
@@ -204,7 +210,7 @@ class MutationWorkflow:
             self._graph = g.compile(checkpointer=await get_async_checkpointer())
         return self._graph
 
-    def _cfg(self, session_id: str) -> dict:
+    def _cfg(self, session_id: str) -> RunnableConfig:
         return {"configurable": {"thread_id": f"{session_id}:mutation"}}
 
     async def pending(self, session_id: str) -> bool:
@@ -220,6 +226,6 @@ class MutationWorkflow:
         else:
             await graph.ainvoke(Command(resume=resume), cfg)
         snap = await graph.aget_state(cfg)
-        state: AgentState = dict(snap.values) if snap and snap.values else {}
+        state = cast(AgentState, dict(snap.values) if snap and snap.values else {})
         pending = bool(getattr(snap, "next", None))  # a node is waiting (interrupt) → needs approval
         return state, pending

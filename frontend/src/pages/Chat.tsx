@@ -308,72 +308,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return parts.join('\n\n').trim();
   };
 
-  const extractSchemaPreview = (text: string): SchemaPreviewData | null => {
-    // Preferred path: structured JSON payload from show_create_table_schema tool output.
-    const jsonMatch = text.match(/\[CREATE_TABLE_SCHEMA_JSON_START\]([\s\S]*?)\[CREATE_TABLE_SCHEMA_JSON_END\]/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[1].trim()) as SchemaPreviewData;
-        if (!parsed?.tableName && (parsed as any).table_name) {
-          return {
-            tableName: (parsed as any).table_name,
-            primaryKey: (parsed as any).primary_key ?? null,
-            columns: Array.isArray((parsed as any).columns) ? (parsed as any).columns : [],
-          };
-        }
-        return parsed;
-      } catch {
-        // continue to marker-based fallback
-      }
-    }
-
-    // Fallback for cases where agent called the tool but did not preserve JSON payload.
-    // Accept markdown Variable|Type table when message looks like create-table schema review.
-    const looksLikeSchemaReview =
-      text.includes('[CREATE_TABLE_SCHEMA_PREVIEW]') ||
-      /schema\s+đề\s+xuất\s+cho\s+bảng/i.test(text) ||
-      /proposed\s+schema\s+for\s+table/i.test(text) ||
-      /\bcreate_table\b/i.test(text) ||
-      /\bcreate table\b/i.test(text);
-
-    if (!looksLikeSchemaReview) return null;
-
-    const lines = text.split('\n').map((l) => l.trim());
-    const tableStart = lines.findIndex((l) => /^\|\s*Variable\s*\|\s*Type\s*\|$/i.test(l));
-    if (tableStart === -1) return null;
-
-    const columns: Array<{ variable: string; type: string }> = [];
-    for (let i = tableStart + 1; i < lines.length; i += 1) {
-      const line = lines[i];
-      if (!line.startsWith('|')) break;
-      if (/^\|\s*-+\s*\|\s*-+\s*\|$/.test(line.replace(/:/g, ''))) continue;
-
-      const cells = line
-        .split('|')
-        .map((c) => c.trim())
-        .filter((_, idx, arr) => !(idx === 0 || idx === arr.length - 1));
-
-      if (cells.length < 2) continue;
-      const variable = cells[0].replace(/^`|`$/g, '');
-      const type = cells[1].replace(/^`|`$/g, '');
-      if (variable && type) columns.push({ variable, type });
-    }
-
-    if (columns.length === 0) return null;
-
-    const tableNameMatch =
-      text.match(/Proposed table:\s*`([^`]+)`/i) ||
-      text.match(/table\s+`([^`]+)`/i) ||
-      text.match(/bảng\s+`([^`]+)`/i);
-    const tableName = tableNameMatch?.[1] || 'new_table';
-
-    return {
-      tableName,
-      primaryKey: null,
-      columns,
-    };
-  };
-
   const SCHEMA_CONFIRM_USER_RE = /^Confirm schema table /i;
 
   /** Locked only after the user explicitly confirmed schema in chat history. */
@@ -426,7 +360,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           msg.role === 'assistant' ? extractSqlPayloadFromToolEvents(msg.tool_events) : null;
         const schemaPreview =
           msg.role === 'assistant'
-            ? extractSchemaPreviewFromToolEvents(msg.tool_events) || extractSchemaPreview(rawContent)
+            ? extractSchemaPreviewFromToolEvents(msg.tool_events)
             : null;
         const sqlAction =
           msg.role === 'assistant'
@@ -822,7 +756,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             })(),
             sqlActionId: extractSqlActionId(res.response),
             exportToExcel: extractExportData(res.response),
-            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
+            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events),
             schemaLocked: false,
           },
         ]);
@@ -1027,7 +961,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             })(),
             sqlActionId: extractSqlActionId(resText),
             exportToExcel: extractExportData(resText),
-            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
+            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events),
           };
           return updated;
         });
@@ -1056,6 +990,19 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             c.variable === variable ? { ...c, type: nextType } : c
           ),
         },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaTableNameChange = (aiIndex: number, name: string) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: { ...msg.schemaPreview, tableName: name },
       };
       return updated;
     });
@@ -1140,6 +1087,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         true,
         selectedProject?.id || null,
         `Confirm schema table ${schema.tableName}`,
+        schema,  // user-edited columns/types/constraints/table name → server rebuilds the SQL
       );
       if (res.success) {
         const resText = res.response ?? '';
@@ -1162,7 +1110,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             })(),
             sqlActionId: extractSqlActionId(resText),
             exportToExcel: extractExportData(resText),
-            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
+            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events),
           },
         ]);
 
@@ -1250,7 +1198,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               })(),
               sqlActionId: extractSqlActionId(resText),
               exportToExcel: extractExportData(resText),
-              schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
+              schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events),
             },
           ];
         });
@@ -1669,6 +1617,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               onCancelSql={(idx) => void handleCancelSql(idx)}
               onExportFile={(idx) => void handleExportExcel(idx)}
               onSchemaTypeChange={handleSchemaTypeChange}
+              onSchemaTableNameChange={handleSchemaTableNameChange}
               onToggleSchemaOptions={handleToggleSchemaOptions}
               onSchemaOptionChange={handleSchemaOptionChange}
               onConfirmSchema={(idx) => void handleConfirmSchema(idx)}

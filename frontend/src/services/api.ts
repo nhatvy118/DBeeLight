@@ -190,6 +190,7 @@ export async function resumeWorkflow(
   approved: boolean,
   projectId: string | null = null,
   userVisibleMessage: string | null = null,
+  editedSchema: unknown = null,
   signal?: AbortSignal
 ): Promise<ChatResponse> {
   const response = await fetch(url('/api/chat/resume'), {
@@ -201,6 +202,9 @@ export async function resumeWorkflow(
       approved,
       project_id: projectId,
       user_visible_message: userVisibleMessage,
+      // create_table: the user-edited schema (columns/types/constraints/table name); the
+      // server rebuilds + re-verifies the CREATE SQL from it. null for other workflows.
+      edited_schema: editedSchema,
     }),
     signal,
   });

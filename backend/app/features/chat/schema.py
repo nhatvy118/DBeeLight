@@ -14,6 +14,9 @@ class ResumeRequest(BaseModel):
     session_id: str
     approved: bool = True
     # SQL is not accepted from the client — it lives in the server-side checkpoint (anti-injection).
+    # For create_table, the client MAY send the user-edited schema (structured columns); the server
+    # rebuilds + re-verifies the CREATE SQL from it (never trusts a client-sent SQL string).
+    edited_schema: dict | None = None
 
 
 class ChatResponse(BaseModel):

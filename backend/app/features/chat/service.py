@@ -122,23 +122,36 @@ async def handle(user_id: str, session_id: str, message: str) -> ChatResult:
     is_first_message = not history  # empty history → this is the session's first turn
     orch = get_orchestrator()
 
+    # Summarize first so classify can resolve references against older turns too
+    # (summary) — not just the last few verbatim turns.
+    summary, recent = summarization.summarize(history)
+
     # Gating: for share recipients (not owner-edit), check the route access_level.
-    intent = orch.classify(message, history)
+    intent = orch.classify(message, recent, summary=summary)
     if access.permission != "edit_data":
         if not share_service.allows(access.permission, intent.access_level):
             raise ChatError(
                 f"You only have '{access.permission}' permission, not enough for this operation "
                 f"(needs '{intent.access_level}')."
             )
+    # if off-topic, return result that Chat system does not support 
+    if intent.route == "off_topic":
+        return ChatResult(response="Sorry, I can only help with database-related questions. Please ask a database-related question.", route=intent.route)
 
-    summary, recent = summarization.summarize(history)
-    ctx = await _build_ctx(user_id, session_id, access)
-    token = set_ctx(ctx)
-    try:
-        result = await orch.process_query(message, history=recent, intent=intent, summary=summary)
-    finally:
-        reset_ctx(token)
-        await _dispose_ctx(ctx)
+    # Ambiguous request → ask back, without the cost of building ctx / running the agent.
+    if intent.needs_clarification:
+        result = ChatResult(
+            response=intent.clarification_question or "Could you clarify your request?",
+            needs_clarification=True,
+        )
+    else:
+        ctx = await _build_ctx(user_id, session_id, access)
+        token = set_ctx(ctx)
+        try:
+            result = await orch.process_query(message, intent=intent, history=recent, summary=summary)
+        finally:
+            reset_ctx(token)
+            await _dispose_ctx(ctx)
 
     await sess_repo.add_message(session_id, "user", message)
     await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
@@ -153,7 +166,9 @@ async def handle(user_id: str, session_id: str, message: str) -> ChatResult:
     return result
 
 
-async def approve(user_id: str, session_id: str, approved: bool) -> ChatResult:
+async def approve(
+    user_id: str, session_id: str, approved: bool, edited_schema: dict | None = None
+) -> ChatResult:
     logger.info("→ approve(user_id=%r session_id=%r approved=%r)", user_id, session_id, approved)  # autolog
     access = await _authorize(user_id, session_id)
     if access.permission != "edit_data":
@@ -161,8 +176,9 @@ async def approve(user_id: str, session_id: str, approved: bool) -> ChatResult:
     ctx = await _build_ctx(user_id, session_id, access)
     token = set_ctx(ctx)
     try:
-        # SQL lives in the server-side checkpoint; only the bool decision is passed.
-        result = await get_orchestrator().resume(session_id, approved)
+        # SQL is NOT sent by the client; for create_table the client may send the edited schema
+        # (structured columns) and the server rebuilds + re-verifies the SQL from it.
+        result = await get_orchestrator().resume(session_id, approved, edited_schema=edited_schema)
     finally:
         reset_ctx(token)
         await _dispose_ctx(ctx)
