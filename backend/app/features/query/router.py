@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.agent.context import DbContext, RequestContext, reset_ctx, set_ctx
-from app.agent.pool import get_connection_pool
+from app.agent.pool import get_connection_pool, user_pool_key
 from app.features.auth import repository as auth_repo
 from app.features.auth.deps import get_current_user_id
 from app.features.projects import service as proj_service
@@ -34,7 +34,7 @@ async def _resolve(user_id: str, session_id: str | None, project_id: str | None)
             return pid, db_url
     db_url = await auth_repo.get_active_db_url(user_id)
     if db_url:
-        return f"user:{user_id}", db_url
+        return user_pool_key(user_id), db_url
     raise HTTPException(status_code=400, detail="No database connected")
 
 

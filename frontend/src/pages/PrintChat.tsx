@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { getSession } from '../services/api';
+import { getSession, getMessages } from '../services/api';
 
 type RawMessage = {
   role: string;
@@ -52,8 +52,18 @@ export default function PrintChat({ sessionId }: Props) {
       try {
         const res = await getSession(sessionId);
         if (!res.success) throw new Error('Failed to load session');
-        setMessages((res.messages as RawMessage[]) || []);
         setInfo(res.session_info as any);
+        // Walk every cursor page so the printout contains the full history.
+        const all: RawMessage[] = [];
+        let before: string | null = null;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const page = await getMessages(sessionId, before, 100);
+          all.unshift(...(page.messages as RawMessage[]));  // pages are oldest→newest, older pages prepend
+          if (!page.has_more || !page.next_cursor) break;
+          before = page.next_cursor;
+        }
+        setMessages(all);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to load');
       } finally {

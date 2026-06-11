@@ -16,10 +16,8 @@ logger = logging.getLogger("agent.pool")
 
 class ConnectionPool:
     def __init__(self) -> None:
-        # project_id -> (db_url, adapter)
-        self._projects: dict[str, tuple[str, DatabaseAdapter]] = {}
-        # session-file path -> adapter
-        self._sessions: dict[str, DatabaseAdapter] = {}
+        # pool key (project_id or "user:<uid>") -> adapter
+        self._projects: dict[str, DatabaseAdapter] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
     def _lock(self, key: str) -> asyncio.Lock:
@@ -27,30 +25,21 @@ class ConnectionPool:
             self._locks[key] = asyncio.Lock()
         return self._locks[key]
 
-    async def adapter_for(self, project_id: str, db_url: str) -> DatabaseAdapter:
-        """Adapter for the project main DB. Created if missing / db_url changed."""
-        async with self._lock(f"p:{project_id}"):
-            cached = self._projects.get(project_id)
-            if cached is not None and cached[0] == db_url:
-                return cached[1]
-            if cached is not None:
-                await cached[1].dispose()  # db_url changed → drop the old adapter
-            adapter = make_adapter(db_url)
-            self._projects[project_id] = (db_url, adapter)
-            logger.info("Pool: created adapter for project=%s (%s)", project_id, adapter.engine_name)
-            return adapter
+    async def adapter_for(self, key: str, db_url: str) -> DatabaseAdapter:
+        """Adapter for a pooled DB, keyed by project_id or "user:<uid>".
 
-    async def session_adapter_for(
-        self, path: str, allowed_tables: frozenset[str] | None = None
-    ) -> DatabaseAdapter:
-        """Adapter for the session SQLite file (upload). Cached by path."""
-        async with self._lock(f"s:{path}"):
-            cached = self._sessions.get(path)
+        Created on miss, reused on hit. The cache is keyed purely by `key`; it does
+        NOT track db_url. Callers MUST invalidate(key) whenever that key's db_url
+        changes (project re-provision, user connect/disconnect) — otherwise this
+        keeps serving the old adapter.
+        """
+        async with self._lock(key):
+            cached = self._projects.get(key)
             if cached is not None:
-                cached.allowed_tables = allowed_tables
                 return cached
-            adapter = make_adapter(path, allowed_tables=allowed_tables)
-            self._sessions[path] = adapter
+            adapter = make_adapter(db_url)
+            self._projects[key] = adapter
+            logger.info("Pool: created adapter for key=%s (%s)", key, adapter.engine_name)
             return adapter
 
     async def probe(self, db_url: str) -> None:
@@ -61,18 +50,21 @@ class ConnectionPool:
         finally:
             await adapter.dispose()
 
-    async def invalidate_project(self, project_id: str) -> None:
-        cached = self._projects.pop(project_id, None)
-        if cached is not None:
-            await cached[1].dispose()
+    async def invalidate(self, key: str) -> None:
+        """Drop + dispose the adapter for a pool key (project_id or "user:<uid>")."""
+        adapter = self._projects.pop(key, None)
+        if adapter is not None:
+            await adapter.dispose()
 
     async def close_all(self) -> None:
-        for _url, adapter in self._projects.values():
-            await adapter.dispose()
-        for adapter in self._sessions.values():
+        for adapter in self._projects.values():
             await adapter.dispose()
         self._projects.clear()
-        self._sessions.clear()
+
+
+def user_pool_key(user_id: str) -> str:
+    """Pool key for a user's global (per-user active_db_url) connection."""
+    return f"user:{user_id}"
 
 
 _singleton: ConnectionPool | None = None

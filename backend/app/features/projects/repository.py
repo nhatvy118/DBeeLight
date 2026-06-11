@@ -45,6 +45,15 @@ async def get_project(project_id: str, user_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+async def get_db_url_any(project_id: str) -> str | None:
+    """Project db_url by id only (NO owner filter). For shared/forked sessions where the
+    requester is not the project owner — the caller is responsible for the access check."""
+    logger.info("→ get_db_url_any(project_id=%r)", project_id)  # autolog
+    pool = get_pool()
+    row = await pool.fetchrow("SELECT db_url FROM projects WHERE id = $1", project_id)
+    return row["db_url"] if row else None
+
+
 async def set_db_url(project_id: str, user_id: str, db_url: str) -> None:
     logger.info("→ set_db_url(project_id=%r user_id=%r db_url=***)", project_id, user_id)  # autolog
     pool = get_pool()

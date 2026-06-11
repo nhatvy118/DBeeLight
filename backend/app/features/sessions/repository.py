@@ -55,13 +55,34 @@ async def list_sessions(
 
 
 async def get_session(session_id: str, user_id: str) -> dict | None:
+    """Full session row (ownership-scoped). Callers read whichever fields they need."""
     logger.info("→ get_session(session_id=%r user_id=%r)", session_id, user_id)  # autolog
     pool = get_pool()
     row = await pool.fetchrow(
-        "SELECT id, project_id, title FROM sessions WHERE id=$1 AND user_id=$2",
+        "SELECT id, user_id, project_id, title, share_recipient_id, created_at "
+        "FROM sessions WHERE id=$1 AND user_id=$2",
         session_id, user_id,
     )
     return dict(row) if row else None
+
+
+async def delete_session(session_id: str, user_id: str) -> None:
+    """Delete a session (ownership-scoped). Its messages cascade via FK ON DELETE CASCADE."""
+    logger.info("→ delete_session(session_id=%r user_id=%r)", session_id, user_id)  # autolog
+    pool = get_pool()
+    await pool.execute(
+        "DELETE FROM sessions WHERE id=$1 AND user_id=$2", session_id, user_id
+    )
+
+
+async def set_title(session_id: str, user_id: str, title: str) -> None:
+    """Update a session's title (ownership-scoped). Used to auto-name from the first message."""
+    logger.info("→ set_title(session_id=%r user_id=%r title=%r)", session_id, user_id, title)  # autolog
+    pool = get_pool()
+    await pool.execute(
+        "UPDATE sessions SET title=$3 WHERE id=$1 AND user_id=$2",
+        session_id, user_id, title,
+    )
 
 
 async def add_message(session_id: str, role: str, content: str, tool_events: list[dict] | None = None) -> None:
@@ -76,7 +97,7 @@ async def add_message(session_id: str, role: str, content: str, tool_events: lis
     )
 
 
-async def get_history(session_id: str, limit: int = 40) -> list[dict]:
+async def get_history(session_id: str, limit: int = 20) -> list[dict]:
     logger.info("→ get_history(session_id=%r limit=%r)", session_id, limit)  # autolog
     pool = get_pool()
     rows = await pool.fetch(
@@ -91,3 +112,37 @@ async def get_history(session_id: str, limit: int = 40) -> list[dict]:
         d["tool_events"] = json.loads(te) if isinstance(te, str) else (te or [])
         out.append(d)
     return out
+
+
+def _row_to_message(r) -> dict:
+    d = dict(r)
+    te = d.get("tool_events")
+    return {
+        "id": d["id"],
+        "role": d["role"],
+        "content": d["content"],
+        "tool_events": json.loads(te) if isinstance(te, str) else (te or []),
+        "created_at": d["created_at"].isoformat() if d.get("created_at") else None,
+    }
+
+
+async def get_messages(session_id: str, limit: int = 30, before: str | None = None) -> dict:
+    """Cursor-paginated messages for the chat UI.
+
+    Returns the newest `limit` messages older than `before` (an ISO created_at; None = latest),
+    ordered oldest→newest for rendering. `next_cursor` is the created_at of the oldest message
+    returned — pass it back as `before` to load the previous (older) page on scroll-up.
+    """
+    logger.info("→ get_messages(session_id=%r limit=%r before=%r)", session_id, limit, before)  # autolog
+    pool = get_pool()
+    rows = await pool.fetch(
+        "SELECT id, role, content, tool_events, created_at FROM messages "
+        "WHERE session_id=$1 AND ($2::timestamptz IS NULL OR created_at < $2::timestamptz) "
+        "ORDER BY created_at DESC LIMIT $3",
+        session_id, before, limit + 1,  # fetch one extra to detect older pages
+    )
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    messages = [_row_to_message(r) for r in reversed(rows)]  # DESC → reverse to oldest→newest
+    next_cursor = messages[0]["created_at"] if (messages and has_more) else None
+    return {"messages": messages, "has_more": has_more, "next_cursor": next_cursor}

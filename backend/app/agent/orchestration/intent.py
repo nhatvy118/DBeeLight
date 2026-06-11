@@ -59,7 +59,7 @@ def classify(query: str, history: list[dict] | None = None) -> Intent:
     if history:
         rows = [
             f"{m['role']}: {m['content']}"
-            for m in history[-6:]
+            for m in history[-12:]
             if m.get("role") in ("user", "assistant") and m.get("content")
         ]
         if rows:
@@ -75,7 +75,7 @@ def classify(query: str, history: list[dict] | None = None) -> Intent:
             response_format={"type": "json_object"},
         )
         data = json.loads(resp.choices[0].message.content or "{}")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  
         logger.warning("intent classify failed, falling back to db_general: %s", e)
         data = {"route": "db_general", "nl_query": query}
 

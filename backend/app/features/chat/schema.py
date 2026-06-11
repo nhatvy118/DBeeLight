@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 class ChatRequest(BaseModel):
     message: str
-    session_id: str | None = None        # null → a new session is created
+    session_id: str | None = None        # null → server creates a "New chat" session
     project_id: str | None = None        # used only when creating a session
     active_file_ids: list[str] | None = None
 

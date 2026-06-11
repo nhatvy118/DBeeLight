@@ -371,12 +371,15 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
   const handleNewChat = async () => {
     try {
       // Create new session without project (unassigned)
-      const res = await createSession(null, null);
+      const res = await createSession(null);
       if (res.success && res.session_id) {
         // Clear selected project state
         setSelectedProjectId(null);
 
-        await fetchSessions(); // Refresh list
+        // Optimistic insert: createSession already returns the new (unassigned, "New chat")
+        // session, so prepend it locally instead of re-fetching the whole list.
+        const created: SessionInfo = { session_id: res.session_id, session_name: 'New chat', project_id: null };
+        setSessions((prev) => [created, ...prev]);
         // Navigate to /chat/sessionId for unassigned session (URL is source of truth)
         navigate(`/chat/${res.session_id}`);
         if (onSessionSelect) {

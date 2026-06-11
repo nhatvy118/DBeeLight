@@ -7,7 +7,6 @@ persistence live in ChatService; db_url is resolved server-side.
 from __future__ import annotations
 
 import json
-import logging
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -17,17 +16,14 @@ from app.features.chat import service
 from app.features.chat.schema import ChatRequest, ResumeRequest
 from app.features.sessions import repository as sess_repo
 
-logger = logging.getLogger("chat")
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
 def _frame(obj: dict) -> str:
-    logger.info("→ _frame(obj=%r)", obj)  # autolog
     return f"data: {json.dumps(obj, default=str)}\n\n"
 
 
 def _map_tool_events(events: list[dict]) -> list[dict]:
-    logger.info("→ _map_tool_events(events=%r)", events)  # autolog
     out = []
     for e in events or []:
         out.append({
@@ -39,7 +35,6 @@ def _map_tool_events(events: list[dict]) -> list[dict]:
 
 
 def _response(result, session_id: str) -> dict:
-    logger.info("→ _response(result=%r session_id=%r)", result, session_id)  # autolog
     return {
         "success": True,
         "response": result.response,
@@ -52,8 +47,9 @@ def _response(result, session_id: str) -> dict:
     }
 
 
-async def _ensure_session(user_id: str, session_id: str | None, project_id: str | None) -> str:
-    logger.info("→ _ensure_session(user_id=%r session_id=%r project_id=%r)", user_id, session_id, project_id)  # autolog
+async def _get_or_create_session(user_id: str, session_id: str | None, project_id: str | None) -> str:
+    """Return an owned session id: reuse the given one if it exists & belongs to the user,
+    otherwise create a fresh "New chat" (title is auto-named from the first message later)."""
     if session_id and await sess_repo.get_session(session_id, user_id):
         return session_id
     s = await sess_repo.create_session(user_id, project_id or None, "New chat")
@@ -62,19 +58,16 @@ async def _ensure_session(user_id: str, session_id: str | None, project_id: str 
 
 @router.post("")
 async def chat(req: ChatRequest, user_id: str = Depends(get_current_user_id)):
-    logger.info("→ chat(req=%r user_id=%r)", req, user_id)  # autolog
-    session_id = await _ensure_session(user_id, req.session_id, req.project_id)
+    session_id = await _get_or_create_session(user_id, req.session_id, req.project_id)
 
     async def gen():
-        logger.info("→ gen()")  # autolog
-        yield _frame({"type": "stage", "message": "Processing..."})
+        yield _frame({"type": "stage", "message": "Processing"})
         try:
             result = await service.handle(user_id, session_id, req.message)
         except service.ChatError as e:
             yield _frame({"type": "error", "status_code": 400, "message": str(e)})
             return
-        except Exception as e:  # noqa: BLE001
-            logger.exception("chat failed: %s", e)
+        except Exception as e:
             yield _frame({"type": "error", "status_code": 500, "message": str(e)})
             return
         yield _frame({"type": "final", "data": _response(result, session_id)})
@@ -84,7 +77,6 @@ async def chat(req: ChatRequest, user_id: str = Depends(get_current_user_id)):
 
 @router.post("/resume")
 async def resume(req: ResumeRequest, user_id: str = Depends(get_current_user_id)):
-    logger.info("→ resume(req=%r user_id=%r)", req, user_id)  # autolog
     try:
         result = await service.approve(user_id, req.session_id, req.approved)
     except service.ChatError as e:

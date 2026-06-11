@@ -40,22 +40,32 @@ export type SessionShareInfo = {
   share_id: string;
 };
 
-/** Raw message row from GET /session (matches session.content JSON). */
+/** A single message row from GET /api/sessions/{id}/messages. */
 export type SessionMessage = {
+  id?: string;
   role: string;
   content?: string;
   tool_events?: ToolEvent[];
+  created_at?: string;
   pending_workflow_resume?: boolean;
 };
 
+/** Session metadata only — messages are loaded separately via getMessages(). */
 export type GetSessionResponse =
   | {
       success: true;
       session_info: unknown;
-      messages: SessionMessage[];
       share_info: SessionShareInfo | null;
     }
   | { success: false; error: string };
+
+/** One cursor page of messages (oldest→newest). Pass `next_cursor` back as `before` for older. */
+export type MessagesPage = {
+  success: true;
+  messages: SessionMessage[];
+  has_more: boolean;
+  next_cursor: string | null;
+};
 
 export type HealthResponse = { status: 'ok'; agent_initialized: boolean };
 
@@ -216,12 +226,12 @@ export async function getSessions(projectId: string | null = null, unassignedOnl
   return (await response.json()) as SessionsResponse;
 }
 
-export async function createSession(name: string | null = null, projectId: string | null = null): Promise<CreateSessionResponse> {
+export async function createSession(projectId: string | null = null): Promise<CreateSessionResponse> {
   const response = await fetch(url('/api/sessions'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, project_id: projectId }),
+    body: JSON.stringify({ project_id: projectId }),
   });
   if (!response.ok) throw new Error('Failed to create session');
   return (await response.json()) as CreateSessionResponse;
@@ -235,6 +245,26 @@ export async function getSession(sessionId: string): Promise<GetSessionResponse>
   });
   if (!response.ok) throw new Error('Failed to get session');
   return (await response.json()) as GetSessionResponse;
+}
+
+/**
+ * Cursor-paginated messages for a session (returned oldest→newest).
+ * Omit `before` for the latest page; pass a previous page's `next_cursor` to load older.
+ */
+export async function getMessages(
+  sessionId: string,
+  before?: string | null,
+  limit = 30,
+): Promise<MessagesPage> {
+  const params = new URLSearchParams();
+  if (before) params.append('before', before);
+  params.append('limit', String(limit));
+  const response = await fetch(
+    url(`/api/sessions/${encodeURIComponent(sessionId)}/messages?${params.toString()}`),
+    { method: 'GET', credentials: 'include', headers: { 'Content-Type': 'application/json' } },
+  );
+  if (!response.ok) throw new Error('Failed to load messages');
+  return (await response.json()) as MessagesPage;
 }
 
 /**

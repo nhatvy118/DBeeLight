@@ -6,6 +6,7 @@ import { toast } from '../components/Toaster';
 import { confirm } from '../components/ConfirmDialog';
 import {
   getSession,
+  getMessages,
   sendMessageWithStream,
   getSessions,
   deleteChatSession,
@@ -80,7 +81,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const [shareInfo, setShareInfo] = useState<SessionShareInfo | null>(null);
   const [selectedProject, setSelectedProject] = useState<{ id: string; name: string; description?: string } | null>(null);
   const [projectSessions, setProjectSessions] = useState<SessionInfo[]>([]);
-  const [sessionPreviews, setSessionPreviews] = useState<Record<string, string>>({});
   const [inputKey, setInputKey] = useState(0);
   const previousProjectIdRef = useRef<string | null>(null);
   const hasRestoredSessionRef = useRef(false);
@@ -163,6 +163,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Cursor pagination for message history (scroll up to load older).
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const [oldestCursor, setOldestCursor] = useState<string | null>(null);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const isLoadingOlderRef = useRef(false);
+  const skipAutoScrollRef = useRef(false);  // set when prepending older msgs, so we don't jump to bottom
 
   const hashString = (input: string): string => {
     let hash = 0;
@@ -404,6 +410,86 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return out;
   };
 
+  // Convert raw message rows (oldest→newest) into UI messages. Shared by initial load and scroll-up.
+  const convertMessages = (
+    raw: SessionMessage[],
+    sid: string,
+    sqlActionStates: Record<string, 'pending' | 'running' | 'executed' | 'failed' | 'cancelled'>,
+  ): UiMessage[] => {
+    let sqlOrdinal = 0;
+    const filteredMessages = raw.filter((msg) => msg.role === 'user' || msg.role === 'assistant');
+    return filteredMessages
+      .map((msg, msgIndex) => {
+        const rawContent = msg.content || '';
+        const cleanedText = stripInternalPayloads(rawContent);
+        const sqlPreview =
+          msg.role === 'assistant' ? extractSqlPayloadFromToolEvents(msg.tool_events) : null;
+        const schemaPreview =
+          msg.role === 'assistant'
+            ? extractSchemaPreviewFromToolEvents(msg.tool_events) || extractSchemaPreview(rawContent)
+            : null;
+        const sqlAction =
+          msg.role === 'assistant'
+            ? resolveSqlExecuteAction(msg.tool_events, pendingWorkflowResumeFromMessage(msg))
+            : { sqlToExecute: null, sqlActionState: undefined };
+        const sqlToExecute = sqlAction.sqlToExecute;
+        const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
+        const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
+        const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
+        return {
+          text: msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
+          isUser: msg.role === 'user',
+          attachments: msg.role === 'user' ? extractSessionFileAttachments(rawContent) : undefined,
+          sqlToExecute,
+          sqlActionId,
+          sqlActionState: sqlToExecute
+            ? (persistedSqlState ?? sqlAction.sqlActionState ?? ('pending' as const))
+            : sqlAction.sqlActionState,
+          exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
+          schemaPreview,
+          schemaLocked:
+            msg.role === 'assistant' && schemaPreview
+              ? deriveSchemaLockedFromHistory(filteredMessages, msgIndex)
+              : undefined,
+        };
+      })
+      .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
+  };
+
+  // Load the previous (older) page when the user scrolls to the top of the conversation.
+  const loadOlderMessages = async () => {
+    if (!sessionId || !oldestCursor || isLoadingOlderRef.current || !hasMoreMessages) return;
+    isLoadingOlderRef.current = true;
+    const el = scrollContainerRef.current;
+    const prevHeight = el?.scrollHeight ?? 0;
+    try {
+      const page = await getMessages(sessionId, oldestCursor);
+      // sql_action_states only ride on session_info (initial load); older pages have none.
+      const older = convertMessages(page.messages, sessionId, {});
+      if (older.length) {
+        skipAutoScrollRef.current = true;  // prepend must not yank the view to the bottom
+        setMessages((prev) => [...older, ...prev]);
+        // Keep the viewport anchored on the same message after the taller list renders.
+        requestAnimationFrame(() => {
+          const el2 = scrollContainerRef.current;
+          if (el2) el2.scrollTop = el2.scrollHeight - prevHeight;
+        });
+      }
+      setOldestCursor(page.next_cursor);
+      setHasMoreMessages(page.has_more);
+    } catch (err) {
+      console.error('Failed to load older messages:', err);
+    } finally {
+      isLoadingOlderRef.current = false;
+    }
+  };
+
+  const handleMessagesScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (e.currentTarget.scrollTop < 80 && hasMoreMessages && !isLoadingOlderRef.current) {
+      void loadOlderMessages();
+    }
+  };
+
   const extractSqlActionId = (text: string): string | undefined => {
     const m = text.match(/\[SQL_ACTION_ID_START\]([\s\S]*?)\[SQL_ACTION_ID_END\]/);
     const id = m?.[1]?.trim();
@@ -505,7 +591,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     try {
       let sid = sessionId;
       if (!sid) {
-        const cr = await createSession(null, selectedProject?.id || propProjectId || null);
+        const cr = await createSession(selectedProject?.id || propProjectId || null);
         if (!cr.success || !cr.session_id) {
           toast.error('Could not create a chat session for this upload');
           throw new Error('session_create_failed');
@@ -596,56 +682,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const loadSession = async (sid: string) => {
       try {
         setIsSessionLoading(true);
-        const res = await getSession(sid);
-        if (res.success && res.messages) {
-          const sqlActionStates = getSqlActionStatesFromSessionResponse(res);
-          let sqlOrdinal = 0;
-          const filteredMessages = res.messages.filter(
-            (msg) => msg.role === 'user' || msg.role === 'assistant',
-          );
-          const convertedMessages: UiMessage[] = filteredMessages
-            .map((msg, msgIndex) => {
-              const rawContent = msg.content || '';
-              const cleanedText = stripInternalPayloads(rawContent);
-              const sqlPreview =
-                msg.role === 'assistant' ? extractSqlPayloadFromToolEvents(msg.tool_events) : null;
-              const schemaPreview =
-                msg.role === 'assistant'
-                  ? extractSchemaPreviewFromToolEvents(msg.tool_events) || extractSchemaPreview(rawContent)
-                  : null;
-              const sqlAction =
-                msg.role === 'assistant'
-                  ? resolveSqlExecuteAction(
-                      msg.tool_events,
-                      pendingWorkflowResumeFromMessage(msg),
-                    )
-                  : { sqlToExecute: null, sqlActionState: undefined };
-              const sqlToExecute = sqlAction.sqlToExecute;
-              const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
-              const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
-              const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
-              return {
-                text: msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
-                isUser: msg.role === 'user',
-                attachments: msg.role === 'user' ? extractSessionFileAttachments(rawContent) : undefined,
-                sqlToExecute,
-                sqlActionId,
-                sqlActionState: sqlToExecute
-                  ? (persistedSqlState ?? sqlAction.sqlActionState ?? ('pending' as const))
-                  : sqlAction.sqlActionState,
-                exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
-                schemaPreview,
-                schemaLocked:
-                  msg.role === 'assistant' && schemaPreview
-                    ? deriveSchemaLockedFromHistory(filteredMessages, msgIndex)
-                    : undefined,
-              };
-            })
-            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
-          setMessages(convertedMessages);
+        const [info, page] = await Promise.all([getSession(sid), getMessages(sid)]);
+        if (info.success) {
+          const sqlActionStates = getSqlActionStatesFromSessionResponse(info);
+          setMessages(convertMessages(page.messages, sid, sqlActionStates));
+          setOldestCursor(page.next_cursor);
+          setHasMoreMessages(page.has_more);
           setStagedFiles([]);
           setSessionId(sid);
-          setShareInfo(res.share_info ?? null);
+          setShareInfo(info.share_info ?? null);
           onSessionIdChange?.(sid);
           saveLastSession(sid, selectedProject?.id ?? null);
         }
@@ -683,6 +728,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   };
 
   useEffect(() => {
+    // Prepending older messages (scroll-up) must not yank the view to the bottom.
+    if (skipAutoScrollRef.current) {
+      skipAutoScrollRef.current = false;
+      return;
+    }
     scrollToBottom();
   }, [messages]);
 
@@ -927,7 +977,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const pid = selectedProject?.id || propProjectId;
     if (!pid) return;
     try {
-      const cr = await createSession(null, pid);
+      const cr = await createSession(pid);
       if (cr.success && cr.session_id) {
         saveLastSession(cr.session_id, pid);
         window.history.pushState({}, '', `/chat/${pid}/${cr.session_id}`);
@@ -1297,7 +1347,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const loadProjectSessions = async () => {
     if (!selectedProject) {
       setProjectSessions([]);
-      setSessionPreviews({});
       return;
     }
 
@@ -1314,23 +1363,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           return true;
         });
         setProjectSessions(unique);
-
-        // Load preview for each session (first user message)
-        const previews: Record<string, string> = {};
-        for (const session of unique) {
-          try {
-            const sessionRes = await getSession(session.session_id);
-            if (sessionRes.success && sessionRes.messages) {
-              const firstUserMessage = sessionRes.messages.find((msg: any) => msg.role === 'user') as { content?: string } | undefined;
-              if (firstUserMessage && firstUserMessage.content) {
-                previews[session.session_id] = firstUserMessage.content;
-              }
-            }
-          } catch (err) {
-            console.error(`Failed to load preview for session ${session.session_id}:`, err);
-          }
-        }
-        setSessionPreviews(previews);
       }
     } catch (err) {
       console.error('Failed to load project sessions:', err);
@@ -1367,57 +1399,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const loadSession = async (sid: string) => {
       try {
         setIsSessionLoading(true);
-        const res = await getSession(sid);
-        if (res.success && res.messages) {
-          const sqlActionStates = getSqlActionStatesFromSessionResponse(res);
-          let sqlOrdinal = 0;
-          const filteredMessages = res.messages.filter(
-            (msg) => msg.role === 'user' || msg.role === 'assistant',
-          );
-          const convertedMessages: UiMessage[] = filteredMessages
-            .map((msg, msgIndex) => {
-              const rawContent = msg.content || '';
-              const cleanedText = stripInternalPayloads(rawContent);
-              const sqlPreview =
-                msg.role === 'assistant' ? extractSqlPayloadFromToolEvents(msg.tool_events) : null;
-              const schemaPreview =
-                msg.role === 'assistant'
-                  ? extractSchemaPreviewFromToolEvents(msg.tool_events) || extractSchemaPreview(rawContent)
-                  : null;
-              const sqlAction =
-                msg.role === 'assistant'
-                  ? resolveSqlExecuteAction(
-                      msg.tool_events,
-                      pendingWorkflowResumeFromMessage(msg),
-                    )
-                  : { sqlToExecute: null, sqlActionState: undefined };
-              const sqlToExecute = sqlAction.sqlToExecute;
-              const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
-              const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
-              const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
-              return {
-                text:
-                  msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
-                isUser: msg.role === 'user',
-                attachments: msg.role === 'user' ? extractSessionFileAttachments(rawContent) : undefined,
-                sqlToExecute,
-                sqlActionId,
-                sqlActionState: sqlToExecute
-                  ? (persistedSqlState ?? sqlAction.sqlActionState ?? ('pending' as const))
-                  : sqlAction.sqlActionState,
-                exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
-                schemaPreview,
-                schemaLocked:
-                  msg.role === 'assistant' && schemaPreview
-                    ? deriveSchemaLockedFromHistory(filteredMessages, msgIndex)
-                    : undefined,
-              };
-            })
-            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
-          setMessages(convertedMessages);
+        const [info, page] = await Promise.all([getSession(sid), getMessages(sid)]);
+        if (info.success) {
+          const sqlActionStates = getSqlActionStatesFromSessionResponse(info);
+          setMessages(convertMessages(page.messages, sid, sqlActionStates));
+          setOldestCursor(page.next_cursor);
+          setHasMoreMessages(page.has_more);
           setStagedFiles([]);
           setSessionId(sid);
-          setShareInfo(res.share_info ?? null);
+          setShareInfo(info.share_info ?? null);
           onSessionIdChange?.(sid);
         }
       } catch {
@@ -1670,7 +1660,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
       {/* Conversation */}
       {messages.length > 0 && (
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div ref={scrollContainerRef} onScroll={handleMessagesScroll} style={{ flex: 1, overflowY: 'auto' }}>
           <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px 24px' }}>
             <MessageList
               messages={messages}
@@ -1793,9 +1783,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                     </span>
                     <span style={{ flex: 1, minWidth: 0 }}>
                       <span style={{ display: 'block', fontSize: 14.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatSessionName(session)}</span>
-                      {sessionPreviews[session.session_id] && (
-                        <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sessionPreviews[session.session_id]}</span>
-                      )}
                     </span>
                     {session.created_at && (
                       <span style={{ fontSize: 12, color: 'var(--text-faint)', flexShrink: 0 }}>{formatDate(session.created_at)}</span>

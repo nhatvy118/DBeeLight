@@ -38,7 +38,6 @@ async def create_project(user_id: str, name: str, description: str = "") -> dict
         return project
 
     await repo.set_db_url(project_id, user_id, db_url)
-    await pool.invalidate_project(project_id)
     return project
 
 
@@ -51,7 +50,7 @@ async def delete_project(project_id: str, user_id: str) -> dict | None:
     if not deleted:
         return None
     # drop any cached adapter so the file isn't held open while we unlink it
-    await get_connection_pool().invalidate_project(project_id)
+    await get_connection_pool().invalidate(project_id)
     _delete_sqlite_file(deleted.get("db_url") or "")
     return deleted
 

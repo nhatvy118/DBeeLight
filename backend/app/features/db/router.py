@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends
 
-from app.agent.pool import get_connection_pool
+from app.agent.pool import get_connection_pool, user_pool_key
 from app.features.auth import repository as auth_repo
 from app.features.auth.deps import get_current_user_id
 
@@ -29,6 +29,8 @@ async def connect(body: dict, user_id: str = Depends(get_current_user_id)):
     except Exception as e:  # noqa: BLE001
         return {"success": False, "message": f"Could not connect: {e}"}
     await auth_repo.set_active_db_url(user_id, dsn)
+    # db_url for this user's global key changed → drop the stale pooled adapter
+    await get_connection_pool().invalidate(user_pool_key(user_id))
     return {"success": True, "message": "Connected"}
 
 
@@ -43,4 +45,5 @@ async def status(user_id: str = Depends(get_current_user_id)):
 async def disconnect(user_id: str = Depends(get_current_user_id)):
     logger.info("→ disconnect(user_id=%r)", user_id)  # autolog
     await auth_repo.set_active_db_url(user_id, None)
+    await get_connection_pool().invalidate(user_pool_key(user_id))
     return {"success": True, "message": "Disconnected"}

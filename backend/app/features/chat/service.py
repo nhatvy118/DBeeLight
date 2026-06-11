@@ -13,14 +13,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from app.agent import summarization
+from app.agent import summarization, titling
 from app.agent.context import DbContext, RequestContext, reset_ctx, set_ctx
 from app.agent.orchestration import get_orchestrator
 from app.agent.orchestration.orchestrator import ChatResult
-from app.agent.pool import get_connection_pool
-from app.db import get_pool
+from app.agent.adapters import make_adapter
+from app.agent.pool import get_connection_pool, user_pool_key
 from app.features.auth import repository as auth_repo
 from app.features.files import service as files_service
+from app.features.projects import repository as proj_repo
 from app.features.projects import service as proj_service
 from app.features.sessions import repository as sess_repo
 from app.features.share import repository as share_repo
@@ -42,14 +43,10 @@ class _Access:
 
 async def _authorize(user_id: str, session_id: str) -> _Access:
     """Determine project + db_url + permission. A forked (shared) session is gated by permission."""
-    logger.info("→ _authorize(user_id=%r session_id=%r)", user_id, session_id)  # autolog
-    row = await get_pool().fetchrow(
-        "SELECT user_id, project_id, share_recipient_id FROM sessions WHERE id=$1", session_id
-    )
+    logger.info("→ _authorize(user_id=%r session_id=%r)", user_id, session_id) 
+    row = await sess_repo.get_session(session_id, user_id)
     if row is None:
-        raise ChatError("Session does not exist.")
-    if row["user_id"] != user_id:
-        raise ChatError("You do not have access to this session.")
+        raise ChatError("Session does not exist or you do not have access.")
     project_id = row["project_id"]
 
     # Forked session (share recipient): permission from the share, db_url from the source project.
@@ -74,14 +71,13 @@ async def _authorize(user_id: str, session_id: str) -> _Access:
     if not db_url or not proj_service.is_configured(db_url):
         raise ChatError("No database connected. Please Connect DB first.")
     # Pool key per user so global sessions of different users don't collide.
-    return _Access(project_id=f"user:{user_id}", db_url=db_url, permission="edit_data")
+    return _Access(project_id=user_pool_key(user_id), db_url=db_url, permission="edit_data")
 
 
 async def _project_db_url_any(project_id: str) -> str | None:
     """Project db_url regardless of owner (used for shared forked sessions)."""
     logger.info("→ _project_db_url_any(project_id=%r)", project_id)  # autolog
-    row = await get_pool().fetchrow("SELECT db_url FROM projects WHERE id=$1", project_id)
-    db_url = row["db_url"] if row else None
+    db_url = await proj_repo.get_db_url_any(project_id)
     return db_url if (db_url and proj_service.is_configured(db_url)) else None
 
 
@@ -90,12 +86,13 @@ async def _build_ctx(user_id: str, session_id: str, access: _Access) -> RequestC
     pool = get_connection_pool()
     primary = await pool.adapter_for(access.project_id, access.db_url)
 
-    # session-file adapter (if there are uploads in the session)
+    # session-file adapter (if there are uploads in the session). Not pooled:
+    # request-scoped, disposed by the caller (see _dispose_ctx) at the end of the request.
     session_adapter = None
     allowed: frozenset[str] | None = None
     sqlite_path, tables = await files_service.session_db(session_id)
     if sqlite_path:
-        session_adapter = await pool.session_adapter_for(sqlite_path, allowed_tables=tables)
+        session_adapter = make_adapter(sqlite_path, allowed_tables=tables)
         allowed = tables
 
     return RequestContext(
@@ -111,10 +108,18 @@ async def _build_ctx(user_id: str, session_id: str, access: _Access) -> RequestC
     )
 
 
+async def _dispose_ctx(ctx: RequestContext) -> None:
+    """Release request-scoped resources. The session-file adapter is not pooled, so
+    its engine must be disposed once the request is done (the primary adapter is pooled)."""
+    if ctx.db.session is not None:
+        await ctx.db.session.dispose()
+
+
 async def handle(user_id: str, session_id: str, message: str) -> ChatResult:
-    logger.info("→ handle(user_id=%r session_id=%r message=%r)", user_id, session_id, message)  # autolog
+    logger.info("→ handle(user_id=%r session_id=%r message=%r)", user_id, session_id, message)  
     access = await _authorize(user_id, session_id)
     history = await sess_repo.get_history(session_id)
+    is_first_message = not history  # empty history → this is the session's first turn
     orch = get_orchestrator()
 
     # Gating: for share recipients (not owner-edit), check the route access_level.
@@ -133,9 +138,18 @@ async def handle(user_id: str, session_id: str, message: str) -> ChatResult:
         result = await orch.process_query(message, history=recent, intent=intent, summary=summary)
     finally:
         reset_ctx(token)
+        await _dispose_ctx(ctx)
 
     await sess_repo.add_message(session_id, "user", message)
     await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
+
+    # Auto-name the session from its first user message (best-effort, never fatal).
+    if is_first_message:
+        try:
+            await sess_repo.set_title(session_id, user_id, titling.title_from_first_message(message))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("auto-title failed for session=%s: %s", session_id, e)
+
     return result
 
 
@@ -151,5 +165,6 @@ async def approve(user_id: str, session_id: str, approved: bool) -> ChatResult:
         result = await get_orchestrator().resume(session_id, approved)
     finally:
         reset_ctx(token)
+        await _dispose_ctx(ctx)
     await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
     return result

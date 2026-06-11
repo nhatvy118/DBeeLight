@@ -5,7 +5,6 @@ from pydantic import BaseModel
 
 class SessionCreate(BaseModel):
     project_id: str
-    title: str = "New chat"
 
 
 class SessionOut(BaseModel):
