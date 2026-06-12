@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any, cast
 
 from langgraph.graph import END, StateGraph
 
@@ -39,7 +40,7 @@ async def _query_execution(state: AgentState) -> AgentState:
     engine = state.get("engine", "sqlite")
     schema = "\n".join(f"- {k}({v})" for k, v in (state.get("table_schema", {}).get("descriptions") or {}).items())
     client = get_llm()
-    msgs = [
+    msgs: list[dict] = [
         {"role": "system", "content": (
             f"Generate EXACTLY ONE SELECT statement ({engine}) to answer the question. Return SQL only, no explanation.\n"
             f"Schema:\n{schema}"
@@ -49,7 +50,7 @@ async def _query_execution(state: AgentState) -> AgentState:
     sql = ""
     last_err = ""
     for _ in range(3):
-        resp = client.chat.completions.create(model=get_settings().llm_model, messages=msgs, temperature=0)
+        resp = client.chat.completions.create(model=get_settings().llm_model, messages=cast(Any, msgs), temperature=0)
         sql = _strip_fences(resp.choices[0].message.content or "")
         dql_err = require_dql_only(sql, engine)
         if dql_err:
@@ -96,4 +97,4 @@ class ReadOnlyWorkflow:
     async def run(self, session_id: str, user_message: str, engine: str) -> AgentState:
         graph = self._compiled()
         result = await graph.ainvoke(create_initial_state(session_id, user_message, engine))
-        return dict(result)
+        return cast(AgentState, dict(result))
