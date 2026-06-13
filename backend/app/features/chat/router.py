@@ -26,8 +26,6 @@ def _frame(obj: dict) -> str:
 def _map_tool_events(events: list[dict]) -> list[dict]:
     out = []
     for e in events or []:
-        # Already FE-shaped (carries its own type + payload, e.g. schema_preview) → pass through
-        # unchanged so the structured payload survives. Same shape is persisted, so reload matches.
         if e.get("type") and e.get("payload") is not None:
             out.append(e)
             continue

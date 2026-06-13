@@ -70,11 +70,11 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not load excel-server tools (%s) — will retry on use.", e)
 
-    def classify(
+    async def classify(
         self, user_message: str, history: list[dict] | None = None, summary: str = ""
     ) -> intent_mod.Intent:
         """Classify intent (used for permission gating before running)."""
-        return intent_mod.classify(user_message, history or [], summary=summary)
+        return await intent_mod.classify(user_message, history or [], summary=summary)
 
     async def process_query(
         self,

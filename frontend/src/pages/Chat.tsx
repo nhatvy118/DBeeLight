@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import MessageList, { type UiMessage, type SchemaPreviewData } from '../components/chat/MessageList';
+import MessageList, { type UiMessage } from '../components/chat/MessageList';
 import DataSourceBar, { buildDataSources, getActiveFileIds, type DataSource } from '../components/chat/DataSourceBar';
 import AttachMenu from '../components/chat/AttachMenu';
 import { toast } from '../components/Toaster';
@@ -25,15 +25,14 @@ import {
   type SessionMessage,
 } from '../services/api';
 import {
-  buildChatMessageWithSessionFiles,
-  extractSessionFileAttachments,
-  stripSessionFileMarkers,
-} from '../utils/sessionFileMarkers';
-import {
-  extractExportData,
-  stripExcelMarkersFromText,
+  readSqlPreview,
+  isSqlExecuted,
+  readSchemaPreview,
+  readFileExport,
+  readSessionFiles,
   triggerExcelDownload,
-} from '../utils/excelExportMarkers';
+  type SqlPreviewData,
+} from '../utils/toolEvents';
 import { Icons, BeeBadge } from '../icons';
 import { FileTypeBadge } from '../utils/fileType';
 
@@ -188,92 +187,19 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return `sqlact_${hashString(base)}`;
   };
 
-  const extractSchemaPreviewFromToolEvents = (events?: ToolEvent[]): SchemaPreviewData | null => {
-    if (!events || !Array.isArray(events)) return null;
-
-    const schemaEvent = events.find(
-      (e) => e?.tool === 'show_create_table_schema' && e?.type === 'schema_preview' && e?.payload
-    );
-    if (!schemaEvent?.payload) return null;
-
-    const payload = schemaEvent.payload as Record<string, any>;
-    const tableName = payload.tableName || payload.table_name;
-    const primaryKey = payload.primaryKey ?? payload.primary_key ?? null;
-    const columnsRaw = Array.isArray(payload.columns) ? payload.columns : [];
-    const columns = columnsRaw
-      .map((c: any) => ({ variable: c?.variable, type: c?.type }))
-      .filter((c: any) => c.variable && c.type);
-
-    if (!tableName || columns.length === 0) return null;
-    return { tableName, primaryKey, columns };
-  };
-
-  type SqlPreviewData = {
-    sql: string;
-    explain?: string;
-    type_sql?: string;
-    mutationPreviewMarkdown?: string | null;
-  };
-
-  type SqlPreviewPayload = {
-    sql: string;
-    explain?: string;
-    type_sql?: string;
-    mutation_preview_markdown?: string | null;
-    mutationPreviewMarkdown?: string | null;
-  };
-
-  const parseSqlPreviewPayload = (payload: SqlPreviewPayload | undefined): SqlPreviewData | null => {
-    if (!payload) return null;
-    const sql = typeof payload.sql === 'string' ? payload.sql.trim() : '';
-    if (!sql) return null;
-    const explain =
-      typeof payload.explain === 'string'
-        ? payload.explain.trim()
-        : typeof (payload as Record<string, unknown>).explain_summary === 'string'
-          ? String((payload as Record<string, unknown>).explain_summary).trim()
-          : '';
-    const type_sql =
-      typeof payload.type_sql === 'string' ? payload.type_sql.trim() : '';
-    const mutationPreviewMarkdown =
-      typeof payload.mutation_preview_markdown === 'string'
-        ? payload.mutation_preview_markdown.trim()
-        : typeof payload.mutationPreviewMarkdown === 'string'
-          ? payload.mutationPreviewMarkdown.trim()
-          : null;
-    return { sql, explain, type_sql, mutationPreviewMarkdown };
-  };
-
   const isDqlStatement = (typeSql?: string) => (typeSql ?? '').trim().toUpperCase() === 'DQL';
 
   const pendingWorkflowResumeFromMessage = (msg: { pending_workflow_resume?: boolean }) =>
     Boolean(msg?.pending_workflow_resume);
 
-  /** Structured SQL from ``tool_events`` (type ``sql_statement``; payload: sql, explain, type_sql). */
-  const extractSqlPayloadFromToolEvents = (events?: ToolEvent[]): SqlPreviewData | null => {
-    if (!events || !Array.isArray(events)) return null;
-    const sqlPayloadEvents = events.filter((e) => {
-      if (e?.type === 'sql_execution') return false;
-      if (e?.tool && e.tool !== 'execute_query') return false;
-      const p = e?.payload as Record<string, unknown> | undefined;
-      return p && typeof p.sql === 'string' && p.sql.trim().length > 0;
-    });
-    const withTypeSql = sqlPayloadEvents.find((e) => {
-      const ts = (e?.payload as Record<string, unknown> | undefined)?.type_sql;
-      return typeof ts === 'string' && ts.trim().length > 0;
-    });
-    const chosen = withTypeSql ?? sqlPayloadEvents[0];
-    return parseSqlPreviewPayload(chosen?.payload as SqlPreviewPayload | undefined);
-  };
-
   const resolveSqlExecuteAction = (
     events: ToolEvent[] | undefined,
     pendingWorkflowResume: boolean,
   ): { sqlToExecute: string | null; sqlActionState: 'pending' | 'executed' | undefined } => {
-    if (events?.some((e) => e?.type === 'sql_execution')) {
+    if (isSqlExecuted(events)) {
       return { sqlToExecute: null, sqlActionState: 'executed' };
     }
-    const payload = extractSqlPayloadFromToolEvents(events);
+    const payload = readSqlPreview(events);
     if (!payload?.sql) {
       return { sqlToExecute: null, sqlActionState: undefined };
     }
@@ -354,32 +280,30 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const filteredMessages = raw.filter((msg) => msg.role === 'user' || msg.role === 'assistant');
     return filteredMessages
       .map((msg, msgIndex) => {
-        const rawContent = msg.content || '';
-        const cleanedText = stripInternalPayloads(rawContent);
+        const cleanedText = (msg.content || '').trim();
         const sqlPreview =
-          msg.role === 'assistant' ? extractSqlPayloadFromToolEvents(msg.tool_events) : null;
+          msg.role === 'assistant' ? readSqlPreview(msg.tool_events) : null;
         const schemaPreview =
           msg.role === 'assistant'
-            ? extractSchemaPreviewFromToolEvents(msg.tool_events)
+            ? readSchemaPreview(msg.tool_events)
             : null;
         const sqlAction =
           msg.role === 'assistant'
             ? resolveSqlExecuteAction(msg.tool_events, pendingWorkflowResumeFromMessage(msg))
             : { sqlToExecute: null, sqlActionState: undefined };
         const sqlToExecute = sqlAction.sqlToExecute;
-        const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
-        const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
+        const sqlActionId = sqlToExecute ? buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++) : undefined;
         const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
         return {
           text: msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
           isUser: msg.role === 'user',
-          attachments: msg.role === 'user' ? extractSessionFileAttachments(rawContent) : undefined,
+          attachments: msg.role === 'user' ? readSessionFiles(msg.tool_events) : undefined,
           sqlToExecute,
           sqlActionId,
           sqlActionState: sqlToExecute
             ? (persistedSqlState ?? sqlAction.sqlActionState ?? ('pending' as const))
             : sqlAction.sqlActionState,
-          exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
+          exportToExcel: msg.role === 'assistant' ? readFileExport(msg.tool_events) : null,
           schemaPreview,
           schemaLocked:
             msg.role === 'assistant' && schemaPreview
@@ -422,65 +346,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (e.currentTarget.scrollTop < 80 && hasMoreMessages && !isLoadingOlderRef.current) {
       void loadOlderMessages();
     }
-  };
-
-  const extractSqlActionId = (text: string): string | undefined => {
-    const m = text.match(/\[SQL_ACTION_ID_START\]([\s\S]*?)\[SQL_ACTION_ID_END\]/);
-    const id = m?.[1]?.trim();
-    return id || undefined;
-  };
-
-  const stripInternalPayloads = (text: string): string => {
-    let cleaned = stripSessionFileMarkers(
-      text
-        .replace(/\n?\[CREATE_TABLE_SCHEMA_JSON_START\][\s\S]*?\[CREATE_TABLE_SCHEMA_JSON_END\]\n?/g, '\n')
-        .replace(/\n?\[SCHEMA_CONFIRM_INTERNAL_START\][\s\S]*?\[SCHEMA_CONFIRM_INTERNAL_END\]\n?/g, '\n')
-        // Legacy Superset chart-embed markers — Superset has been removed but old
-        // assistant messages still carry them; strip so they don't render as raw text.
-        .replace(/\n?\[CHART_EMBED_URL_START\][\s\S]*?\[CHART_EMBED_URL_END\]\n?/g, '\n')
-        .replace(/\n?\[CHART_EMBED_META_START\][\s\S]*?\[CHART_EMBED_META_END\]\n?/g, '\n')
-        // File path markers for the agent; name/id handled in stripSessionFileMarkers
-        .replace(/\n?\[UPLOADED_EXCEL_PATH_START\][\s\S]*?\[UPLOADED_EXCEL_PATH_END\]\n?/g, '\n'),
-    );
-
-    // Strip the read-only-share system note that older builds accidentally
-    // persisted into the user's message history.
-    cleaned = cleaned.replace(
-      /^\[SHARED SESSION\s*[—-]\s*READ-ONLY MODE\][\s\S]*?\n\s*User message:\s*/i,
-      '',
-    );
-
-    // Hide backend internal execution prompts from history display
-    if (/^User has confirmed schema\./i.test(cleaned.trim()) && /User request:/i.test(cleaned)) {
-      const reqMatch = cleaned.match(/User request:\s*(.+)$/im);
-      if (reqMatch?.[1]) {
-        return reqMatch[1].trim();
-      }
-    }
-
-    // Hide internal schema-discovery prompt generated by workflow
-    if (/^Show me the schema for tables:/i.test(cleaned.trim()) && /Use list_tables and describe_table tools\.?$/i.test(cleaned.trim())) {
-      return '';
-    }
-
-    // Hide legacy wrapper text like "Generate SQL for: ... Show the SQL but do NOT execute it."
-    cleaned = cleaned.replace(/^Generate SQL for:\s*/i, '');
-    cleaned = cleaned.replace(/\.?\s*Show the SQL but do NOT execute it\.?\s*$/i, '');
-
-    // Hide internal schema-tool forcing prompt if it leaks to UI.
-    if (/^You MUST call tool `show_create_table_schema`/i.test(cleaned.trim())) {
-      const reqMatch = cleaned.match(/User request:\s*(.+)$/im);
-      if (reqMatch?.[1]) {
-        return reqMatch[1].trim();
-      }
-      return '';
-    }
-
-    cleaned = cleaned.replace(/^\[CREATE_TABLE_SCHEMA_PREVIEW\]\s*/i, '');
-    cleaned = cleaned.replace(/\n?\[SQL_ACTION_ID_START\][\s\S]*?\[SQL_ACTION_ID_END\]\n?/g, '\n');
-    cleaned = stripExcelMarkersFromText(cleaned);
-
-    return cleaned.trim();
   };
 
   const isStopVisible = isSending || isAssistantTyping;
@@ -741,8 +606,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           ...prev,
           {
             text: buildAssistantTextFromSqlPreview(
-              stripInternalPayloads(res.response),
-              extractSqlPayloadFromToolEvents((res as any).tool_events),
+              (res.response ?? '').trim(),
+              readSqlPreview((res as any).tool_events),
             ),
             isUser: false,
             ...(() => {
@@ -754,9 +619,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 workflowResumePending: pendingResume,
               };
             })(),
-            sqlActionId: extractSqlActionId(res.response),
-            exportToExcel: extractExportData(res.response),
-            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events),
+            exportToExcel: readFileExport((res as any).tool_events),
+            schemaPreview: readSchemaPreview((res as any).tool_events),
             schemaLocked: false,
           },
         ]);
@@ -870,8 +734,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (captured.length > 0 && uploaded.length === 0) return;
 
     setStagedFiles([]);
-    const sendPayload = buildChatMessageWithSessionFiles(displayText, uploaded);
-    await doSend(sendPayload);
+    // Uploaded files are bound to the session server-side; send the user text as-is.
+    void uploaded;
+    await doSend(displayText);
   };
 
   /** Called after user picks storage destination — upload staged files then send. */
@@ -902,8 +767,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       return;
     }
 
-    const sendPayload = buildChatMessageWithSessionFiles(displayText, uploaded);
-    await doSend(sendPayload);
+    // Uploaded files are bound to the session server-side; send the user text as-is.
+    void uploaded;
+    await doSend(displayText);
   };
 
   /** Start a fresh chat inside the current project (from the project view). */
@@ -933,21 +799,22 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     setIsSending(true);
     try {
-      const sendPayload = buildChatMessageWithSessionFiles(
-        userMsg.text,
-        (userMsg.attachments || [])
-          .filter((a): a is typeof a & { fileId: string } => !!a.fileId)
-          .map((a) => ({ id: a.fileId, filename: a.name })),
-      );
-      const res = await sendMessageWithStream(sendPayload, sessionId, selectedProject?.id || null, { activeFileIds: getActiveFileIds(activeDataSources) });
+      // Files are bound to the session server-side; pass their ids via active_file_ids
+      // (no marker text embedded in the message anymore).
+      const refreshFileIds = (userMsg.attachments || [])
+        .map((a) => a.fileId)
+        .filter((id): id is string => !!id);
+      const res = await sendMessageWithStream(userMsg.text, sessionId, selectedProject?.id || null, {
+        activeFileIds: refreshFileIds.length ? refreshFileIds : getActiveFileIds(activeDataSources),
+      });
       const resText = res.response;
       if (resText && resText.trim().length > 0) {
         setMessages((prev) => {
           const updated = [...prev];
           updated[aiIndex] = {
             text: buildAssistantTextFromSqlPreview(
-              stripInternalPayloads(resText),
-              extractSqlPayloadFromToolEvents((res as any).tool_events),
+              (resText ?? '').trim(),
+              readSqlPreview((res as any).tool_events),
             ),
             isUser: false,
             ...(() => {
@@ -959,9 +826,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 workflowResumePending: pendingResume,
               };
             })(),
-            sqlActionId: extractSqlActionId(resText),
-            exportToExcel: extractExportData(resText),
-            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events),
+            exportToExcel: readFileExport((res as any).tool_events),
+            schemaPreview: readSchemaPreview((res as any).tool_events),
           };
           return updated;
         });
@@ -1095,8 +961,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           ...prev,
           {
             text: buildAssistantTextFromSqlPreview(
-              stripInternalPayloads(resText),
-              extractSqlPayloadFromToolEvents((res as any).tool_events),
+              (resText ?? '').trim(),
+              readSqlPreview((res as any).tool_events),
             ),
             isUser: false,
             ...(() => {
@@ -1108,9 +974,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 workflowResumePending: pendingResume,
               };
             })(),
-            sqlActionId: extractSqlActionId(resText),
-            exportToExcel: extractExportData(resText),
-            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events),
+            exportToExcel: readFileExport((res as any).tool_events),
+            schemaPreview: readSchemaPreview((res as any).tool_events),
           },
         ]);
 
@@ -1162,7 +1027,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       const res = await executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, false, null);
       if (res.success) {
         const resText = res.response ?? '';
-        const cleanedRaw = stripInternalPayloads(resText);
+        const cleanedRaw = (resText ?? '').trim();
         // A bare "Successfully executed the SQL." carries no info beyond the
         // success itself — the green "Executed" chip already says that, so
         // don't append it as a separate text bubble. Keep any real follow-up
@@ -1184,7 +1049,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             {
               text: buildAssistantTextFromSqlPreview(
                 cleanedRaw,
-                extractSqlPayloadFromToolEvents((res as any).tool_events),
+                readSqlPreview((res as any).tool_events),
               ),
               isUser: false,
               ...(() => {
@@ -1196,9 +1061,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                   workflowResumePending: pendingResume,
                 };
               })(),
-              sqlActionId: extractSqlActionId(resText),
-              exportToExcel: extractExportData(resText),
-              schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events),
+              exportToExcel: readFileExport((res as any).tool_events),
+              schemaPreview: readSchemaPreview((res as any).tool_events),
             },
           ];
         });

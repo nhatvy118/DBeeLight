@@ -209,7 +209,7 @@ def _clarification_for_low_confidence(intent: Intent) -> str:
     )
 
 
-def classify(query: str, history: list[dict] | None = None, summary: str = "") -> Intent:
+async def classify(query: str, history: list[dict] | None = None, summary: str = "") -> Intent:
     s = get_settings()
     client = get_llm()
 
@@ -228,7 +228,7 @@ def classify(query: str, history: list[dict] | None = None, summary: str = "") -
             ctx += "\n[Context]\n" + "\n".join(rows) + "\n"
 
     try:
-        resp = client.chat.completions.create(
+        resp = await client.chat.completions.create(
             model=s.router_model,
             messages=[
                 {"role": "system", "content": _PROMPT},

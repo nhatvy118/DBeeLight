@@ -21,7 +21,7 @@ def _approx_tokens(messages: list[dict]) -> int:
     return sum(len(str(m.get("content") or "")) for m in messages) // 4
 
 
-def summarize(history: list[dict]) -> tuple[str, list[dict]]:
+async def summarize(history: list[dict]) -> tuple[str, list[dict]]:
     """Return (summary, recent_history).
 
     Short history → ("", history). Long → summarize the older part, keep the last KEEP_RECENT turns.
@@ -42,7 +42,7 @@ def summarize(history: list[dict]) -> tuple[str, list[dict]]:
     )
     try:
         client = get_llm()
-        resp = client.chat.completions.create(
+        resp = await client.chat.completions.create(
             model=get_settings().llm_model,
             messages=[
                 {"role": "system", "content": (

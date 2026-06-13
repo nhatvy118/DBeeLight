@@ -60,7 +60,7 @@ async def plan_mutation(nl_query: str, engine: str) -> MutationPlan:
 
     schema = await _schema_context()
     client = get_llm()
-    resp = client.chat.completions.create(
+    resp = await client.chat.completions.create(
         model=s.llm_model,
         messages=[
             {

@@ -41,7 +41,7 @@ def _strip_fences(text: str) -> str:
 
 async def _intent_parse(state: AgentState) -> AgentState:
     client = get_llm()
-    resp = client.chat.completions.create(
+    resp = await client.chat.completions.create(
         model=get_settings().llm_model,
         messages=[
             {"role": "system", "content": (
@@ -108,7 +108,7 @@ async def _sql_preview(state: AgentState) -> AgentState:
     sql = ""
     last_err = ""
     for attempt in range(3):
-        resp = client.chat.completions.create(model=get_settings().llm_model, messages=msgs, temperature=0)
+        resp = await client.chat.completions.create(model=get_settings().llm_model, messages=msgs, temperature=0)
         sql = _strip_fences(resp.choices[0].message.content or "")
         ok, err, _kind = await verify_for_mutation(sql, engine)
         if ok:

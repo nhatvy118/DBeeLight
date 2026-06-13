@@ -50,7 +50,7 @@ async def _query_execution(state: AgentState) -> AgentState:
     sql = ""
     last_err = ""
     for _ in range(3):
-        resp = client.chat.completions.create(model=get_settings().llm_model, messages=cast(Any, msgs), temperature=0)
+        resp = await client.chat.completions.create(model=get_settings().llm_model, messages=cast(Any, msgs), temperature=0)
         sql = _strip_fences(resp.choices[0].message.content or "")
         dql_err = require_dql_only(sql, engine)
         if dql_err:

@@ -94,7 +94,7 @@ async def _schema_preview(state: AgentState) -> AgentState:
     engine = state.get("engine", "sqlite")
     existing = await dbtools.list_tables()
     client = get_llm()
-    resp = client.chat.completions.create(
+    resp = await client.chat.completions.create(
         model=get_settings().llm_model,
         messages=[
             {"role": "system", "content": (

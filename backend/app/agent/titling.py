@@ -24,13 +24,13 @@ def _truncate(text: str, max_len: int = _MAX_LEN) -> str:
     return (s[: max_len - 3].rstrip() + "...") if len(s) > max_len else s
 
 
-def title_from_first_message(text: str) -> str:
+async def title_from_first_message(text: str) -> str:
     """Short chat title for `text` (LLM if available, else a truncated message)."""
     s = (text or "").strip()
     if not s:
         return _FALLBACK
     try:
-        resp = get_llm().chat.completions.create(
+        resp = await get_llm().chat.completions.create(
             model=get_settings().llm_model,
             messages=[
                 {"role": "system", "content": (

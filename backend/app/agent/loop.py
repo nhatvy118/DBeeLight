@@ -63,7 +63,7 @@ async def run_tool_loop(
     chunks: list[str] = []
 
     for _ in range(s.max_tool_iterations):
-        completion = client.chat.completions.create(
+        completion = await client.chat.completions.create(
             model=model,
             messages=messages,
             tools=tools or None,

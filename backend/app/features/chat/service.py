@@ -124,10 +124,10 @@ async def handle(user_id: str, session_id: str, message: str) -> ChatResult:
 
     # Summarize first so classify can resolve references against older turns too
     # (summary) — not just the last few verbatim turns.
-    summary, recent = summarization.summarize(history)
+    summary, recent = await summarization.summarize(history)
 
     # Gating: for share recipients (not owner-edit), check the route access_level.
-    intent = orch.classify(message, recent, summary=summary)
+    intent = await orch.classify(message, recent, summary=summary)
     if access.permission != "edit_data":
         if not share_service.allows(access.permission, intent.access_level):
             raise ChatError(
@@ -159,7 +159,7 @@ async def handle(user_id: str, session_id: str, message: str) -> ChatResult:
     # Auto-name the session from its first user message (best-effort, never fatal).
     if is_first_message:
         try:
-            await sess_repo.set_title(session_id, user_id, titling.title_from_first_message(message))
+            await sess_repo.set_title(session_id, user_id, await titling.title_from_first_message(message))
         except Exception as e:  # noqa: BLE001
             logger.warning("auto-title failed for session=%s: %s", session_id, e)
 
