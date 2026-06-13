@@ -20,6 +20,7 @@ import {
   type SessionInfo,
   type SessionShareInfo,
   type SessionFileMeta,
+  type ImportMode,
   type ToolEvent,
   type GetSessionResponse,
   type SessionMessage,
@@ -379,7 +380,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   /** Upload staged files to server. Returns uploaded metadata only — does not mutate composer state. */
   const uploadStagedFiles = async (
-    useProjectDb: boolean,
+    importMode: ImportMode,
     filesToUpload: { localId: string; file: File; filename: string }[],
   ): Promise<{ id: string; filename: string }[]> => {
     if (filesToUpload.length === 0) return [];
@@ -415,8 +416,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           uploadSessionFile(
             sid!,
             staged.file,
+            importMode,
             selectedProject?.id || propProjectId || null,
-            useProjectDb,
           ),
         ),
       );
@@ -429,11 +430,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         if (result.status === 'fulfilled') {
           const up = result.value.file;
           uploaded.push({ id: up.id, filename: up.filename });
-          if (up.sql_import_ok === false) {
-            toast.warning(
-              `${up.filename}: saved for Excel edits; SQL Q&A unavailable (${up.sql_import_warning || 'import failed'}).`,
-            );
-          }
           continue;
         }
 
@@ -681,66 +677,89 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     setStreamingStage(null);
   };
 
+  /** The three mutually-exclusive destinations for an uploaded file's data, and how each
+   *  is presented in the storage-choice prompt. */
+  const IMPORT_MODE_META: Record<
+    ImportMode,
+    { icon: React.ReactNode; bg: string; color: string; title: string; desc: string }
+  > = {
+    project_db: { icon: <Icons.Database size={17} />, bg: 'var(--green-soft)', color: 'var(--green-ink)', title: 'Save to database', desc: "Store this file's data in your project database so you can query it anytime." },
+    qa: { icon: <Icons.Question size={17} />, bg: 'var(--surface-3)', color: 'var(--text-soft)', title: 'Q&A only', desc: "Ask about this file now — don't store it in the database." },
+    excel: { icon: <Icons.Pencil size={17} />, bg: 'var(--accent-soft)', color: 'var(--accent-ink)', title: 'Edit in Excel', desc: 'Let the assistant open and edit this workbook with the Excel tools.' },
+  };
+
+  /** Which destinations make sense for the staged batch. All tabular formats (CSV/TSV/XLS/XLSX)
+   *  support every mode — non-xlsx is converted to .xlsx for the Excel tools server-side.
+   *  project_db is offered only inside a real project. */
+  const availableImportModes = (
+    files: { filename: string }[],
+    canUseProjectDb: boolean,
+  ): ImportMode[] => {
+    const anyTabular = files.some((f) => /\.(csv|tsv|txt|xlsx|xlsm|xls|xlsb|ods|xltx|xltm)$/i.test(f.filename));
+    if (!anyTabular) return [];
+    const modes: ImportMode[] = [];
+    if (canUseProjectDb) modes.push('project_db');
+    modes.push('qa', 'excel');
+    return modes;
+  };
+
+  /** Render the user's turn immediately (optimistic) with file chips from local
+   *  staged state, then clear the composer. Called before any network round-trip. */
+  const showUserTurn = (text: string) => {
+    const attachments = stagedFiles.map((f) => ({ name: f.filename }));
+    setMessages((prev) => [
+      ...prev,
+      { text, isUser: true, ...(attachments.length > 0 ? { attachments } : {}) },
+    ]);
+    setQuery('');
+    setInputKey((k) => k + 1);
+  };
+
   const handleSend = async () => {
     if (isStopVisible || isUploadingFile) return;
-    const hasText = query.trim().length > 0;
-    if (!hasText) return;
-
     const displayText = query.trim();
-    const activeProjectId = selectedProject?.id || propProjectId;
-    const attachmentsForUi = stagedFiles.map((f) => ({ name: f.filename }));
+    if (!displayText) return;
 
-    // Ask "save data vs Q&A only" when there are staged files AND there's a
-    // place to import into: inside a project always, or in a regular chat only
-    // while a database is connected. With no project and no DB connection there's
-    // nowhere to save, so skip the question and just do Q&A.
-    if (stagedFiles.length > 0 && (activeProjectId || connectedDbLabel)) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          text: displayText,
-          isUser: true,
-          ...(attachmentsForUi.length > 0 ? { attachments: attachmentsForUi } : {}),
-        },
-      ]);
-      setQuery('');
-      setInputKey((k) => k + 1);
+    // project_db needs a real project (the session sandbox / Excel modes don't).
+    const canUseProjectDb = !!(selectedProject?.id || propProjectId);
+    const modes = stagedFiles.length > 0 ? availableImportModes(stagedFiles, canUseProjectDb) : [];
+
+    // Staged a file we can't import (not CSV/Excel) → refuse before rendering the turn.
+    if (stagedFiles.length > 0 && modes.length === 0) {
+      toast.error('Unsupported file type. Import supports CSV and Excel files.');
+      return;
+    }
+
+    showUserTurn(displayText);
+
+    // More than one possible destination → ask which one first; the upload+send resumes
+    // in handleStorageChoice() once the user picks.
+    if (modes.length > 1) {
       pendingSendPayloadRef.current = displayText;
       setPendingStorageChoice(true);
       return;
     }
 
-    // Show message in chat immediately, then upload and send
-    setMessages((prev) => [
-      ...prev,
-      {
-        text: displayText,
-        isUser: true,
-        ...(attachmentsForUi.length > 0 ? { attachments: attachmentsForUi } : {}),
-      },
-    ]);
-    setQuery('');
-    setInputKey((k) => k + 1);
-
-    const captured = [...stagedFiles];
-    let uploaded: { id: string; filename: string }[] = [];
-    try {
-      uploaded = captured.length > 0 ? await uploadStagedFiles(false, captured) : [];
-    } catch (err) {
-      if (err instanceof Error && err.message === 'session_create_failed') return;
-      throw err;
+    // Exactly one possible destination → no need to ask; upload with it then send.
+    if (modes.length === 1) {
+      const captured = [...stagedFiles];
+      let uploaded: { id: string; filename: string }[];
+      try {
+        uploaded = await uploadStagedFiles(modes[0], captured);
+      } catch (err) {
+        if (err instanceof Error && err.message === 'session_create_failed') return;
+        throw err;
+      }
+      if (uploaded.length === 0) return; // upload failed → don't send a dangling turn
+      setStagedFiles([]);
+      // Files are bound to the session server-side; the user text is sent as-is.
     }
 
-    if (captured.length > 0 && uploaded.length === 0) return;
-
-    setStagedFiles([]);
-    // Uploaded files are bound to the session server-side; send the user text as-is.
-    void uploaded;
     await doSend(displayText);
   };
 
-  /** Called after user picks storage destination — upload staged files then send. */
-  const handleStorageChoice = async (useProjectDb: boolean) => {
+  /** Called after user picks an import destination — upload staged files then send. */
+  const handleStorageChoice = async (mode: ImportMode) => {
     const captured = [...stagedFiles];
     setStagedFiles([]);
     setPendingStorageChoice(false);
@@ -749,7 +768,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     let uploaded: { id: string; filename: string }[] = [];
     try {
-      uploaded = await uploadStagedFiles(useProjectDb, captured);
+      uploaded = await uploadStagedFiles(mode, captured);
     } catch (err) {
       if (err instanceof Error && err.message === 'session_create_failed') {
         setStagedFiles(captured);
@@ -1301,7 +1320,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         type="file"
         style={{ display: 'none' }}
         multiple={false}
-        accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.tsv,.pdf,.db,.sqlite,.txt,.md,application/pdf,application/x-sqlite3,text/csv,text/tab-separated-values,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.oasis.opendocument.spreadsheet"
+        accept=".xlsx,.xlsm,.xls,.xlsb,.ods,.xltx,.xltm,.csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.oasis.opendocument.spreadsheet"
         onChange={handleFileInputChange}
       />
 
@@ -1438,17 +1457,16 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     <div className="card scale-in" style={{ maxWidth: 760, margin: '0 auto 12px', borderRadius: 'var(--r)', overflow: 'hidden', borderColor: 'var(--accent-soft-2)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '13px 16px', borderBottom: '1px solid var(--border)', background: 'var(--accent-soft)' }}>
         <span style={{ color: 'var(--accent-ink)', flexShrink: 0 }}><Icons.Question size={18} /></span>
-        <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text)' }}>Do you want to save this file's data, or just ask questions about it?</span>
+        <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text)' }}>How do you want to use this file?</span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12 }}>
-        {[
-          { save: false, icon: <Icons.Question size={17} />, bg: 'var(--surface-3)', color: 'var(--text-soft)', title: 'Q&A only', desc: "Ask about this file now — don't store it in the database." },
-          { save: true, icon: <Icons.Database size={17} />, bg: 'var(--green-soft)', color: 'var(--green-ink)', title: 'Save data', desc: "Store this file's data so you can query it anytime." },
-        ].map((opt) => (
+        {availableImportModes(stagedFiles, !!(selectedProject?.id || propProjectId)).map((mode) => {
+          const opt = IMPORT_MODE_META[mode];
+          return (
           <button
-            key={String(opt.save)}
+            key={mode}
             type="button"
-            onClick={() => void handleStorageChoice(opt.save)}
+            onClick={() => void handleStorageChoice(mode)}
             disabled={isUploadingFile}
             className="focusable"
             style={{ display: 'flex', alignItems: 'flex-start', gap: 12, textAlign: 'left', padding: '12px 14px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)', transition: 'all .13s', opacity: isUploadingFile ? 0.6 : 1, cursor: isUploadingFile ? 'default' : 'pointer' }}
@@ -1461,7 +1479,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-muted)', marginTop: 1 }}>{opt.desc}</span>
             </span>
           </button>
-        ))}
+          );
+        })}
       </div>
     </div>
   ) : null;

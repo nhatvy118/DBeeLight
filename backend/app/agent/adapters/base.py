@@ -59,6 +59,14 @@ class DatabaseAdapter(ABC):
                 return QueryResult(columns=cols, rows=[tuple(r) for r in rows], rowcount=len(rows))
             return QueryResult(columns=[], rows=[], rowcount=result.rowcount or 0)
 
+    async def import_dataframe(self, table_name: str, df, if_exists: str = "replace") -> None:
+        """Write a pandas DataFrame as a table. Works across engines (SQLite/Postgres):
+        run_sync bridges pandas' sync to_sql onto the async engine's connection."""
+        async with self._engine.begin() as conn:
+            await conn.run_sync(
+                lambda sync_conn: df.to_sql(table_name, sync_conn, if_exists=if_exists, index=False)
+            )
+
     def _filter_allowed(self, tables: list[str]) -> list[str]:
         if self.allowed_tables is None:
             return tables

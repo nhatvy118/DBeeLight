@@ -9,7 +9,7 @@ logger = logging.getLogger("features.files.repository")
 
 
 async def insert_file(
-    user_id: str, session_id: str, filename: str, disk_path: str,
+    user_id: str, session_id: str, filename: str, disk_path: str | None,
     sqlite_db_path: str | None, table_name: str | None, size_bytes: int = 0,
 ) -> dict:
     logger.info("→ insert_file(user_id=%r session_id=%r filename=%r disk_path=%r sqlite_db_path=%r table_name=%r size_bytes=%r)", user_id, session_id, filename, disk_path, sqlite_db_path, table_name, size_bytes)  # autolog

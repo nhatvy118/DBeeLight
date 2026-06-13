@@ -678,12 +678,7 @@ export type SessionFileMeta = {
   filename: string;
   mime_type: string;
   size_bytes: number;
-  summary?: string | null;
-  sqlite_table_name?: string | null;
   uploaded_at?: string | null;
-  /** False when Excel was saved but SQLite import failed (Excel agent still works). */
-  sql_import_ok?: boolean;
-  sql_import_warning?: string | null;
 };
 
 export async function listSessionFiles(sessionId: string): Promise<SessionFileMeta[]> {
@@ -702,6 +697,12 @@ export async function listSessionFiles(sessionId: string): Promise<SessionFileMe
 export type UploadSessionFileResult = {
   file: SessionFileMeta;
 };
+
+/** Where an uploaded file's data goes (mutually exclusive):
+ *  - project_db: imported into the project's real database
+ *  - qa:         imported into the session sandbox for SQL Q&A (not persisted to the real DB)
+ *  - excel:      kept as a workbook for the Excel tools to read/edit (no SQL import) */
+export type ImportMode = 'project_db' | 'qa' | 'excel';
 
 function uploadErrorMessage(data: unknown): string {
   if (typeof data !== 'object' || data === null) return 'Failed to upload file';
@@ -770,14 +771,14 @@ export async function listExportFilesInventory(): Promise<ExportFileInventoryRow
 export async function uploadSessionFile(
   sessionId: string,
   file: File,
+  importMode: ImportMode,
   projectId: string | null = null,
-  useProjectDb?: boolean,
 ): Promise<UploadSessionFileResult> {
   const form = new FormData();
   form.append('file', file);
   form.append('session_id', sessionId);
+  form.append('import_mode', importMode);
   if (projectId) form.append('project_id', projectId);
-  if (useProjectDb !== undefined) form.append('use_project_db', String(useProjectDb));
   const response = await fetch(url('/api/files/upload'), {
     method: 'POST',
     credentials: 'include',
