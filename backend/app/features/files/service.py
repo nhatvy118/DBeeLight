@@ -280,13 +280,19 @@ async def _save_for_excel(user_id: str, session_id: str, filename: str, content:
     )
 
 
-async def session_db(session_id: str) -> tuple[str | None, frozenset[str] | None]:
-    """(session SQLite path, allowed table set) — used to attach the session adapter."""
-    logger.info("→ session_db(session_id=%r)", session_id)  # autolog
+async def session_db(
+    session_id: str, file_ids: list[str]
+) -> tuple[str | None, frozenset[str] | None]:
+    """(session SQLite path, allowed table set) for the picked uploaded files — used to attach
+    the session adapter scoped to the data sources the user selected for this turn."""
+    logger.info("→ session_db(session_id=%r file_ids=%r)", session_id, file_ids)  # autolog
     files = await repo.list_for_session(session_id)
+    wanted = set(file_ids)
     path = None
     tables: set[str] = set()
     for f in files:
+        if str(f.get("id")) not in wanted:
+            continue
         if f.get("sqlite_db_path") and f.get("table_name"):
             path = f["sqlite_db_path"]
             tables.add(f["table_name"])

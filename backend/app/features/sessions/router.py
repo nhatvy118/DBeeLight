@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.features.auth.deps import get_current_user_id
 from app.features.projects import repository as proj_repo
 from app.features.sessions import repository as repo
+from app.features.sessions import service
 
 router = APIRouter(tags=["sessions"])
 
@@ -17,7 +18,10 @@ async def create(body: dict, user_id: str = Depends(get_current_user_id)):
     if project_id and not await proj_repo.get_project(project_id, user_id):
         raise HTTPException(status_code=404, detail="Project does not exist / not yours")
     s = await repo.create_session(user_id, project_id, "New chat")
-    info = {"session_id": s["id"], "session_name": s["title"], "project_id": s["project_id"]}
+    info = {
+        "session_id": s["id"], "session_name": s["title"], "project_id": s["project_id"],
+        **await service.db_descriptor(user_id, s),
+    }
     return {"success": True, "session_id": s["id"], "session_info": info}
 
 
@@ -40,7 +44,10 @@ async def get_one(session_id: str, user_id: str = Depends(get_current_user_id)):
         return {"success": False, "error": "not found"}
     return {
         "success": True,
-        "session_info": {"session_id": s["id"], "session_name": s["title"], "project_id": s["project_id"]},
+        "session_info": {
+            "session_id": s["id"], "session_name": s["title"], "project_id": s["project_id"],
+            **await service.db_descriptor(user_id, s),
+        },
         "share_info": None,
     }
 

@@ -858,6 +858,16 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
 
 export type DbConnectResult = { success: boolean; message: string };
 
+/** Status of the user's active external DB. Redacted — never includes the password. */
+export type DbStatusResult = {
+  success: boolean;
+  message: string;
+  host?: string | null;
+  port?: number | null;
+  database?: string | null;
+  username?: string | null;
+};
+
 export async function connectExternalDb(data: {
   host: string;
   port: number;
@@ -882,9 +892,9 @@ export async function disconnectExternalDb(): Promise<DbConnectResult> {
   return response.json() as Promise<DbConnectResult>;
 }
 
-export async function getDbConnectionStatus(): Promise<DbConnectResult> {
+export async function getDbConnectionStatus(): Promise<DbStatusResult> {
   const response = await fetch(url('/api/db/status'), {
     credentials: 'include',
   });
-  return response.json() as Promise<DbConnectResult>;
+  return response.json() as Promise<DbStatusResult>;
 }

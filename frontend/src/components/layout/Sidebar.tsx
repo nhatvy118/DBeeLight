@@ -21,7 +21,6 @@ import DeleteProjectModal from '../modals/DeleteProjectModal';
 import DatabaseConnectPopup, { type DatabaseConnectionData } from '../modals/DatabaseConnectPopup';
 import StorageModal from '../modals/StorageModal';
 import { useOnboarding } from '../../context/OnboardingContext';
-import { encryptPassword, decryptPassword } from '../../utils/crypto';
 import { Icons, BeeBadge, type IconComponent } from '../../icons';
 import { toast } from '../Toaster';
 import { confirm } from '../ConfirmDialog';
@@ -221,35 +220,26 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
   const [connectedDb, setConnectedDb] = useState<DatabaseConnectionData | null>(null);
 
-  const saveConnectedDb = async (data: DatabaseConnectionData) => {
-    const encryptedPassword = await encryptPassword(data.password);
-    localStorage.setItem('connectedDb', JSON.stringify({ ...data, password: encryptedPassword }));
-  };
-
-  const clearConnectedDb = () => {
-    localStorage.removeItem('connectedDb');
-    setConnectedDb(null);
-  };
-
-  // On mount: load + decrypt stored connection, then verify backend is still connected.
+  // On mount: ask the backend whether an external DB is connected. The DSN lives server-side
+  // (users.active_db_url); we hydrate redacted details only — the password is never stored on
+  // the client. The form is re-prefilled minus the password (user re-enters to change it).
   useEffect(() => {
-    const stored = localStorage.getItem('connectedDb');
-    if (!stored) return;
-
     (async () => {
       try {
-        const parsed = JSON.parse(stored) as DatabaseConnectionData;
-        const plainPassword = await decryptPassword(parsed.password);
-        const data = { ...parsed, password: plainPassword };
-
         const status = await getDbConnectionStatus();
         if (status.success) {
-          setConnectedDb(data);
+          setConnectedDb({
+            server: status.host ?? '',
+            port: status.port != null ? String(status.port) : '',
+            username: status.username ?? '',
+            databaseName: status.database ?? '',
+            password: '',
+          });
         } else {
-          clearConnectedDb();
+          setConnectedDb(null);
         }
       } catch {
-        clearConnectedDb();
+        setConnectedDb(null);
       }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -519,15 +509,15 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
       password: connectionData.password,
     });
     if (result.success) {
+      // In-memory only for this tab; the DSN is persisted server-side (users.active_db_url).
       setConnectedDb(connectionData);
-      await saveConnectedDb(connectionData);
     }
     return { success: result.success, error: result.success ? undefined : result.message };
   };
 
   const handleDatabaseDisconnect = async () => {
     await disconnectExternalDb();
-    clearConnectedDb();
+    setConnectedDb(null);
   };
 
   const navigate = (path: string) => {

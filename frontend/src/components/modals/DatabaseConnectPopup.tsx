@@ -130,7 +130,7 @@ export default function DatabaseConnectPopup({
   return (
     <Modal
       title="Connect your data"
-      subtitle="Your credentials stay encrypted on your device."
+      subtitle="Your credentials are sent over a secure connection and kept on the server — never stored in your browser."
       icon={Icons.Database}
       onClose={handleClose}
       width={540}

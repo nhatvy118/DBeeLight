@@ -110,33 +110,29 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   // Data source selector (multi-select: DB is exclusive with files, multiple files allowed)
   const [sessionFiles, setSessionFiles] = useState<SessionFileMeta[]>([]);
   const [activeDataSources, setActiveDataSources] = useState<DataSource[]>([]);
+  // Primary-DB info for the current session, from the backend (single source of truth:
+  // project_id → project DB, else user's active external DB). null = not loaded yet.
+  const [sessionDb, setSessionDb] = useState<
+    { has_db: boolean; db_kind: 'project' | 'external' | null; db_label: string | null } | null
+  >(null);
+
+  // Scope ids for a chat turn: the picked files, or the primary-DB sentinel when none are
+  // picked ("no file selected = ask the database"). The backend reads '__primary_db__'.
+  const scopedFileIds = (fileIds: string[]): string[] => (fileIds.length ? fileIds : ['__primary_db__']);
 
   const handleToggleDataSource = (src: DataSource) => {
     setActiveDataSources((prev) => {
-      const isAlreadySelected =
-        src.type === 'primary_db'
-          ? prev.some((s) => s.type === 'primary_db')
-          : prev.some((s) => s.type === 'file' && s.id === src.id);
-
-      if (isAlreadySelected) {
-        if (src.type === 'primary_db') return prev.filter((s) => s.type !== 'primary_db');
-        return prev.filter((s) => !(s.type === 'file' && s.id === src.id));
-      }
-
-      return [...prev, src];
+      const selected = prev.some((s) => s.id === src.id);
+      return selected ? prev.filter((s) => s.id !== src.id) : [...prev, src];
     });
   };
 
-  // Read connected DB label from localStorage (written by Sidebar)
-  const connectedDbLabel = (() => {
-    try {
-      const raw = localStorage.getItem('connectedDb');
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as { server?: string; databaseName?: string };
-      if (parsed?.databaseName) return `${parsed.databaseName}@${parsed.server ?? 'localhost'}`;
-    } catch { /* ignore */ }
-    return null;
-  })();
+  // Primary DB shown in the data-source selector. The backend is the source of truth
+  // (sessionDb, from getSession): project DB vs external DB vs none. Before it loads we
+  // briefly fall back to the selected project so a project chat shows its DB without a flash.
+  const primaryDbLabel = sessionDb
+    ? (sessionDb.has_db ? (sessionDb.db_label || 'Database') : null)
+    : (selectedProject ? (selectedProject.name || 'Database') : null);
 
   // Load selected project from URL (propProjectId) - URL is source of truth
   useEffect(() => {
@@ -255,6 +251,16 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       }
     }
     return false;
+  };
+
+  const getDbInfoFromSessionResponse = (
+    res: GetSessionResponse,
+  ): { has_db: boolean; db_kind: 'project' | 'external' | null; db_label: string | null } | null => {
+    if (!res.success) return null;
+    const info = res.session_info as any;
+    if (!info || typeof info.has_db !== 'boolean') return null;
+    const kind = info.db_kind === 'project' || info.db_kind === 'external' ? info.db_kind : null;
+    return { has_db: info.has_db, db_kind: kind, db_label: info.db_label ?? null };
   };
 
   const getSqlActionStatesFromSessionResponse = (res: GetSessionResponse): Record<string, 'pending' | 'running' | 'executed' | 'failed' | 'cancelled'> => {
@@ -445,7 +451,21 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       }
 
       if (sid && uploaded.length > 0) {
-        listSessionFiles(sid).then(setSessionFiles).catch(() => {});
+        const uploadedIds = new Set(uploaded.map((u) => u.id));
+        listSessionFiles(sid)
+          .then((files) => {
+            setSessionFiles(files);
+            // Auto-scope this turn to the files just uploaded (intent: ask about them).
+            // Only the new files — don't re-add ones the user deliberately unticked.
+            const justUploaded: DataSource[] = files
+              .filter((f) => uploadedIds.has(f.id))
+              .map((f) => ({ type: 'file', id: f.id, filename: f.filename, mime_type: f.mime_type, uploaded_at: f.uploaded_at ?? null }));
+            setActiveDataSources((prev) => {
+              const have = new Set(prev.map((s) => s.id));
+              return [...prev, ...justUploaded.filter((s) => !have.has(s.id))];
+            });
+          })
+          .catch(() => {});
       }
 
       return uploaded;
@@ -479,6 +499,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         setIsSessionLoading(true);
         const [info, page] = await Promise.all([getSession(sid), getMessages(sid)]);
         if (info.success) {
+          setSessionDb(getDbInfoFromSessionResponse(info));
           const sqlActionStates = getSqlActionStatesFromSessionResponse(info);
           setMessages(convertMessages(page.messages, sid, sqlActionStates));
           setOldestCursor(page.next_cursor);
@@ -536,31 +557,16 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (!sessionId) {
       setSessionFiles([]);
       setActiveDataSources([]);
+      setSessionDb(null);
       return;
     }
     listSessionFiles(sessionId)
       .then((files) => {
         setSessionFiles(files);
         const fileIdSet = new Set(files.map((f) => f.id));
-        setActiveDataSources((prev) => {
-          // Drop selections from a previous session (file ids are session-scoped).
-          const kept = prev.filter((s) =>
-            s.type === 'primary_db'
-              ? !!connectedDbLabel
-              : s.type === 'file' && fileIdSet.has(s.id),
-          );
-          if (kept.length > 0) return kept;
-
-          const hasPrimaryDb = !!connectedDbLabel;
-          if (hasPrimaryDb && files.length === 0) {
-            return [{ type: 'primary_db', label: 'Database', detail: connectedDbLabel! }];
-          }
-          if (!hasPrimaryDb && files.length === 1) {
-            const f = files[0];
-            return [{ type: 'file', id: f.id, filename: f.filename, mime_type: f.mime_type, uploaded_at: f.uploaded_at ?? null }];
-          }
-          return [];
-        });
+        // Default scope is the database (empty selection). Only carry over file picks that
+        // still exist in this session; file ids are session-scoped.
+        setActiveDataSources((prev) => prev.filter((s) => fileIdSet.has(s.id)));
       })
       .catch(() => setSessionFiles([]));
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -589,7 +595,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       const finalRes = await sendMessageWithStream(text, sessionId, selectedProject?.id || null, {
         onStage: (m) => setStreamingStage(m),
         signal: controller.signal,
-        activeFileIds: getActiveFileIds(activeDataSources),
+        activeFileIds: scopedFileIds(getActiveFileIds(activeDataSources)),
       });
       setStreamingStage(null);
       // ChatResponse is a discriminated union; downstream code reads optional
@@ -824,7 +830,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         .map((a) => a.fileId)
         .filter((id): id is string => !!id);
       const res = await sendMessageWithStream(userMsg.text, sessionId, selectedProject?.id || null, {
-        activeFileIds: refreshFileIds.length ? refreshFileIds : getActiveFileIds(activeDataSources),
+        activeFileIds: scopedFileIds(refreshFileIds.length ? refreshFileIds : getActiveFileIds(activeDataSources)),
       });
       const resText = res.response;
       if (resText && resText.trim().length > 0) {
@@ -1232,6 +1238,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         setIsSessionLoading(true);
         const [info, page] = await Promise.all([getSession(sid), getMessages(sid)]);
         if (info.success) {
+          setSessionDb(getDbInfoFromSessionResponse(info));
           const sqlActionStates = getSqlActionStatesFromSessionResponse(info);
           setMessages(convertMessages(page.messages, sid, sqlActionStates));
           setOldestCursor(page.next_cursor);
@@ -1410,12 +1417,17 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             onUploadDevice={() => fileInputRef.current?.click()}
             disabled={isViewOnlyShare || isUploadingFile}
           />
-          {/* Data source selector */}
+          {/* Data source selector — files only; empty selection = ask the database. */}
           {(() => {
-            const sources = buildDataSources(sessionFiles, connectedDbLabel);
-            return sources.length > 1 ? (
+            const sources = buildDataSources(sessionFiles);
+            return sources.length >= 1 ? (
               <div style={{ marginBottom: -12 }}>
-                <DataSourceBar sources={sources} active={activeDataSources} onToggle={handleToggleDataSource} />
+                <DataSourceBar
+                  sources={sources}
+                  active={activeDataSources}
+                  onToggle={handleToggleDataSource}
+                  dbLabel={primaryDbLabel}
+                />
               </div>
             ) : null;
           })()}

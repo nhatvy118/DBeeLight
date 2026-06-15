@@ -66,7 +66,7 @@ async def chat(req: ChatRequest, user_id: str = Depends(get_current_user_id)):
     async def gen():
         yield _frame({"type": "stage", "message": "Processing"})
         try:
-            result = await service.handle(user_id, session_id, req.message)
+            result = await service.handle(user_id, session_id, req.message, req.active_file_ids)
         except service.ChatError as e:
             yield _frame({"type": "error", "status_code": 400, "message": str(e)})
             return

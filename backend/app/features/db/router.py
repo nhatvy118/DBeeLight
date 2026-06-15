@@ -5,7 +5,7 @@ The connection (DSN) is stored on the user (users.active_db_url) — never sent 
 from __future__ import annotations
 
 import logging
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from fastapi import APIRouter, Depends
 
@@ -36,9 +36,21 @@ async def connect(body: dict, user_id: str = Depends(get_current_user_id)):
 
 @router.get("/status")
 async def status(user_id: str = Depends(get_current_user_id)):
+    """Connection state + redacted connection details (NEVER the password) so the UI can
+    show the label and pre-fill the form without persisting secrets on the client."""
     logger.info("→ status(user_id=%r)", user_id)  # autolog
-    url = await auth_repo.get_active_db_url(user_id)
-    return {"success": bool(url), "message": "connected" if url else "Not connected"}
+    dsn = await auth_repo.get_active_db_url(user_id)
+    if not dsn:
+        return {"success": False, "message": "Not connected"}
+    u = urlparse(dsn)
+    return {
+        "success": True,
+        "message": "connected",
+        "host": u.hostname,
+        "port": u.port,
+        "database": (u.path or "").lstrip("/"),
+        "username": u.username,
+    }
 
 
 @router.post("/disconnect")

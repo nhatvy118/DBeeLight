@@ -37,13 +37,18 @@ class ChatError(Exception):
 @dataclass
 class _Access:
     project_id: str
-    db_url: str
+    db_url: str | None  # None when no primary DB is configured (file-only chat is still allowed)
     permission: str  # 'edit_data' if owner; if recipient = the granted permission
 
 
 async def _authorize(user_id: str, session_id: str) -> _Access:
-    """Determine project + db_url + permission. A forked (shared) session is gated by permission."""
-    logger.info("→ _authorize(user_id=%r session_id=%r)", user_id, session_id) 
+    """Determine project + db_url + permission. A forked (shared) session is gated by permission.
+
+    db_url may be None: a session with no primary DB is still allowed (the user can query
+    uploaded files only). The "nothing to query" case is enforced in _build_ctx, which knows
+    whether the turn actually resolves to a usable primary or session adapter.
+    """
+    logger.info("→ _authorize(user_id=%r session_id=%r)", user_id, session_id)
     row = await sess_repo.get_session(session_id, user_id)
     if row is None:
         raise ChatError("Session does not exist or you do not have access.")
@@ -54,22 +59,17 @@ async def _authorize(user_id: str, session_id: str) -> _Access:
         perm = await share_repo.permission_for_forked_session(session_id)
         if not perm or perm["revoked"]:
             raise ChatError("The shared chat has been revoked or is invalid.")
-        db_url = await _project_db_url_any(project_id)
-        if not db_url:
-            raise ChatError("The shared chat's project has no database connected.")
+        db_url = await _project_db_url_any(project_id)  # may be None
         return _Access(project_id=project_id, db_url=db_url, permission=perm["permission"])
 
-    # Project-bound session: DB from the project.
+    # Project-bound session: DB from the project (may be None if not configured yet).
     if project_id:
         db_url = await proj_service.resolve_db_url(project_id, user_id)
-        if not db_url:
-            raise ChatError("Project has no database connected. Please Connect DB first.")
         return _Access(project_id=project_id, db_url=db_url, permission="edit_data")
 
-    # Global session (no project): DB from the user's active connection.
+    # Global session (no project): DB from the user's active connection (may be None).
     db_url = await auth_repo.get_active_db_url(user_id)
-    if not db_url or not proj_service.is_configured(db_url):
-        raise ChatError("No database connected. Please Connect DB first.")
+    db_url = db_url if (db_url and proj_service.is_configured(db_url)) else None
     # Pool key per user so global sessions of different users don't collide.
     return _Access(project_id=user_pool_key(user_id), db_url=db_url, permission="edit_data")
 
@@ -81,20 +81,52 @@ async def _project_db_url_any(project_id: str) -> str | None:
     return db_url if (db_url and proj_service.is_configured(db_url)) else None
 
 
-async def _build_ctx(user_id: str, session_id: str, access: _Access) -> RequestContext:
-    logger.info("→ _build_ctx(user_id=%r session_id=%r access=%r)", user_id, session_id, access)  # autolog
-    pool = get_connection_pool()
-    primary = await pool.adapter_for(access.project_id, access.db_url)
+# Sentinel the frontend sends in active_file_ids to mean "the project / primary DB".
+PRIMARY_DB_SENTINEL = "__primary_db__"
 
-    # session-file adapter (if there are uploads in the session). Not pooled:
-    # request-scoped, disposed by the caller (see _dispose_ctx) at the end of the request.
+
+async def _build_ctx(
+    user_id: str, session_id: str, access: _Access, active_file_ids: list[str] | None = None
+) -> RequestContext:
+    """Build the per-request DB scope from the data sources picked for this turn.
+
+    active_file_ids:
+    - contains PRIMARY_DB_SENTINEL → the primary (project/external) DB is in scope.
+    - file ids → only those uploaded files' tables are in scope.
+    - None (e.g. approval/resume, which targets the primary DB) → primary DB only.
+    """
+    logger.info(
+        "→ _build_ctx(user_id=%r session_id=%r active_file_ids=%r)",
+        user_id, session_id, active_file_ids,
+    )  # autolog (access.db_url is intentionally not logged — it holds the DSN)
+
+    # No selection (resume) is treated as "the database": primary in scope, no files.
+    ids = active_file_ids if active_file_ids is not None else [PRIMARY_DB_SENTINEL]
+    want_primary = PRIMARY_DB_SENTINEL in ids
+    file_ids = [fid for fid in ids if fid != PRIMARY_DB_SENTINEL]
+
+    # Primary DB only when it's both wanted and actually configured (db_url may be None for
+    # a file-only session that has no database connected).
+    pool = get_connection_pool()
+    primary = (
+        await pool.adapter_for(access.project_id, access.db_url)
+        if (want_primary and access.db_url) else None
+    )
+
+    # session-file adapter (only when files are in scope). Not pooled: request-scoped,
+    # disposed by the caller (see _dispose_ctx) at the end of the request.
     session_adapter = None
     allowed: frozenset[str] | None = None
-    sqlite_path, tables = await files_service.session_db(session_id)
-    if sqlite_path:
-        session_adapter = make_adapter(sqlite_path, allowed_tables=tables)
-        allowed = tables
+    if file_ids:
+        sqlite_path, tables = await files_service.session_db(session_id, file_ids)
+        if sqlite_path:
+            session_adapter = make_adapter(sqlite_path, allowed_tables=tables)
+            allowed = tables
 
+    active = primary or session_adapter
+    if active is None:
+        # Neither a database nor an in-scope file resolved → nothing to query.
+        raise ChatError("No data source available. Connect a database or upload a file to query.")
     return RequestContext(
         user_id=user_id,
         session_id=session_id,
@@ -103,7 +135,7 @@ async def _build_ctx(user_id: str, session_id: str, access: _Access) -> RequestC
             primary=primary,
             session=session_adapter,
             allowed_tables=allowed,
-            engine=primary.engine_name,
+            engine=active.engine_name,
         ),
     )
 
@@ -115,8 +147,10 @@ async def _dispose_ctx(ctx: RequestContext) -> None:
         await ctx.db.session.dispose()
 
 
-async def handle(user_id: str, session_id: str, message: str) -> ChatResult:
-    logger.info("→ handle(user_id=%r session_id=%r message=%r)", user_id, session_id, message)  
+async def handle(
+    user_id: str, session_id: str, message: str, active_file_ids: list[str] | None = None
+) -> ChatResult:
+    logger.info("→ handle(user_id=%r session_id=%r message=%r)", user_id, session_id, message)
     access = await _authorize(user_id, session_id)
     history = await sess_repo.get_history(session_id)
     is_first_message = not history  # empty history → this is the session's first turn
@@ -145,7 +179,7 @@ async def handle(user_id: str, session_id: str, message: str) -> ChatResult:
             needs_clarification=True,
         )
     else:
-        ctx = await _build_ctx(user_id, session_id, access)
+        ctx = await _build_ctx(user_id, session_id, access, active_file_ids)
         token = set_ctx(ctx)
         try:
             result = await orch.process_query(message, intent=intent, history=recent, summary=summary)

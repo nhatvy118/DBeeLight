@@ -3,13 +3,20 @@ import type { SessionFileMeta } from '../../services/api';
 import { Icons } from '../../icons';
 import { FileTypeBadge, getFileTypeInfo } from '../../utils/fileType';
 
-export type DataSource =
-  | { type: 'primary_db'; label: string; detail: string }
-  | { type: 'file'; id: string; filename: string; mime_type: string; uploaded_at?: string | null };
+/** A pickable data source. Only uploaded files are pickable — the database is the
+ * implicit default when nothing is selected (see getActiveFileIds). */
+export type DataSource = {
+  type: 'file';
+  id: string;
+  filename: string;
+  mime_type: string;
+  uploaded_at?: string | null;
+};
 
-/** Returns IDs to send to backend. DB → ['__primary_db__'], files → their UUIDs. */
+/** File UUIDs to scope this turn to. Empty selection → the caller falls back to the
+ * primary DB (sends ['__primary_db__']); i.e. "no file picked = ask the database". */
 export function getActiveFileIds(active: DataSource[]): string[] {
-  return active.map((s) => (s.type === 'primary_db' ? '__primary_db__' : s.id));
+  return active.map((s) => s.id);
 }
 
 function formatUploadTime(isoString?: string | null): string {
@@ -29,15 +36,14 @@ function formatUploadTime(isoString?: string | null): string {
   }
 }
 
-function triggerLabel(active: DataSource[]): string {
-  if (active.length === 0) return 'Select data source';
+function triggerLabel(active: DataSource[], dbLabel: string | null): string {
+  // Nothing picked → the database is the default target (when one is connected);
+  // with no database, the user must pick a file.
+  if (active.length === 0) return dbLabel ? `Asking: ${dbLabel}` : 'Select a file';
   if (active.length === 1) {
     const s = active[0];
-    return s.type === 'primary_db' ? `🗄️ ${s.detail}` : `${getFileTypeInfo(s.filename, s.mime_type).emoji} ${s.filename}`;
+    return `${getFileTypeInfo(s.filename, s.mime_type).emoji} ${s.filename}`;
   }
-  const hasDb = active.some((s) => s.type === 'primary_db');
-  const fileCount = active.filter((s) => s.type === 'file').length;
-  if (hasDb && fileCount > 0) return `🗄️ DB + ${fileCount} file${fileCount > 1 ? 's' : ''}`;
   return `${active.length} files selected`;
 }
 
@@ -45,9 +51,11 @@ type Props = {
   sources: DataSource[];
   active: DataSource[];
   onToggle: (source: DataSource) => void;
+  /** Label of the primary DB, shown as the default target when no file is picked. */
+  dbLabel: string | null;
 };
 
-export default function DataSourceBar({ sources, active, onToggle }: Props) {
+export default function DataSourceBar({ sources, active, onToggle, dbLabel }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -62,10 +70,7 @@ export default function DataSourceBar({ sources, active, onToggle }: Props) {
 
   if (sources.length === 0) return null;
 
-  const isChecked = (src: DataSource) => {
-    if (src.type === 'primary_db') return active.some((a) => a.type === 'primary_db');
-    return active.some((a) => a.type === 'file' && a.id === src.id);
-  };
+  const isChecked = (src: DataSource) => active.some((a) => a.id === src.id);
 
   return (
     <div ref={ref} style={{ position: 'relative', display: 'inline-block', marginBottom: 12 }}>
@@ -76,8 +81,8 @@ export default function DataSourceBar({ sources, active, onToggle }: Props) {
         className="chip focusable"
         style={{ maxWidth: 260, background: open ? 'var(--accent-soft)' : 'var(--surface)', borderColor: open ? 'var(--accent)' : 'var(--border)' }}
       >
-        <span style={{ color: 'var(--text-faint)', fontSize: 12, flexShrink: 0 }}>Ask about:</span>
-        <span style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{triggerLabel(active)}</span>
+        <span style={{ color: 'var(--text-faint)', fontSize: 12, flexShrink: 0 }}>Source:</span>
+        <span style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{triggerLabel(active, dbLabel)}</span>
         {active.length > 1 && (
           <span style={{ fontSize: 10.5, fontWeight: 800, color: 'var(--on-accent)', background: 'var(--accent)', borderRadius: 99, padding: '1px 6px', flexShrink: 0 }}>{active.length}</span>
         )}
@@ -89,22 +94,19 @@ export default function DataSourceBar({ sources, active, onToggle }: Props) {
         <div className="card pop-shadow scale-in" style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 31, width: 320, maxWidth: '78vw', borderRadius: 'var(--r)', overflow: 'hidden', transformOrigin: 'bottom left' }}>
           <div style={{ padding: '12px 14px 10px', borderBottom: '1px solid var(--border)' }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-faint)', marginBottom: 2 }}>Ask about</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Pick the database or one or more files.</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              {dbLabel
+                ? <>Leave empty to ask <b>{dbLabel}</b>, or pick file(s) to ask only those.</>
+                : <>Pick the file(s) you want to ask about.</>}
+            </div>
           </div>
           <div style={{ maxHeight: 280, overflowY: 'auto', padding: 6 }}>
             {sources.map((src) => {
               const checked = isChecked(src);
-              const isDb = src.type === 'primary_db';
-              const fileSrc = isDb ? null : (src as Extract<DataSource, { type: 'file' }>);
-              const label = isDb
-                ? (src as Extract<DataSource, { type: 'primary_db' }>).label
-                : fileSrc!.filename;
-              const sub = isDb
-                ? (src as Extract<DataSource, { type: 'primary_db' }>).detail
-                : formatUploadTime(fileSrc!.uploaded_at) || `${getFileTypeInfo(fileSrc!.filename, fileSrc!.mime_type).label} file`;
+              const sub = formatUploadTime(src.uploaded_at) || `${getFileTypeInfo(src.filename, src.mime_type).label} file`;
               return (
                 <div
-                  key={isDb ? '__db__' : src.id}
+                  key={src.id}
                   onClick={() => onToggle(src)}
                   className="focusable"
                   style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '9px 10px', borderRadius: 'var(--r-sm)', cursor: 'pointer', transition: 'background .12s', background: checked ? 'var(--accent-soft)' : 'transparent' }}
@@ -114,15 +116,9 @@ export default function DataSourceBar({ sources, active, onToggle }: Props) {
                   <span style={{ width: 18, height: 18, borderRadius: 5, flexShrink: 0, display: 'grid', placeItems: 'center', border: `2px solid ${checked ? 'var(--accent-strong)' : 'var(--border-strong)'}`, background: checked ? 'var(--accent-strong)' : 'transparent', color: 'var(--on-accent)' }}>
                     {checked && <Icons.Check size={12} />}
                   </span>
-                  {isDb ? (
-                    <span style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, display: 'grid', placeItems: 'center', background: checked ? 'var(--accent)' : 'var(--surface-3)', color: checked ? 'var(--on-accent)' : 'var(--text-soft)' }}>
-                      <Icons.Database size={16} />
-                    </span>
-                  ) : (
-                    <FileTypeBadge filename={fileSrc!.filename} mimeType={fileSrc!.mime_type} size={30} radius={8} />
-                  )}
+                  <FileTypeBadge filename={src.filename} mimeType={src.mime_type} size={30} radius={8} />
                   <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, color: checked ? 'var(--accent-ink)' : 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+                    <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, color: checked ? 'var(--accent-ink)' : 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{src.filename}</span>
                     <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sub}</span>
                   </span>
                 </div>
@@ -135,17 +131,13 @@ export default function DataSourceBar({ sources, active, onToggle }: Props) {
   );
 }
 
-/** Build data sources list from session files + connected DB. */
-export function buildDataSources(
-  sessionFiles: SessionFileMeta[],
-  connectedDbLabel: string | null,
-): DataSource[] {
-  const sources: DataSource[] = [];
-  if (connectedDbLabel) {
-    sources.push({ type: 'primary_db', label: 'Database', detail: connectedDbLabel });
-  }
-  for (const f of sessionFiles) {
-    sources.push({ type: 'file', id: f.id, filename: f.filename, mime_type: f.mime_type, uploaded_at: f.uploaded_at ?? null });
-  }
-  return sources;
+/** Build the pickable file list from the session's uploaded files. */
+export function buildDataSources(sessionFiles: SessionFileMeta[]): DataSource[] {
+  return sessionFiles.map((f) => ({
+    type: 'file',
+    id: f.id,
+    filename: f.filename,
+    mime_type: f.mime_type,
+    uploaded_at: f.uploaded_at ?? null,
+  }));
 }
