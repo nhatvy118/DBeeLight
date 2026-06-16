@@ -134,10 +134,16 @@ async def generate_chart(
         spec["title"] = title
     if transform:
         spec["transform"] = transform
+    # usermeta is passed through untouched by Vega-Lite. We stash the chart "recipe"
+    # (sql + mark + encoding) so the frontend can save it to a project dashboard, plus
+    # the layout hint for the dashboard grid.
+    source = {"sql": sql, "mark": mark, "encoding": encoding}
+    if transform:
+        source["transform"] = transform
+    usermeta: dict = {"source": source}
     if layout in ("full", "half"):
-        # usermeta is passed through untouched by Vega-Lite; the frontend reads it
-        # to lay out a multi-chart dashboard.
-        spec["usermeta"] = {"layout": layout}
+        usermeta["layout"] = layout
+    spec["usermeta"] = usermeta
     # Raw Vega-Lite JSON (no markers). The router surfaces it as a structured
     # tool_event (type "chart"); the frontend renders from payload.spec.
     return json.dumps(spec, default=str)

@@ -17,6 +17,7 @@ import {
   listSessionFiles,
   uploadSessionFile,
   downloadStoredSessionFile,
+  saveChart,
   type SessionInfo,
   type SessionShareInfo,
   type SessionFileMeta,
@@ -24,6 +25,7 @@ import {
   type ToolEvent,
   type GetSessionResponse,
   type SessionMessage,
+  type ChartRecipe,
 } from '../services/api';
 import {
   readSqlPreview,
@@ -192,7 +194,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const resolveSqlExecuteAction = (
     events: ToolEvent[] | undefined,
-    pendingWorkflowResume: boolean,
+    _pendingWorkflowResume: boolean,
   ): { sqlToExecute: string | null; sqlActionState: 'pending' | 'executed' | undefined } => {
     if (isSqlExecuted(events)) {
       return { sqlToExecute: null, sqlActionState: 'executed' };
@@ -208,10 +210,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (isDqlStatement(typeSql)) {
       return { sqlToExecute: null, sqlActionState: 'executed' };
     }
-    if (pendingWorkflowResume) {
-      return { sqlToExecute: payload.sql, sqlActionState: 'pending' };
-    }
-    return { sqlToExecute: null, sqlActionState: undefined };
+    // A DML/DDL preview that hasn't run yet → pending → show the Execute button. The
+    // sql_preview event itself signals "awaiting approval" (it's persisted), so we don't
+    // depend on the live-only pending_workflow_resume flag — survives a history reload.
+    return { sqlToExecute: payload.sql, sqlActionState: 'pending' };
   };
 
   const buildAssistantTextFromSqlPreview = (
@@ -1522,6 +1524,21 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               onConfirmSchema={(idx) => void handleConfirmSchema(idx)}
               onAssistantTypingChange={setIsAssistantTyping}
               typingStopSignal={typingStopSignal}
+              onSaveChart={selectedProject ? async (recipe: ChartRecipe): Promise<boolean> => {
+                try {
+                  const res = await saveChart(selectedProject.id, recipe);
+                  if (res.success) {
+                    const already = !!(res.chart as { already?: boolean } | undefined)?.already;
+                    toast.success(already ? 'Already in the dashboard' : 'Saved to project dashboard');
+                    return true;
+                  }
+                  toast.error(res.detail || 'Could not save chart');
+                  return false;
+                } catch {
+                  toast.error('Could not save chart');
+                  return false;
+                }
+              } : undefined}
             />
             {streamingStage && (
               <div className="fade-in" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', marginTop: 14 }}>
