@@ -107,10 +107,11 @@ async def _sql_preview(state: AgentState) -> AgentState:
     ]
     sql = ""
     last_err = ""
+    kind = "DML"  # DQL | DML | DDL — surfaced to the FE so it knows this needs approval
     for attempt in range(3):
         resp = await client.chat.completions.create(model=get_settings().llm_model, messages=msgs, temperature=0)
         sql = _strip_fences(resp.choices[0].message.content or "")
-        ok, err, _kind = await verify_for_mutation(sql, engine)
+        ok, err, kind = await verify_for_mutation(sql, engine)
         if ok:
             break
         last_err = err
@@ -126,7 +127,8 @@ async def _sql_preview(state: AgentState) -> AgentState:
     body = f"```sql\n{sql}\n```\n\n{preview}\n\n_Click Execute to run._"
     return {
         **state, "sql": sql, "current_stage": StageType.SQL_PREVIEW.value,
-        "output": {"type": OUTPUT_SQL_STATEMENT, "executed": False, "sql": sql, "message": body},
+        "output": {"type": OUTPUT_SQL_STATEMENT, "executed": False, "sql": sql,
+                   "message": body, "sql_kind": kind},
     }
 
 

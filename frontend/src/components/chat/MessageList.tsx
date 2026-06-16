@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import ChatMessage from './ChatMessage';
+import VegaLiteChart from './VegaLiteChart';
 import { Icons, BeeBadge } from '../../icons';
 
 const SQL_TYPE_OPTIONS = [
@@ -19,6 +20,7 @@ const SQL_TYPE_OPTIONS = [
   'DOUBLE',
   'JSON',
   'JSONB',
+  'REAL'
 ];
 
 export type ExportData = {
@@ -67,6 +69,9 @@ export type UiMessage = {
   schemaLocked?: boolean;
   /** Assistant message is waiting on LangGraph ``interrupt()`` (schema or SQL gate). */
   workflowResumePending?: boolean;
+  /** Vega-Lite chart spec JSON strings emitted by the chart agent (from tool_events).
+   *  Multiple specs render as a responsive grid (a mini dashboard). */
+  charts?: string[];
 };
 
 type MessageListProps = {
@@ -168,6 +173,35 @@ export default function MessageList({
             }
             typingStopSignal={!msg.isUser && index === messages.length - 1 ? typingStopSignal : 0}
           />
+          {!msg.isUser && msg.charts && msg.charts.length > 0 && (() => {
+            // Read the per-chart layout hint (spec.usermeta.layout, set by the chart tool).
+            // 'full' spans the whole row; otherwise a chart takes one auto-fit column.
+            const items = msg.charts.map((spec) => {
+              let layout: string | undefined;
+              try { layout = (JSON.parse(spec)?.usermeta?.layout) as string | undefined; } catch { /* keep spec */ }
+              return { spec, layout };
+            });
+            const multi = items.length > 1;
+            return (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: multi ? 'repeat(auto-fit, minmax(340px, 1fr))' : '1fr',
+                  gap: 12,
+                  marginTop: 8,
+                }}
+              >
+                {items.map(({ spec, layout }, ci) => {
+                  const full = !multi || layout !== 'half';
+                  return (
+                    <div key={ci} style={{ gridColumn: full ? '1 / -1' : 'auto', minWidth: 0 }}>
+                      <VegaLiteChart specJson={spec} />
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
           {!msg.isUser && msg.schemaPreview && (
             <div className="card" style={{ overflow: 'hidden', marginTop: 14, marginBottom: 8, borderColor: msg.schemaLocked ? 'var(--green-soft)' : 'var(--border)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '11px 16px', borderBottom: '1px solid var(--border)', background: msg.schemaLocked ? 'var(--green-soft)' : 'var(--surface-2)' }}>
@@ -304,22 +338,8 @@ export default function MessageList({
             </div>
           )}
 
-          {!msg.isUser && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
-              {onRefreshResponse && (
-                <button
-                  type="button"
-                  onClick={() => void onRefreshResponse(index)}
-                  className="focusable"
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 8, fontSize: 12.5, fontWeight: 600, color: 'var(--text-muted)', background: 'transparent', border: 'none' }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; e.currentTarget.style.color = 'var(--text)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
-                >
-                  <Icons.Refresh size={15} />
-                  <span>Regenerate</span>
-                </button>
-              )}
-              {msg.sqlToExecute && onExecuteSql && (() => {
+          {!msg.isUser && (() => {
+            const sqlAction = msg.sqlToExecute && onExecuteSql ? (() => {
                 const state = msg.sqlActionState;
 
                 // Running → loading dots (reference SqlPreview "running" state).
@@ -374,9 +394,31 @@ export default function MessageList({
                     </button>
                   </>
                 );
-              })()}
-            </div>
-          )}
+              })() : null;
+
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6, marginTop: 12 }}>
+                {sqlAction && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {sqlAction}
+                  </div>
+                )}
+                {onRefreshResponse && (
+                  <button
+                    type="button"
+                    onClick={() => void onRefreshResponse(index)}
+                    className="focusable"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 8, fontSize: 12.5, fontWeight: 600, color: 'var(--text-muted)', background: 'transparent', border: 'none' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; e.currentTarget.style.color = 'var(--text)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+                  >
+                    <Icons.Refresh size={15} />
+                    <span>Regenerate</span>
+                  </button>
+                )}
+              </div>
+            );
+          })()}
           </>
         );
 

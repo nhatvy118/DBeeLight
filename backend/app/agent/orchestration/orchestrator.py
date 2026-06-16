@@ -6,7 +6,7 @@ holds backends (stateless): InProcess for db/chart, HTTP for excel.
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 
 from app.agent import prompts
 from app.agent.context import get_ctx, get_db
@@ -36,9 +36,21 @@ class ChatResult:
 def _events_from_output(out: dict) -> list[dict]:
     """Convert workflow output → tool_events for the frontend (SQL preview / schema editor)."""
     t = out.get("type")
-    if t in ("sql_statement", "execution_complete") and out.get("sql"):
-        return [{"tool": "execute_query", "args": {"query": out["sql"]},
-                 "result": out.get("message", ""), "is_error": False}]
+    # Pending mutation preview → a 'sql_preview' event carrying the SQL + its kind so the FE
+    # shows an Execute button (NOT executed). type_sql lets the FE auto-run DQL but gate DML/DDL.
+    if t == "sql_statement" and out.get("sql"):
+        return [{
+            "tool": "execute_query",
+            "type": "sql_preview",
+            "payload": {"sql": out["sql"], "type_sql": out.get("sql_kind") or "DML"},
+        }]
+    # Statement that actually ran → 'sql_execution' (green "Query executed").
+    if t == "execution_complete" and out.get("sql"):
+        return [{
+            "tool": "execute_query",
+            "type": "sql_execution",
+            "payload": {"sql": out["sql"], "result": out.get("message", "")},
+        }]
     # create_table schema preview → structured event the FE editor reads (no text marker).
     if t == "schema_preview" and out.get("columns"):
         cols = out["columns"]
@@ -53,6 +65,26 @@ def _events_from_output(out: dict) -> list[dict]:
             },
         }]
     return []
+
+
+def _events_from_tool_loop(events) -> list[dict]:
+    """Map raw tool-loop ToolEvents → the structured FE contract ({tool, type, payload}).
+
+    Doing this here (instead of only in the router) means the SAME structured events are both
+    streamed to the client AND persisted — so charts/SQL survive a history reload.
+    """
+    out: list[dict] = []
+    for e in events or []:
+        if e.tool == "generate_chart":
+            if e.is_error:
+                continue
+            out.append({"tool": e.tool, "type": "chart", "payload": {"spec": e.result}})
+        elif e.tool == "execute_query":
+            out.append({"tool": e.tool, "type": "sql_execution",
+                        "payload": {"sql": (e.args or {}).get("query"), "result": e.result}})
+        else:
+            out.append({"tool": e.tool, "type": "tool_result", "payload": {"result": e.result}})
+    return out
 
 
 class Orchestrator:
@@ -135,7 +167,7 @@ class Orchestrator:
 
         return ChatResult(
             response=res.text, route=route,
-            tool_events=[asdict(e) for e in res.tool_events],
+            tool_events=_events_from_tool_loop(res.tool_events),
         )
 
     async def resume(

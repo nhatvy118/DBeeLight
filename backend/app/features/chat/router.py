@@ -29,9 +29,16 @@ def _map_tool_events(events: list[dict]) -> list[dict]:
         if e.get("type") and e.get("payload") is not None:
             out.append(e)
             continue
+        tool = e.get("tool", "")
+        # Chart agent → structured event carrying the Vega-Lite spec (no text markers).
+        if tool == "generate_chart":
+            if e.get("is_error"):
+                continue
+            out.append({"tool": tool, "type": "chart", "payload": {"spec": e.get("result")}})
+            continue
         out.append({
-            "tool": e.get("tool", ""),
-            "type": "sql_execution" if e.get("tool") == "execute_query" else "tool_result",
+            "tool": tool,
+            "type": "sql_execution" if tool == "execute_query" else "tool_result",
             "payload": {"sql": (e.get("args") or {}).get("query"), "result": e.get("result")},
         })
     return out

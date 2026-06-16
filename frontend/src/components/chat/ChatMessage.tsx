@@ -1,47 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import VegaLiteChart from './VegaLiteChart';
 import { Icons } from '../../icons';
 import { CodeBlockCard, ResultTableCard } from './RichResponse';
 import { FileTypeBadge, getFileTypeInfo } from '../../utils/fileType';
 
-// Tolerate the agent occasionally wrapping the marker block in a markdown
-// code fence (it copies the format from its system-prompt example). The
-// optional ``` before/after gets eaten alongside the markers so trailing
-// markdown text isn't dragged into a phantom code block.
-const VEGA_SPEC_RE = /(?:```[a-zA-Z]*\s*\n?)?\[VEGA_SPEC_START\]\s*([\s\S]*?)\s*\[VEGA_SPEC_END\](?:\s*\n?```)?/g;
-
-type MessagePart = { type: 'text'; content: string } | { type: 'chart'; spec: string };
-
-/** Split an assistant message on [VEGA_SPEC_START]…[VEGA_SPEC_END] markers
- * so each chart spec can be rendered as a real <VegaLite> component while
- * surrounding prose still flows through the markdown renderer. */
-function splitMessageOnVegaSpecs(message: string): MessagePart[] {
-  const parts: MessagePart[] = [];
-  let lastIdx = 0;
-  let match: RegExpExecArray | null;
-  VEGA_SPEC_RE.lastIndex = 0;
-  while ((match = VEGA_SPEC_RE.exec(message)) !== null) {
-    if (match.index > lastIdx) {
-      parts.push({ type: 'text', content: message.slice(lastIdx, match.index) });
-    }
-    parts.push({ type: 'chart', spec: match[1].trim() });
-    lastIdx = VEGA_SPEC_RE.lastIndex;
-  }
-  if (lastIdx < message.length) {
-    parts.push({ type: 'text', content: message.slice(lastIdx) });
-  }
-  return parts.length === 0 ? [{ type: 'text', content: message }] : parts;
-}
-
-/** While the typing animation is running we don't want to stream the raw
- * Vega-Lite JSON character by character — it's a wall of braces. Replace
- * each spec block with a short placeholder for the typing pass. */
-function stripVegaSpecsForTyping(message: string): string {
-  return message.replace(VEGA_SPEC_RE, '_[chart rendering…]_');
-}
-
+// Charts are detected from `tool_events` (tool `generate_chart`) and rendered by
+// MessageList — the message text is pure prose, so it renders as-is.
 
 type ChatMessageAttachment = {
   name: string;
@@ -154,9 +119,8 @@ export default function ChatMessage({
     setIsTyping(true);
     currentIndexRef.current = 0;
 
-    // Don't stream Vega-Lite JSON characters — substitute placeholder so
-    // typing UX stays readable until the final render swaps in the chart.
-    const typingSource = stripVegaSpecsForTyping(message);
+    // Charts render separately (from tool_events); the message is pure prose.
+    const typingSource = message;
     const tokens = typingSource.split(/(\s+)/).filter((t) => t.length > 0);
 
     const typeNext = () => {
@@ -250,70 +214,60 @@ export default function ChatMessage({
   return (
     <div style={{ width: '100%' }}>
       <div className="ldb-prose">
-        {/* IMPORTANT:
-            While typing -> render plain text only.
-            When finished -> split on Vega-Lite spec markers and render
-            each chunk as either markdown or an interactive chart.
-        */}
+        {/* While typing -> plain text. When finished -> markdown. Charts are
+            rendered separately by MessageList from tool_events. */}
         {isTyping ? (
           <p style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
             {displayedText}
             <span style={{ display: 'inline-block', width: 2, height: 18, background: 'var(--text-soft)', marginLeft: 2, verticalAlign: 'text-bottom' }} className="animate-pulse" />
           </p>
         ) : (
-          splitMessageOnVegaSpecs(message).map((part, i) =>
-            part.type === 'chart' ? (
-              <VegaLiteChart key={i} specJson={part.spec} />
-            ) : (
-              <ReactMarkdown
-                key={i}
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  table: ({ node }) => <ResultTableCard node={node} />,
-                  code: ({ className, children, ...props }) => {
-                    const isInline = !className;
-                    if (isInline) {
-                      // Inside an inline-code chip, raw backticks are NEVER
-                      // meaningful content — they're markdown delimiters that
-                      // leaked through (agent uses MySQL-style ``name``,
-                      // double/triple wrapping, escape \`, etc.). Strip every
-                      // backtick from the rendered chip so it shows just the
-                      // identifier.
-                      const stripBackticks = (s: string) => s.replace(/`/g, '').trim();
-                      const stripped = Array.isArray(children)
-                        ? children.map((c) => (typeof c === 'string' ? stripBackticks(c) : c))
-                        : typeof children === 'string'
-                          ? stripBackticks(children)
-                          : children;
-                      return (
-                        <code
-                          style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '1px 6px', fontFamily: 'var(--font-mono)', fontSize: '0.88em' }}
-                          {...props}
-                        >
-                          {stripped}
-                        </code>
-                      );
-                    }
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              table: ({ node }) => <ResultTableCard node={node} />,
+              code: ({ className, children, ...props }) => {
+                const isInline = !className;
+                if (isInline) {
+                  // Inside an inline-code chip, raw backticks are NEVER
+                  // meaningful content — they're markdown delimiters that
+                  // leaked through (agent uses MySQL-style ``name``,
+                  // double/triple wrapping, escape \`, etc.). Strip every
+                  // backtick from the rendered chip so it shows just the
+                  // identifier.
+                  const stripBackticks = (s: string) => s.replace(/`/g, '').trim();
+                  const stripped = Array.isArray(children)
+                    ? children.map((c) => (typeof c === 'string' ? stripBackticks(c) : c))
+                    : typeof children === 'string'
+                      ? stripBackticks(children)
+                      : children;
+                  return (
+                    <code
+                      style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '1px 6px', fontFamily: 'var(--font-mono)', fontSize: '0.88em' }}
+                      {...props}
+                    >
+                      {stripped}
+                    </code>
+                  );
+                }
 
-                    // Block code — on-theme card. SQL gets the "Query
-                    // executed" / "SQL query" header; other languages get a
-                    // neutral language label. (See RichResponse.CodeBlockCard.)
-                    const codeString = extractCodeText(children).replace(/\n$/, '');
-                    const langMatch = /language-([\w-]+)/.exec(className || '');
-                    const language = langMatch ? langMatch[1] : 'text';
+                // Block code — on-theme card. SQL gets the "Query
+                // executed" / "SQL query" header; other languages get a
+                // neutral language label. (See RichResponse.CodeBlockCard.)
+                const codeString = extractCodeText(children).replace(/\n$/, '');
+                const langMatch = /language-([\w-]+)/.exec(className || '');
+                const language = langMatch ? langMatch[1] : 'text';
 
-                    return (
-                      <CodeBlockCard language={language} codeString={codeString} codeProps={{ className, ...props }} executed={language === 'sql' && sqlExecuted} failed={language === 'sql' && sqlFailed}>
-                        {children}
-                      </CodeBlockCard>
-                    );
-                  },
-                }}
-              >
-                {normalizeInlineCode(part.content)}
-              </ReactMarkdown>
-            )
-          )
+                return (
+                  <CodeBlockCard language={language} codeString={codeString} codeProps={{ className, ...props }} executed={language === 'sql' && sqlExecuted} failed={language === 'sql' && sqlFailed}>
+                    {children}
+                  </CodeBlockCard>
+                );
+              },
+            }}
+          >
+            {normalizeInlineCode(message)}
+          </ReactMarkdown>
         )}
       </div>
     </div>

@@ -31,6 +31,7 @@ import {
   readSchemaPreview,
   readFileExport,
   readSessionFiles,
+  readCharts,
   triggerExcelDownload,
   type SqlPreviewData,
 } from '../utils/toolEvents';
@@ -311,6 +312,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             ? (persistedSqlState ?? sqlAction.sqlActionState ?? ('pending' as const))
             : sqlAction.sqlActionState,
           exportToExcel: msg.role === 'assistant' ? readFileExport(msg.tool_events) : null,
+          charts: msg.role === 'assistant' ? readCharts(msg.tool_events) : undefined,
           schemaPreview,
           schemaLocked:
             msg.role === 'assistant' && schemaPreview
@@ -318,7 +320,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               : undefined,
         };
       })
-      .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
+      .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.charts && m.charts.length > 0) || (m.attachments && m.attachments.length > 0));
   };
 
   // Load the previous (older) page when the user scrolls to the top of the conversation.
@@ -602,7 +604,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       // tool_events / pending_workflow_resume that only exist on success. Keep
       // the original behaviour of treating the payload as a loose object.
       const res = finalRes as any;
-      if (res.response && res.response.trim().length > 0) {
+      if ((res.response && res.response.trim().length > 0) || readCharts(res.tool_events).length > 0) {
         setIsAssistantTyping(true);
         setMessages((prev) => [
           ...prev,
@@ -622,11 +624,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               };
             })(),
             exportToExcel: readFileExport((res as any).tool_events),
+            charts: readCharts((res as any).tool_events),
             schemaPreview: readSchemaPreview((res as any).tool_events),
             schemaLocked: false,
           },
         ]);
-        
+
         if (res.session_id) {
           const newSessionId = res.session_id;
           const isNewSession = sessionId !== newSessionId;
@@ -833,7 +836,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         activeFileIds: scopedFileIds(refreshFileIds.length ? refreshFileIds : getActiveFileIds(activeDataSources)),
       });
       const resText = res.response;
-      if (resText && resText.trim().length > 0) {
+      if ((resText && resText.trim().length > 0) || readCharts((res as any).tool_events).length > 0) {
         setMessages((prev) => {
           const updated = [...prev];
           updated[aiIndex] = {
@@ -852,6 +855,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               };
             })(),
             exportToExcel: readFileExport((res as any).tool_events),
+            charts: readCharts((res as any).tool_events),
             schemaPreview: readSchemaPreview((res as any).tool_events),
           };
           return updated;

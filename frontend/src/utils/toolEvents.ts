@@ -106,6 +106,34 @@ export function readFileExport(events?: ToolEvent[]): ExportData | null {
   return { filename, base64, sessionFileId, rowCount, tableName };
 }
 
+// --------------------------------------------------------------------- charts
+
+/** Validate that a string is parseable JSON; return it as-is, or null. The chart
+ * tool emits a clean Vega-Lite spec (json.dumps) in payload.spec — no markers. */
+function asJsonSpec(raw: string): string | null {
+  try {
+    JSON.parse(raw);
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+/** Vega-Lite chart spec(s) from `tool_events` — detected by event type (`chart`)
+ * / tool name (`generate_chart`), never by scraping message text. Returns one
+ * spec JSON string per chart, in order (multiple charts → a small dashboard). */
+export function readCharts(events?: ToolEvent[]): string[] {
+  if (!Array.isArray(events)) return [];
+  const specs: string[] = [];
+  for (const e of events) {
+    if (e?.type !== 'chart' && e?.tool !== 'generate_chart') continue;
+    const raw = str(payloadOf(e)?.spec);
+    const spec = raw ? asJsonSpec(raw) : null;
+    if (spec) specs.push(spec);
+  }
+  return specs;
+}
+
 // ----------------------------------------------------- session file attachments
 
 /** Files attached to a user turn (event type `session_file`). */

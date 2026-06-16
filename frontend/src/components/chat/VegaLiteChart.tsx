@@ -1,10 +1,10 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { VegaEmbed } from 'react-vega';
 import { useTheme } from '../../context/ThemeContext';
 
 type VegaLiteChartProps = {
-  /** Raw JSON string of a Vega-Lite v5 spec, as emitted between
-   * [VEGA_SPEC_START] / [VEGA_SPEC_END] markers by the chart agent. */
+  /** Raw JSON string of a Vega-Lite v5 spec, taken from a `generate_chart`
+   * tool_event payload (detected by tool name, not message-text markers). */
   specJson: string;
 };
 
@@ -64,6 +64,7 @@ function useVegaConfig(theme: string) {
       },
       axisX: { grid: false },
       legend: {
+        orient: 'bottom',
         labelColor: textSoft,
         titleColor: textSoft,
         labelFont: font,
@@ -90,22 +91,46 @@ function useVegaConfig(theme: string) {
 export default function VegaLiteChart({ specJson }: VegaLiteChartProps) {
   const { theme } = useTheme();
   const config = useVegaConfig(theme);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+
+  // react-vega's `width:"container"` is unreliable inside a CSS grid (it measures
+  // before layout and stays 0 → blank chart). Measure the real width ourselves and
+  // feed an explicit pixel width instead.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const update = () => setWidth(Math.max(0, Math.floor(el.clientWidth)));
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const { spec, error } = useMemo(() => {
     try {
       const parsed = JSON.parse(specJson);
       if (!parsed || typeof parsed !== 'object') {
         return { spec: null, error: 'Vega-Lite spec must be a JSON object' };
       }
-      // Let the chart fill the available width unless it's a pie/donut (which
-      // needs a square aspect). `width: "container"` requires the autosize set
-      // in the config above.
       const mark = typeof parsed.mark === 'string' ? parsed.mark : parsed.mark?.type;
-      if (mark !== 'arc' && parsed.width === undefined) parsed.width = 'container';
+      if (mark === 'arc') {
+        // Arc/pie: fill the cell (up to a cap) so the donut is large and the legend fits.
+        if (parsed.width === undefined) parsed.width = Math.min(width || 360, 460);
+        if (parsed.height === undefined) parsed.height = 320;
+      } else {
+        // Fill the measured container width (capped so a full-row chart isn't huge).
+        if (parsed.width === undefined) parsed.width = Math.min(width || 600, 900);
+        if (parsed.height === undefined) parsed.height = 340;
+      }
+      // 'fit' makes the WHOLE chart (plot + axes + legend + title) fit the given width/height,
+      // so nothing overflows or gets clipped in a narrow dashboard cell.
+      if (parsed.autosize === undefined) parsed.autosize = { type: 'fit', contains: 'padding' };
       return { spec: parsed, error: null };
     } catch (e: any) {
       return { spec: null, error: e?.message || 'Invalid Vega-Lite spec JSON' };
     }
-  }, [specJson]);
+  }, [specJson, width]);
 
   if (error) {
     return (
@@ -120,16 +145,20 @@ export default function VegaLiteChart({ specJson }: VegaLiteChartProps) {
 
   return (
     <div className="card" style={{ margin: '16px 0', padding: 14, overflowX: 'auto' }}>
-      <VegaEmbed
-        spec={spec as any}
-        options={{
-          mode: 'vega-lite',
-          actions: { export: true, source: false, compiled: false, editor: false },
-          renderer: 'svg',
-          tooltip: { theme: theme === 'dark' ? 'dark' : 'light' },
-          config: config as any,
-        }}
-      />
+      <div ref={wrapRef} style={{ width: '100%' }}>
+        {width > 0 && (
+          <VegaEmbed
+            spec={spec as any}
+            options={{
+              mode: 'vega-lite',
+              actions: { export: true, source: false, compiled: false, editor: false },
+              renderer: 'svg',
+              tooltip: { theme: theme === 'dark' ? 'dark' : 'light' },
+              config: config as any,
+            }}
+          />
+        )}
+      </div>
     </div>
   );
 }
