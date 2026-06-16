@@ -55,8 +55,11 @@ def _md(res) -> str:
 @router.post("/api/sql/execute")
 async def execute_sql(body: dict, user_id: str = Depends(get_current_user_id)):
     session_id = body.get("session_id")
+    action_id = body.get("action_id")
     # lock_only: the UI just records the approve/cancel decision; nothing to run.
     if body.get("lock_only"):
+        if session_id and action_id and body.get("lock_state"):
+            await sess_repo.set_sql_action(session_id, action_id, str(body["lock_state"]))
         return {"success": True, "response": "", "session_id": session_id, "tool_events": [],
                 "pending_workflow_resume": False}
     sql = (body.get("sql") or "").strip()
@@ -70,8 +73,12 @@ async def execute_sql(body: dict, user_id: str = Depends(get_current_user_id)):
         res = await adapter.execute(sql)
     except Exception as e:  # noqa: BLE001
         reset_ctx(token)
+        if session_id and action_id:
+            await sess_repo.set_sql_action(session_id, action_id, "failed")
         return {"success": False, "error": str(e)}
     reset_ctx(token)
+    if session_id and action_id:
+        await sess_repo.set_sql_action(session_id, action_id, "executed")
     return {
         "success": True, "response": _md(res), "session_id": session_id,
         "pending_workflow_resume": False,

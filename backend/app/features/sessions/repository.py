@@ -66,6 +66,24 @@ async def get_session(session_id: str, user_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+async def set_sql_action(session_id: str, action_id: str, state: str) -> None:
+    """Record a gated SQL action's outcome (executed/cancelled/failed) so the Execute
+    button state survives a history reload."""
+    logger.info("→ set_sql_action(session_id=%r action_id=%r state=%r)", session_id, action_id, state)  # autolog
+    pool = get_pool()
+    await pool.execute(
+        "INSERT INTO sql_actions (session_id, action_id, state) VALUES ($1, $2, $3) "
+        "ON CONFLICT (session_id, action_id) DO UPDATE SET state = EXCLUDED.state, updated_at = now()",
+        session_id, action_id, state,
+    )
+
+
+async def get_sql_actions(session_id: str) -> dict:
+    pool = get_pool()
+    rows = await pool.fetch("SELECT action_id, state FROM sql_actions WHERE session_id = $1", session_id)
+    return {r["action_id"]: r["state"] for r in rows}
+
+
 async def delete_session(session_id: str, user_id: str) -> None:
     """Delete a session (ownership-scoped). Its messages cascade via FK ON DELETE CASCADE."""
     logger.info("→ delete_session(session_id=%r user_id=%r)", session_id, user_id)  # autolog

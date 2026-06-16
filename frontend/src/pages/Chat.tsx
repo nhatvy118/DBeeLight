@@ -179,11 +179,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const buildSqlActionId = (
     sid: string | null,
-    messageContent: string,
+    _messageContent: string,
     sqlText: string,
     sqlOrdinal: number,
   ): string => {
-    const base = `${sid ?? 'nosession'}|${sqlOrdinal}|${messageContent}|${sqlText}`;
+    // Stable across live send and history reload: keyed on session + the SQL's ordinal
+    // among the session's gated statements + the SQL itself. We deliberately do NOT hash
+    // the message text (it differs slightly live vs reloaded) so the executed/cancelled
+    // state recorded on the server matches on reload.
+    const base = `${sid ?? 'nosession'}|${sqlOrdinal}|${sqlText}`;
     return `sqlact_${hashString(base)}`;
   };
 
