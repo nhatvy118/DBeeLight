@@ -21,6 +21,7 @@ from app.config import get_settings
 from app.db import close_pool, init_pool, run_migrations
 from app.features.admin.router import router as admin_router
 from app.features.auth.router import router as auth_router
+from app.features.charts.router import router as charts_router
 from app.features.chat.router import router as chat_router
 from app.features.db.router import router as db_router
 from app.features.files.router import router as files_router
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(projects_router)   # /api/projects/*
     app.include_router(db_router)         # /api/db/* (per-user connection)
     app.include_router(query_router)      # /api/sql/execute, /api/export
+    app.include_router(charts_router)     # /api/projects/{id}/charts, /dashboard/render
     app.include_router(sessions_router)   # /api/sessions/*
     app.include_router(files_router)      # /api/files/*
     app.include_router(share_router)      # /api/shares/*, /api/sessions/{id}/share

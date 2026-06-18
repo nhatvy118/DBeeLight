@@ -898,3 +898,85 @@ export async function getDbConnectionStatus(): Promise<DbStatusResult> {
   });
   return response.json() as Promise<DbStatusResult>;
 }
+
+// ---------------------------------------------------------------- saved charts / dashboard
+
+export type ChartRecipe = {
+  title?: string;
+  sql: string;
+  mark: string;
+  encoding: unknown;
+  transform?: unknown;
+  layout?: string | null;
+};
+
+/** A chart re-rendered live by the dashboard. `spec` is a Vega-Lite JSON string; on SQL
+ *  failure (e.g. the schema changed) `error` is set instead. */
+export type DashboardChart = {
+  id: string;
+  title: string;
+  layout?: string | null;
+  sql?: string;
+  spec?: string;
+  error?: string;
+};
+
+/** Save a chart into a project's dashboard (the SQL must be a read-only SELECT). */
+export async function saveChart(
+  projectId: string,
+  recipe: ChartRecipe,
+): Promise<{ success: boolean; chart?: unknown; detail?: string }> {
+  const response = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/charts`), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(recipe),
+  });
+  return response.json();
+}
+
+/** Re-run every saved chart in the project → fresh Vega-Lite specs (live data). */
+export async function renderDashboard(
+  projectId: string,
+): Promise<{ success: boolean; charts: DashboardChart[] }> {
+  const response = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/dashboard/render`), {
+    credentials: 'include',
+  });
+  return response.json();
+}
+
+export async function deleteSavedChart(chartId: string): Promise<{ success: boolean }> {
+  const response = await fetch(url(`/api/charts/${encodeURIComponent(chartId)}`), {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  return response.json();
+}
+
+/** Edit a saved chart's title / SQL / layout (SQL re-verified read-only server-side). */
+export async function updateChart(
+  chartId: string,
+  body: { title?: string; sql?: string; layout?: string | null },
+): Promise<{ success: boolean; detail?: string }> {
+  const response = await fetch(url(`/api/charts/${encodeURIComponent(chartId)}`), {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return response.json();
+}
+
+/** Persist a new chart order for a project's dashboard. */
+export async function reorderDashboard(
+  projectId: string,
+  chartIds: string[],
+): Promise<{ success: boolean }> {
+  const response = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/dashboard/reorder`), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chart_ids: chartIds }),
+  });
+  return response.json();
+}

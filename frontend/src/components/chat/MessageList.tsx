@@ -1,6 +1,23 @@
 import { useState } from 'react';
 import ChatMessage from './ChatMessage';
 import VegaLiteChart from './VegaLiteChart';
+import type { ChartRecipe } from '../../services/api';
+
+/** Pull the saveable chart recipe (sql + mark + encoding) out of a spec's usermeta.source. */
+function recipeFromSpec(specJson: string): ChartRecipe | null {
+  try {
+    const s = JSON.parse(specJson);
+    const src = s?.usermeta?.source;
+    if (!src?.sql || !src?.mark || !src?.encoding) return null;
+    return {
+      title: typeof s?.title === 'string' ? s.title : undefined,
+      sql: src.sql, mark: src.mark, encoding: src.encoding,
+      transform: src.transform, layout: s?.usermeta?.layout ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
 import { Icons, BeeBadge } from '../../icons';
 
 const SQL_TYPE_OPTIONS = [
@@ -98,6 +115,9 @@ type MessageListProps = {
   onConfirmSchema?: (aiIndex: number) => void;
   onAssistantTypingChange?: (isTyping: boolean) => void;
   typingStopSignal?: number;
+  /** Save a chart to the current project's dashboard (resolves true on success). Omitted
+   *  when not inside a project. */
+  onSaveChart?: (recipe: ChartRecipe) => void | Promise<boolean>;
 };
 
 export default function MessageList({
@@ -113,6 +133,7 @@ export default function MessageList({
   onConfirmSchema,
   onAssistantTypingChange,
   typingStopSignal = 0,
+  onSaveChart,
 }: MessageListProps) {
   const [exportingIndex, setExportingIndex] = useState<number | null>(null);
   // Last assistant message still being typed out → its action buttons (Cancel/Execute,
@@ -122,6 +143,9 @@ export default function MessageList({
     setLastMessageTyping(typing);
     onAssistantTypingChange?.(typing);
   };
+  // Charts saved to the dashboard this session → their button shows "Saved" (prevents
+  // re-saving; the backend also dedupes by project + sql + mark).
+  const [savedChartKeys, setSavedChartKeys] = useState<Set<string>>(new Set());
 
   const runFileDownload = async (idx: number) => {
     if (!onExportFile || exportingIndex !== null) return;
@@ -209,8 +233,28 @@ export default function MessageList({
               >
                 {items.map(({ spec, layout }, ci) => {
                   const full = !multi || layout !== 'half';
+                  const recipe = onSaveChart ? recipeFromSpec(spec) : null;
+                  const savedKey = recipe ? `${recipe.sql}|${recipe.mark}` : '';
+                  const isSaved = !!savedKey && savedChartKeys.has(savedKey);
                   return (
-                    <div key={ci} style={{ gridColumn: full ? '1 / -1' : 'auto', minWidth: 0 }}>
+                    <div key={ci} style={{ gridColumn: full ? '1 / -1' : 'auto', minWidth: 0, position: 'relative' }}>
+                      {recipe && (
+                        <button
+                          type="button"
+                          disabled={isSaved}
+                          onClick={() => {
+                            void (async () => {
+                              const ok = await onSaveChart?.(recipe);
+                              if (ok) setSavedChartKeys((s) => new Set(s).add(savedKey));
+                            })();
+                          }}
+                          title={isSaved ? 'Already saved to dashboard' : 'Save to dashboard'}
+                          className="btn btn-outline"
+                          style={{ position: 'absolute', top: 22, right: 22, zIndex: 2, padding: '5px 10px', fontSize: 12.5 }}
+                        >
+                          {isSaved ? <><Icons.Check size={14} /> Saved</> : <><Icons.Plus size={14} /> Save</>}
+                        </button>
+                      )}
                       <VegaLiteChart specJson={spec} />
                     </div>
                   );

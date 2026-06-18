@@ -34,7 +34,7 @@ export default function MainLayout({ children, currentSessionId, onSessionSelect
   }, [isMobile]);
 
   // Sidebar + header chỉ khi đã đăng nhập — khách chỉ thấy trang Login, không chat/header cũ.
-  const showSidebar = path.startsWith('/chat') && user !== null && !isLoading;
+  const showSidebar = (path.startsWith('/chat') || path.startsWith('/dashboard')) && user !== null && !isLoading;
   const showHeader = user !== null;
 
   const sidebar = (

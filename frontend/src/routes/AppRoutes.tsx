@@ -4,6 +4,7 @@ import AcceptShare from '../pages/AcceptShare';
 import Account from '../pages/Account';
 import AdminDashboard from '../pages/AdminDashboard';
 import Chat from '../pages/Chat';
+import Dashboard from '../pages/Dashboard';
 import Login from '../pages/Login';
 import PrintChat from '../pages/PrintChat';
 import NotFound from '../pages/NotFound';
@@ -119,6 +120,10 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
     const parts = inner.split('/').filter(Boolean);
     const sessionId = parts[parts.length - 1];
     if (sessionId) return <PrintChat sessionId={sessionId} />;
+  }
+  if (path.startsWith('/dashboard/')) {
+    const pid = path.slice('/dashboard/'.length).split('/').filter(Boolean)[0];
+    if (pid) return <Dashboard projectId={pid} />;
   }
   if (path.startsWith('/chat')) {
     const { projectId, sessionId } = parseChatRoute(path);

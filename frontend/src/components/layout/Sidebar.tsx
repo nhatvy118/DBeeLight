@@ -643,13 +643,25 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
                           navigate(`/chat/${project.id}`);
                           if (onSessionSelect) onSessionSelect(null as unknown as string);
                         }}
-                        style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 12px', paddingRight: 36, borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14,
+                        style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 12px', paddingRight: 64, borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14,
                           color: on ? 'var(--text)' : 'var(--text-soft)', background: on ? 'var(--surface)' : 'transparent', border: on ? '1px solid var(--border)' : '1px solid transparent' }}
                         onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-2)'; }}
                         onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}
                       >
                         <Icons.Folder size={17} style={{ color: on ? 'var(--accent-ink)' : 'var(--text-muted)', flexShrink: 0 }} />
                         <span style={{ flex: 1, fontWeight: on ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="focusable"
+                        aria-label={`Open dashboard for ${project.name}`}
+                        title="Dashboard"
+                        onClick={(e) => { e.stopPropagation(); onRequestCloseDrawer?.(); navigate(`/dashboard/${project.id}`); }}
+                        style={{ position: 'absolute', right: 34, top: '50%', transform: 'translateY(-50%)', width: 26, height: 26, display: 'grid', placeItems: 'center', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-faint)', cursor: 'pointer', flexShrink: 0 }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-3)'; e.currentTarget.style.color = 'var(--accent-ink)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-faint)'; }}
+                      >
+                        <Icons.Chart size={15} />
                       </button>
                       <button
                         type="button"
