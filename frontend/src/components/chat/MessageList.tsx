@@ -8,6 +8,7 @@ const SQL_TYPE_OPTIONS = [
   'BIGINT',
   'SMALLINT',
   'SERIAL',
+  'BIGSERIAL',
   'TEXT',
   'VARCHAR(50)',
   'VARCHAR(100)',
@@ -22,6 +23,11 @@ const SQL_TYPE_OPTIONS = [
   'JSONB',
   'REAL'
 ];
+
+// Backend/LLM-provided types are case-insensitive (e.g. "text", "bigserial") — match
+// them to the preset list regardless of case instead of always falling to "Custom type…".
+const matchSqlTypeOption = (type: string): string | undefined =>
+  SQL_TYPE_OPTIONS.find((t) => t.toLowerCase() === (type || '').trim().toLowerCase());
 
 export type ExportData = {
   base64?: string;
@@ -109,6 +115,13 @@ export default function MessageList({
   typingStopSignal = 0,
 }: MessageListProps) {
   const [exportingIndex, setExportingIndex] = useState<number | null>(null);
+  // Last assistant message still being typed out → its action buttons (Cancel/Execute,
+  // Confirm & create table) stay hidden until the text finishes revealing.
+  const [lastMessageTyping, setLastMessageTyping] = useState(false);
+  const handleLastTypingChange = (typing: boolean) => {
+    setLastMessageTyping(typing);
+    onAssistantTypingChange?.(typing);
+  };
 
   const runFileDownload = async (idx: number) => {
     if (!onExportFile || exportingIndex !== null) return;
@@ -125,6 +138,9 @@ export default function MessageList({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
       {messages.map((msg, index) => {
+        // The last assistant message is still being typed out → action buttons
+        // (Cancel/Execute, Confirm & create table) stay hidden/disabled until done.
+        const isLastTyping = !msg.isUser && index === messages.length - 1 && lastMessageTyping;
         const turnBody = (
           <>
           {!msg.isUser &&
@@ -169,7 +185,7 @@ export default function MessageList({
             sqlExecuted={!msg.isUser && msg.sqlActionState === 'executed'}
             sqlFailed={!msg.isUser && msg.sqlActionState === 'failed'}
             onTypingStateChange={
-              !msg.isUser && index === messages.length - 1 ? onAssistantTypingChange : undefined
+              !msg.isUser && index === messages.length - 1 ? handleLastTypingChange : undefined
             }
             typingStopSignal={!msg.isUser && index === messages.length - 1 ? typingStopSignal : 0}
           />
@@ -242,7 +258,7 @@ export default function MessageList({
                             <select
                               className="field focusable"
                               style={{ padding: '7px 10px', fontSize: 13, fontFamily: 'var(--font-mono)', maxWidth: 220 }}
-                              value={SQL_TYPE_OPTIONS.includes(col.type) ? col.type : '__custom__'}
+                              value={matchSqlTypeOption(col.type) ?? '__custom__'}
                               disabled={!!msg.schemaLocked}
                               onChange={(e) => {
                                 const v = e.target.value;
@@ -258,7 +274,7 @@ export default function MessageList({
                               ))}
                               <option value="__custom__">Custom type…</option>
                             </select>
-                            {!SQL_TYPE_OPTIONS.includes(col.type) && (
+                            {!matchSqlTypeOption(col.type) && (
                               <input
                                 type="text"
                                 className="field focusable"
@@ -327,9 +343,9 @@ export default function MessageList({
                 <button
                   type="button"
                   onClick={() => onConfirmSchema?.(index)}
-                  disabled={!!msg.schemaLocked}
+                  disabled={!!msg.schemaLocked || isLastTyping}
                   className="btn btn-primary"
-                  style={{ padding: '9px 18px', fontSize: 13.5, opacity: msg.schemaLocked ? 0.7 : 1 }}
+                  style={{ padding: '9px 18px', fontSize: 13.5, opacity: msg.schemaLocked || isLastTyping ? 0.7 : 1 }}
                 >
                   <Icons.Check size={15} />
                   {msg.schemaLocked ? 'Schema confirmed' : 'Confirm & create table'}
@@ -341,6 +357,10 @@ export default function MessageList({
           {!msg.isUser && (() => {
             const sqlAction = msg.sqlToExecute && onExecuteSql ? (() => {
                 const state = msg.sqlActionState;
+
+                // Still typing out the response → hold off on the Cancel/Execute
+                // buttons until the text has fully revealed.
+                if (isLastTyping) return null;
 
                 // Running → loading dots (reference SqlPreview "running" state).
                 if (state === 'running') {

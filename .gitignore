@@ -89,3 +89,4 @@ test_file/*
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+/local_test_file

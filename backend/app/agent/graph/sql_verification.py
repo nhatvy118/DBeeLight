@@ -80,9 +80,19 @@ async def tier2_explain(sql: str) -> tuple[bool, str]:
 
 
 async def verify_for_mutation(sql: str, engine: str) -> tuple[bool, str, str]:
-    """Return (ok, error, kind) for the mutation path: tier1 + EXPLAIN."""
+    """Return (ok, error, kind) for the mutation path: tier1 + EXPLAIN (skipped for DDL).
+
+    - DQL (SELECT) is rejected — mutation path must not accept read-only queries.
+    - DDL (ALTER/CREATE/DROP) cannot be EXPLAINed in either SQLite or PostgreSQL, so tier2 is
+      skipped and tier1 static analysis is trusted alone.
+    - DML (INSERT/UPDATE/DELETE) runs tier2 EXPLAIN as a semantic check.
+    """
     t1 = tier1_static(sql, engine)
     if not t1.ok:
         return False, t1.error or "Invalid SQL", "INVALID"
+    if t1.kind == "DQL":
+        return False, "Read-only SELECT is not allowed on the mutation path.", "DQL"
+    if t1.kind == "DDL":
+        return True, "", t1.kind
     ok, err = await tier2_explain(sql)
     return (ok, err, t1.kind)
