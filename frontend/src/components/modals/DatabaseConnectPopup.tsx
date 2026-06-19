@@ -184,13 +184,12 @@ export default function DatabaseConnectPopup({
 
       {/* Action Button */}
       <div style={{ display: 'flex', gap: 10, marginTop: 24 }}>
-        <button type="button" className="btn btn-outline" style={{ flex: '0 0 auto', padding: '12px 20px' }} onClick={handleClose}>Cancel</button>
         {isInProject ? null : isSuccess ? (
           <button
             onClick={handleDisconnect}
             type="button"
             className="btn"
-            style={{ flex: 1, padding: '12px 20px', background: 'oklch(0.95 0.05 25)', color: 'oklch(0.5 0.18 25)' }}
+            style={{ flex: '0 0 auto', width: 200, margin: '0 auto', padding: '12px 20px', background: 'oklch(0.95 0.05 25)', color: 'oklch(0.5 0.18 25)' }}
           >
             <Icons.Close size={16} /> Disconnect
           </button>

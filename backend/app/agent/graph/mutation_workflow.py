@@ -89,7 +89,8 @@ async def _schema_discovery(state: AgentState) -> AgentState:
             "output": {"type": OUTPUT_ERROR,
                        "message": f"**Tables not found:** {', '.join(missing)}\n\n**Available:** {avail}"},
         }
-    return {**state, "table_schema": {"descriptions": descriptions, "all_tables": all_tables}}
+    return {**state, "schema_discovery_failed": False,
+            "table_schema": {"descriptions": descriptions, "all_tables": all_tables}}
 
 
 async def _sql_preview(state: AgentState) -> AgentState:

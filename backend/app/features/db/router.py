@@ -17,17 +17,29 @@ logger = logging.getLogger("db")
 router = APIRouter(prefix="/api/db", tags=["db"])
 
 
+_GENERIC_CONNECT_ERROR = "Could not connect. Please double-check your host, port, database, username and password."
+
+
 @router.post("/connect")
 async def connect(body: dict, user_id: str = Depends(get_current_user_id)):
     logger.info("→ connect(body=*** user_id=%r)", user_id)  # autolog
-    dsn = (
+    base_dsn = (
         f"postgresql://{quote(body.get('username') or '')}:{quote(body.get('password') or '')}"
         f"@{body.get('host')}:{int(body.get('port') or 5432)}/{body.get('database')}"
     )
+    pool = get_connection_pool()
+    dsn = base_dsn
     try:
-        await get_connection_pool().probe(dsn)
-    except Exception as e:  # noqa: BLE001
-        return {"success": False, "message": f"Could not connect: {e}"}
+        await pool.probe(dsn)
+    except Exception as e1:  # noqa: BLE001
+        # Managed Postgres (Neon, Supabase, RDS...) often requires SSL on the wire; the
+        # plain DSN never asks for it. Retry once with SSL before giving up.
+        dsn = f"{base_dsn}?ssl=require"
+        try:
+            await pool.probe(dsn)
+        except Exception as e2:  # noqa: BLE001
+            logger.warning("db/connect failed for user=%s: plain=%r ssl=%r", user_id, e1, e2)
+            return {"success": False, "message": _GENERIC_CONNECT_ERROR}
     await auth_repo.set_active_db_url(user_id, dsn)
     # db_url for this user's global key changed → drop the stale pooled adapter
     await get_connection_pool().invalidate(user_pool_key(user_id))
