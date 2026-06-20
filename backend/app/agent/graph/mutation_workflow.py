@@ -76,7 +76,7 @@ async def _schema_discovery(state: AgentState) -> AgentState:
         if op == "CREATE":
             continue
         if t.lower() in lower:
-            descriptions[t] = await dbtools.describe_markdown(t)
+            descriptions[t] = await dbtools.columns_inline(t)
         else:
             missing.append(t)
 

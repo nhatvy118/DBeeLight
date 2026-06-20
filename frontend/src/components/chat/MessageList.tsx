@@ -20,25 +20,25 @@ function recipeFromSpec(specJson: string): ChartRecipe | null {
 }
 import { Icons, BeeBadge } from '../../icons';
 
+// Logical column types — keep in sync with backend LOGICAL_TYPES
+// (app/agent/graph/create_table_workflow.py). The server maps each to the concrete
+// per-engine type at build time, so the editor stays engine-agnostic.
 const SQL_TYPE_OPTIONS = [
-  'INTEGER',
-  'BIGINT',
-  'SMALLINT',
-  'SERIAL',
-  'BIGSERIAL',
-  'TEXT',
-  'VARCHAR(50)',
-  'VARCHAR(100)',
-  'VARCHAR(255)',
-  'BOOLEAN',
-  'DATE',
-  'TIMESTAMP',
-  'DECIMAL(10,2)',
-  'FLOAT',
-  'DOUBLE',
-  'JSON',
-  'JSONB',
-  'REAL'
+  'integer',
+  'bigint',
+  'smallint',
+  'text',
+  'varchar(255)',
+  'boolean',
+  'real',
+  'double',
+  'decimal(10,2)',
+  'date',
+  'time',
+  'timestamp',
+  'json',
+  'uuid',
+  'blob',
 ];
 
 // Backend/LLM-provided types are case-insensitive (e.g. "text", "bigserial") — match
@@ -103,15 +103,18 @@ type MessageListProps = {
   onExecuteSql?: (aiIndex: number) => void;
   onCancelSql?: (aiIndex: number) => void;
   onExportFile?: (aiIndex: number) => void | Promise<void>;
-  onSchemaTypeChange?: (aiIndex: number, variable: string, nextType: string) => void;
+  onSchemaTypeChange?: (aiIndex: number, colIdx: number, nextType: string) => void;
+  onSchemaVariableChange?: (aiIndex: number, colIdx: number, name: string) => void;
   onSchemaTableNameChange?: (aiIndex: number, name: string) => void;
-  onToggleSchemaOptions?: (aiIndex: number, variable: string) => void;
+  onToggleSchemaOptions?: (aiIndex: number, colIdx: number) => void;
   onSchemaOptionChange?: (
     aiIndex: number,
-    variable: string,
+    colIdx: number,
     option: 'notNull' | 'unique' | 'primaryKey' | 'defaultValue',
     value: boolean | string
   ) => void;
+  onSchemaAddColumn?: (aiIndex: number) => void;
+  onSchemaRemoveColumn?: (aiIndex: number, colIdx: number) => void;
   onConfirmSchema?: (aiIndex: number) => void;
   onAssistantTypingChange?: (isTyping: boolean) => void;
   typingStopSignal?: number;
@@ -127,9 +130,12 @@ export default function MessageList({
   onCancelSql,
   onExportFile,
   onSchemaTypeChange,
+  onSchemaVariableChange,
   onSchemaTableNameChange,
   onToggleSchemaOptions,
   onSchemaOptionChange,
+  onSchemaAddColumn,
+  onSchemaRemoveColumn,
   onConfirmSchema,
   onAssistantTypingChange,
   typingStopSignal = 0,
@@ -290,13 +296,26 @@ export default function MessageList({
                     <tr>
                       <th>Column</th>
                       <th>Type</th>
-                      <th style={{ width: 44 }}></th>
+                      <th style={{ width: 76 }}></th>
                     </tr>
                   </thead>
-                  {msg.schemaPreview.columns.map((col) => (
-                    <tbody key={col.variable}>
+                  {msg.schemaPreview.columns.map((col, colIdx) => (
+                    <tbody key={colIdx}>
                       <tr>
-                        <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{col.variable}</td>
+                        <td>
+                          {msg.schemaLocked ? (
+                            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{col.variable}</span>
+                          ) : (
+                            <input
+                              type="text"
+                              className="field focusable"
+                              style={{ padding: '7px 10px', fontSize: 13, fontFamily: 'var(--font-mono)', fontWeight: 600, maxWidth: 200 }}
+                              value={col.variable}
+                              onChange={(e) => onSchemaVariableChange?.(index, colIdx, e.target.value)}
+                              placeholder="column_name"
+                            />
+                          )}
+                        </td>
                         <td>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                             <select
@@ -306,11 +325,7 @@ export default function MessageList({
                               disabled={!!msg.schemaLocked}
                               onChange={(e) => {
                                 const v = e.target.value;
-                                if (v !== '__custom__') {
-                                  onSchemaTypeChange?.(index, col.variable, v);
-                                } else {
-                                  onSchemaTypeChange?.(index, col.variable, 'CUSTOM_TYPE');
-                                }
+                                onSchemaTypeChange?.(index, colIdx, v !== '__custom__' ? v : 'CUSTOM_TYPE');
                               }}
                             >
                               {SQL_TYPE_OPTIONS.map((t) => (
@@ -325,23 +340,37 @@ export default function MessageList({
                                 style={{ padding: '7px 10px', fontSize: 13, fontFamily: 'var(--font-mono)', maxWidth: 220 }}
                                 value={col.type}
                                 disabled={!!msg.schemaLocked}
-                                onChange={(e) => onSchemaTypeChange?.(index, col.variable, e.target.value)}
+                                onChange={(e) => onSchemaTypeChange?.(index, colIdx, e.target.value)}
                                 placeholder="Custom type"
                               />
                             )}
                           </div>
                         </td>
                         <td>
-                          <button
-                            type="button"
-                            disabled={!!msg.schemaLocked}
-                            onClick={() => onToggleSchemaOptions?.(index, col.variable)}
-                            className="focusable"
-                            style={{ width: 28, height: 28, borderRadius: 7, display: 'grid', placeItems: 'center', border: '1px solid var(--border)', background: col.showOptions ? 'var(--accent-soft)' : 'var(--surface)', color: col.showOptions ? 'var(--accent-ink)' : 'var(--text-muted)' }}
-                            title="Constraints"
-                          >
-                            <Icons.Settings size={14} />
-                          </button>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              type="button"
+                              disabled={!!msg.schemaLocked}
+                              onClick={() => onToggleSchemaOptions?.(index, colIdx)}
+                              className="focusable"
+                              style={{ width: 28, height: 28, borderRadius: 7, display: 'grid', placeItems: 'center', border: '1px solid var(--border)', background: col.showOptions ? 'var(--accent-soft)' : 'var(--surface)', color: col.showOptions ? 'var(--accent-ink)' : 'var(--text-muted)' }}
+                              title="Constraints"
+                            >
+                              <Icons.Settings size={14} />
+                            </button>
+                            {!msg.schemaLocked && (
+                              <button
+                                type="button"
+                                disabled={(msg.schemaPreview?.columns.length ?? 0) <= 1}
+                                onClick={() => onSchemaRemoveColumn?.(index, colIdx)}
+                                className="focusable"
+                                style={{ width: 28, height: 28, borderRadius: 7, display: 'grid', placeItems: 'center', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-muted)', fontSize: 18, lineHeight: 1, cursor: (msg.schemaPreview?.columns.length ?? 0) <= 1 ? 'not-allowed' : 'pointer', opacity: (msg.schemaPreview?.columns.length ?? 0) <= 1 ? 0.4 : 1 }}
+                                title="Remove column"
+                              >
+                                ×
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                       {col.showOptions && (
@@ -354,7 +383,7 @@ export default function MessageList({
                                     type="checkbox"
                                     checked={!!col[k]}
                                     disabled={!!msg.schemaLocked}
-                                    onChange={(e) => onSchemaOptionChange?.(index, col.variable, k, e.target.checked)}
+                                    onChange={(e) => onSchemaOptionChange?.(index, colIdx, k, e.target.checked)}
                                     style={{ accentColor: 'var(--accent-strong)', width: 15, height: 15 }}
                                   />
                                   {label}
@@ -366,7 +395,7 @@ export default function MessageList({
                                   type="text"
                                   value={col.defaultValue || ''}
                                   disabled={!!msg.schemaLocked}
-                                  onChange={(e) => onSchemaOptionChange?.(index, col.variable, 'defaultValue', e.target.value)}
+                                  onChange={(e) => onSchemaOptionChange?.(index, colIdx, 'defaultValue', e.target.value)}
                                   placeholder="value"
                                   style={{ width: 110, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 12.5 }}
                                 />
@@ -380,10 +409,22 @@ export default function MessageList({
                 </table>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '11px 16px', borderTop: '1px solid var(--border)' }}>
-                <span style={{ fontSize: 12.5, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-                  <Icons.Info size={14} />
-                  {msg.schemaLocked ? `${msg.schemaPreview.columns.length} columns · imported` : `${msg.schemaPreview.columns.length} columns detected`}
-                </span>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ fontSize: 12.5, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                    <Icons.Info size={14} />
+                    {msg.schemaLocked ? `${msg.schemaPreview.columns.length} columns · imported` : `${msg.schemaPreview.columns.length} columns`}
+                  </span>
+                  {!msg.schemaLocked && (
+                    <button
+                      type="button"
+                      onClick={() => onSchemaAddColumn?.(index)}
+                      className="focusable"
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', fontSize: 13, fontWeight: 600, borderRadius: 7, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-soft)', cursor: 'pointer' }}
+                    >
+                      <Icons.Plus size={14} /> Add column
+                    </button>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={() => onConfirmSchema?.(index)}

@@ -22,16 +22,8 @@ async def list_tables() -> list[str]:
     return out
 
 
-async def describe_columns(table_name: str) -> list[str]:
-    db = get_db()
-    adapter = db.adapter_for_table(table_name)
-    if adapter is None:
-        return []
-    cols = await adapter.describe_table(table_name)
-    return [c.name for c in cols]
-
-
-async def describe_markdown(table_name: str) -> str:
+async def columns_inline(table_name: str) -> str:
+    """One-line "name type, name type, ..." summary of a table's columns."""
     db = get_db()
     adapter = db.adapter_for_table(table_name)
     if adapter is None:

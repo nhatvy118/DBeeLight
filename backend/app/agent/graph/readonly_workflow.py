@@ -32,7 +32,7 @@ async def _schema_discovery(state: AgentState) -> AgentState:
     tables = await dbtools.list_tables()
     desc = {}
     for t in tables[:30]:
-        desc[t] = await dbtools.describe_markdown(t)
+        desc[t] = await dbtools.columns_inline(t)
     return {**state, "table_schema": {"descriptions": desc, "all_tables": tables}}
 
 

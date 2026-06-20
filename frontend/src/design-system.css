@@ -50,6 +50,10 @@
   --accent-ink: var(--honey-ink);
   --accent-soft: var(--honey-soft);
   --accent-soft-2: var(--honey-soft-2);
+  /* AI message bubble — soft leaf-green (secondary accent) to pair with the
+     honey user bubble while staying clearly distinct */
+  --ai-bubble: oklch(0.965 0.03 156);
+  --ai-bubble-border: oklch(0.90 0.045 156);
   --on-accent: oklch(0.30 0.06 60);
   /* danger / destructive (red) */
   --danger: oklch(0.575 0.205 27);
@@ -85,6 +89,10 @@
   --accent-ink: var(--honey-ink);
   --accent-soft: var(--honey-soft);
   --accent-soft-2: var(--honey-soft-2);
+  /* AI message bubble — soft leaf-green (secondary accent) to pair with the
+     honey user bubble while staying clearly distinct */
+  --ai-bubble: oklch(0.31 0.03 156);
+  --ai-bubble-border: oklch(0.40 0.04 156);
   --on-accent: oklch(0.24 0.05 60);
   /* danger / destructive (red) — soft = dark maroon, ink = brighter red for contrast */
   --danger: oklch(0.60 0.195 27);

@@ -877,7 +877,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
   };
 
-  const handleSchemaTypeChange = (aiIndex: number, variable: string, nextType: string) => {
+  const handleSchemaTypeChange = (aiIndex: number, colIdx: number, nextType: string) => {
     setMessages((prev) => {
       const updated = [...prev];
       const msg = updated[aiIndex];
@@ -887,9 +887,69 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         ...msg,
         schemaPreview: {
           ...msg.schemaPreview,
-          columns: msg.schemaPreview.columns.map((c) =>
-            c.variable === variable ? { ...c, type: nextType } : c
+          columns: msg.schemaPreview.columns.map((c, i) =>
+            i === colIdx ? { ...c, type: nextType } : c
           ),
+        },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaVariableChange = (aiIndex: number, colIdx: number, name: string) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: msg.schemaPreview.columns.map((c, i) =>
+            i === colIdx ? { ...c, variable: name } : c
+          ),
+        },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaAddColumn = (aiIndex: number) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      const cols = msg.schemaPreview.columns;
+      const names = new Set(cols.map((c) => c.variable));
+      let n = cols.length + 1;
+      let name = `column_${n}`;
+      while (names.has(name)) name = `column_${++n}`;
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: [
+            ...cols,
+            { variable: name, type: 'text', primaryKey: false, notNull: false, unique: false },
+          ],
+        },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaRemoveColumn = (aiIndex: number, colIdx: number) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      const cols = msg.schemaPreview.columns;
+      if (cols.length <= 1) return prev; // keep at least one column
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: cols.filter((_, i) => i !== colIdx),
         },
       };
       return updated;
@@ -909,7 +969,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     });
   };
 
-  const handleToggleSchemaOptions = (aiIndex: number, variable: string) => {
+  const handleToggleSchemaOptions = (aiIndex: number, colIdx: number) => {
     setMessages((prev) => {
       const updated = [...prev];
       const msg = updated[aiIndex];
@@ -919,8 +979,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         ...msg,
         schemaPreview: {
           ...msg.schemaPreview,
-          columns: msg.schemaPreview.columns.map((c) =>
-            c.variable === variable ? { ...c, showOptions: !c.showOptions } : c
+          columns: msg.schemaPreview.columns.map((c, i) =>
+            i === colIdx ? { ...c, showOptions: !c.showOptions } : c
           ),
         },
       };
@@ -930,7 +990,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const handleSchemaOptionChange = (
     aiIndex: number,
-    variable: string,
+    colIdx: number,
     option: 'notNull' | 'unique' | 'primaryKey' | 'defaultValue',
     value: boolean | string,
   ) => {
@@ -943,8 +1003,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         ...msg,
         schemaPreview: {
           ...msg.schemaPreview,
-          columns: msg.schemaPreview.columns.map((c) => {
-            if (c.variable !== variable) return c;
+          columns: msg.schemaPreview.columns.map((c, i) => {
+            // Primary key is single-choice: selecting it on one column clears it on all
+            // others (the backend allows exactly one primary key).
+            if (option === 'primaryKey' && value === true) {
+              return { ...c, primaryKey: i === colIdx };
+            }
+            if (i !== colIdx) return c;
             return {
               ...c,
               [option]: value,
@@ -1522,9 +1587,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               onCancelSql={(idx) => void handleCancelSql(idx)}
               onExportFile={(idx) => void handleExportExcel(idx)}
               onSchemaTypeChange={handleSchemaTypeChange}
+              onSchemaVariableChange={handleSchemaVariableChange}
               onSchemaTableNameChange={handleSchemaTableNameChange}
               onToggleSchemaOptions={handleToggleSchemaOptions}
               onSchemaOptionChange={handleSchemaOptionChange}
+              onSchemaAddColumn={handleSchemaAddColumn}
+              onSchemaRemoveColumn={handleSchemaRemoveColumn}
               onConfirmSchema={(idx) => void handleConfirmSchema(idx)}
               onAssistantTypingChange={setIsAssistantTyping}
               typingStopSignal={typingStopSignal}

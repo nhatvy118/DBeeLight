@@ -206,14 +206,22 @@ export default function ChatMessage({
   }
 
   // -------------------------
-  // AI MESSAGE — full width, no bubble, no avatar (ChatGPT style).
-  // Hierarchy comes from spacing (handled by MessageList's space-y-6),
-  // not from container chrome. Body text is 16px / 1.75 line height like
-  // chatgpt.com.
+  // AI MESSAGE — soft surface bubble so the response stands out from the
+  // page background (the user bubble uses the honey accent; the AI bubble
+  // uses a neutral surface tint to stay distinguishable). Body text is
+  // 16px / 1.75 line height like chatgpt.com.
   // -------------------------
   return (
     <div style={{ width: '100%' }}>
-      <div className="ldb-prose">
+      <div
+        className="ldb-prose"
+        style={{
+          background: 'var(--ai-bubble)',
+          border: '1px solid var(--ai-bubble-border)',
+          borderRadius: '6px var(--r) var(--r) var(--r)',
+          padding: '12px 18px',
+        }}
+      >
         {/* While typing -> plain text. When finished -> markdown. Charts are
             rendered separately by MessageList from tool_events. */}
         {isTyping ? (

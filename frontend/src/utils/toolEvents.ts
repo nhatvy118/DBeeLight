@@ -81,8 +81,15 @@ export function readSchemaPreview(events?: ToolEvent[]): SchemaPreviewData | nul
   const primaryKey = firstStr(p, 'primaryKey', 'primary_key') ?? null;
   const columnsRaw = Array.isArray(p.columns) ? (p.columns as Record<string, unknown>[]) : [];
   const columns = columnsRaw
-    .map((c) => ({ variable: str(c?.variable), type: str(c?.type) }))
-    .filter((c): c is { variable: string; type: string } => !!c.variable && !!c.type);
+    .map((c) => ({
+      variable: str(c?.variable),
+      type: str(c?.type),
+      primaryKey: !!c?.primaryKey,
+      notNull: !!c?.notNull,
+      unique: !!c?.unique,
+      defaultValue: typeof c?.defaultValue === 'string' ? (c.defaultValue as string) : undefined,
+    }))
+    .filter((c): c is typeof c & { variable: string; type: string } => !!c.variable && !!c.type);
   if (!tableName || columns.length === 0) return null;
   return { tableName, primaryKey, columns };
 }

@@ -15,6 +15,7 @@ from app.agent.graph.mutation_workflow import MutationWorkflow
 from app.agent.graph.readonly_workflow import ReadOnlyWorkflow
 from app.agent.loop import run_tool_loop
 from app.agent.orchestration import intent as intent_mod
+from app.agent.orchestration import normalize as normalize_mod
 from app.agent.tools.backends import ExcelHttpBackend, InProcessBackend
 from app.agent.tools.chart_tools import CHART_TOOL_NAMES
 from app.agent.tools.db_tools import DB_TOOL_NAMES
@@ -54,14 +55,21 @@ def _events_from_output(out: dict) -> list[dict]:
     # create_table schema preview → structured event the FE editor reads (no text marker).
     if t == "schema_preview" and out.get("columns"):
         cols = out["columns"]
-        pk = next((c.get("name") for c in cols if c.get("pk")), None)
+        pk = next((c.get("variable") for c in cols if c.get("primaryKey")), None)
         return [{
             "tool": "show_create_table_schema",
             "type": "schema_preview",
             "payload": {
                 "tableName": out.get("table") or "",
                 "primaryKey": pk,
-                "columns": [{"variable": c.get("name", ""), "type": c.get("type", "")} for c in cols],
+                "columns": [{
+                    "variable": c.get("variable", ""),
+                    "type": c.get("type", ""),
+                    "primaryKey": bool(c.get("primaryKey")),
+                    "notNull": bool(c.get("notNull")),
+                    "unique": bool(c.get("unique")),
+                    "defaultValue": c.get("defaultValue"),
+                } for c in cols],
             },
         }]
     return []
@@ -102,11 +110,16 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not load excel-server tools (%s) — will retry on use.", e)
 
-    async def classify(
+    async def normalize(
         self, user_message: str, history: list[dict] | None = None, summary: str = ""
-    ) -> intent_mod.Intent:
-        """Classify intent (used for permission gating before running)."""
-        return await intent_mod.classify(user_message, history or [], summary=summary)
+    ) -> str:
+        """Resolve references + translate to English → a standalone, route-agnostic
+        query. Run this BEFORE classify; pass the result to both classify and the route."""
+        return await normalize_mod.normalize(user_message, history or [], summary=summary)
+
+    async def classify(self, query: str) -> intent_mod.Intent:
+        """Classify an already-normalized query (used for permission gating before running)."""
+        return await intent_mod.classify(query)
 
     async def process_query(
         self,
@@ -130,7 +143,8 @@ class Orchestrator:
         if route in ("db_mutation", "db_create_table"):
             session_id = get_ctx().session_id or "anon"
             wf = self.create_table_wf if route == "db_create_table" else self.mutation_wf
-            state, pending = await wf.run(session_id, user_message + intent.nl_query, engine)
+            # user_message is the normalized standalone query (see Orchestrator.normalize).
+            state, pending = await wf.run(session_id, user_message, engine)
             out = state.get("output") or {}
             return ChatResult(
                 response=str(out.get("message") or ""),

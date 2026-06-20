@@ -31,18 +31,70 @@ from app.config import get_settings
 logger = logging.getLogger("agent.graph.create_table")
 
 
-def _strip_fences(text: str) -> str:
-    t = (text or "").strip()
-    t = re.sub(r"^```[a-zA-Z]*\n?", "", t)
-    return re.sub(r"\n?```$", "", t).strip()
-
-
 # --- Rebuild CREATE TABLE from the user-edited (structured) schema ---------------
 # The columns come from the client editor, so identifiers/types are sanitized and the
 # rebuilt SQL is re-verified by tier1_static (must be DDL) before it can run.
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TYPE_RE = re.compile(r"^[A-Za-z][A-Za-z ]*(\(\s*\d+\s*(,\s*\d+\s*)?\))?$")
 _DEFAULT_KEYWORDS = {"NULL", "TRUE", "FALSE", "CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME"}
+_INT_TYPES = {"INTEGER", "INT", "SMALLINT", "BIGINT", "SERIAL", "BIGSERIAL"}
+
+# Logical type → concrete type per engine. The LLM/editor emits a logical type (engine-
+# agnostic); the builder maps it so the same column produces valid SQL on either engine.
+# Unknown types fall through unchanged (already sanitized by _safe_type).
+_TYPE_MAP: dict[str, dict[str, str]] = {
+    "INT":       {"sqlite": "INTEGER", "postgresql": "INTEGER"},
+    "INTEGER":   {"sqlite": "INTEGER", "postgresql": "INTEGER"},
+    "SMALLINT":  {"sqlite": "INTEGER", "postgresql": "SMALLINT"},
+    "BIGINT":    {"sqlite": "INTEGER", "postgresql": "BIGINT"},
+    "TEXT":      {"sqlite": "TEXT", "postgresql": "TEXT"},
+    "STRING":    {"sqlite": "TEXT", "postgresql": "TEXT"},
+    "VARCHAR":   {"sqlite": "TEXT", "postgresql": "VARCHAR"},   # keeps (n) on postgres
+    "CHAR":      {"sqlite": "TEXT", "postgresql": "CHAR"},
+    "BOOLEAN":   {"sqlite": "BOOLEAN", "postgresql": "BOOLEAN"},  # sqlite: NUMERIC affinity, 0/1
+    "BOOL":      {"sqlite": "BOOLEAN", "postgresql": "BOOLEAN"},
+    "REAL":      {"sqlite": "REAL", "postgresql": "REAL"},
+    "FLOAT":     {"sqlite": "REAL", "postgresql": "REAL"},
+    "DOUBLE":    {"sqlite": "REAL", "postgresql": "DOUBLE PRECISION"},
+    "DECIMAL":   {"sqlite": "NUMERIC", "postgresql": "NUMERIC"},  # keeps (p,s)
+    "NUMERIC":   {"sqlite": "NUMERIC", "postgresql": "NUMERIC"},
+    "DATE":      {"sqlite": "DATE", "postgresql": "DATE"},
+    "TIME":      {"sqlite": "TEXT", "postgresql": "TIME"},
+    "DATETIME":  {"sqlite": "DATETIME", "postgresql": "TIMESTAMP"},  # normalize datetime→timestamp
+    "TIMESTAMP": {"sqlite": "DATETIME", "postgresql": "TIMESTAMP"},
+    "JSON":      {"sqlite": "TEXT", "postgresql": "JSONB"},
+    "UUID":      {"sqlite": "TEXT", "postgresql": "UUID"},
+    "BLOB":      {"sqlite": "BLOB", "postgresql": "BYTEA"},
+    "BYTEA":     {"sqlite": "BLOB", "postgresql": "BYTEA"},
+}
+# Mapped types that keep their (n) / (p,s) parameters.
+_PARAM_TYPES = {"VARCHAR", "CHAR", "NUMERIC", "DECIMAL"}
+
+# Single source of truth for the logical column types offered to BOTH the LLM (prompt)
+# and the FE editor dropdown (sent in the schema_preview event). Each maps to a concrete
+# per-engine type via _TYPE_MAP at build time, so the UI never has to know the engine.
+LOGICAL_TYPES = [
+    "integer", "bigint", "smallint", "text", "varchar(255)", "boolean",
+    "real", "double", "decimal(10,2)", "date", "time", "timestamp",
+    "json", "uuid", "blob",
+]
+
+
+def _is_int_type(t: str) -> bool:
+    return t.upper().split("(")[0].strip() in _INT_TYPES
+
+
+def _map_type(raw: object, engine: str) -> str:
+    """Sanitize a column type and map it to the concrete type for `engine`.
+    Unknown types pass through (sanitized)."""
+    tt = _safe_type(raw)  # validates + uppercases, may include "(...)"
+    m = re.match(r"^([A-Z ]+?)\s*(\(\s*\d+\s*(?:,\s*\d+\s*)?\))?$", tt)
+    base = m.group(1).strip() if m else tt
+    params = (m.group(2) if m else None) or ""
+    mapped = _TYPE_MAP.get(base, {}).get(engine)
+    if mapped is None:
+        return tt  # unknown type → keep as the user/LLM wrote it (already safe)
+    return f"{mapped}{params}" if params and mapped in _PARAM_TYPES else mapped
 
 
 def _safe_ident(name: object) -> str:
@@ -68,14 +120,32 @@ def _safe_default(v: object) -> str:
     return "'" + s.replace("'", "''") + "'"  # quoted string literal (escaped)
 
 
-def _build_create_sql(table: object, columns: list[dict]) -> str:
+def _build_create_sql(table: object, columns: list[dict], engine: str = "sqlite") -> str:
     """Build a CREATE TABLE from the editor's structured columns. Raises ValueError on
-    any unsafe identifier/type (defense-in-depth before tier1_static re-verifies)."""
+    any unsafe identifier/type (defense-in-depth before tier1_static re-verifies).
+
+    Auto-increment surrogate keys differ by dialect: an INTEGER PRIMARY KEY auto-increments
+    on sqlite (via rowid) but NOT on postgresql, which needs SERIAL. So an integer primary
+    key is emitted per-engine."""
     tbl = _safe_ident(table)
     defs: list[str] = []
     for c in columns:
-        parts = [_safe_ident(c.get("variable") or c.get("name")), _safe_type(c.get("type"))]
-        if c.get("primaryKey"):
+        name = _safe_ident(c.get("variable"))
+        raw_type = _safe_type(c.get("type"))  # sanitized + uppercased (for int-PK detection)
+        is_pk = bool(c.get("primaryKey"))
+
+        # Integer primary key = auto-increment surrogate; let each dialect handle it.
+        # SERIAL/BIGSERIAL (postgres) already imply the sequence/default, so skip other flags.
+        if is_pk and _is_int_type(raw_type):
+            if engine == "postgresql":
+                serial = "BIGSERIAL" if raw_type.split("(")[0].strip() in {"BIGINT", "BIGSERIAL"} else "SERIAL"
+                defs.append(f"{name} {serial} PRIMARY KEY")
+            else:  # sqlite: INTEGER PRIMARY KEY auto-increments via rowid
+                defs.append(f"{name} INTEGER PRIMARY KEY")
+            continue
+
+        parts = [name, _map_type(c.get("type"), engine)]
+        if is_pk:
             parts.append("PRIMARY KEY")
         if c.get("notNull"):
             parts.append("NOT NULL")
@@ -90,17 +160,90 @@ def _build_create_sql(table: object, columns: list[dict]) -> str:
     return f"CREATE TABLE {tbl} (\n  " + ",\n  ".join(defs) + "\n)"
 
 
+_IDENT_HINT = ("Use only letters, digits and underscores, and start with a letter or "
+               "underscore (no spaces or symbols).")
+
+
+def _validate_schema(table: object, columns: list[dict]) -> str | None:
+    """Return a specific, user-friendly reason the schema can't be created, or None if it
+    looks valid. Run BEFORE building SQL so the user is told the exact thing to fix — not a
+    raw driver error and not a vague 'could not create'."""
+    tname = str(table or "").strip()
+    if not tname:
+        return "The table needs a name."
+    if not _IDENT_RE.match(tname):
+        return f"The table name “{tname}” isn’t valid. {_IDENT_HINT}"
+    if not columns:
+        return "Add at least one column."
+
+    seen: set[str] = set()
+    pk_count = 0
+    for i, c in enumerate(columns, start=1):
+        name = str(c.get("variable") or "").strip()
+        if not name:
+            return f"Column #{i} is missing a name."
+        if not _IDENT_RE.match(name):
+            return f"The column name “{name}” isn’t valid. {_IDENT_HINT}"
+        if name.lower() in seen:
+            return f"Two columns are named “{name}”. Each column needs a unique name."
+        seen.add(name.lower())
+
+        ctype = str(c.get("type") or "").strip()
+        if not ctype:
+            return f"Column “{name}” is missing a type."
+        if not _TYPE_RE.match(ctype):
+            return f"“{ctype}” isn’t a valid type for column “{name}”. Pick a type from the list."
+
+        if c.get("primaryKey"):
+            pk_count += 1
+    if pk_count > 1:
+        return "Only one column can be the primary key, but more than one is marked."
+    return None
+
+
+def _clean_db_error(raw: str) -> str:
+    """Strip the driver wrapper from a DB error, keeping the human-readable reason. e.g.
+    '(sqlite3.OperationalError) near \"x\": syntax error\\n[SQL: ...]' → 'near \"x\": syntax error'."""
+    s = (raw or "").strip().splitlines()[0] if raw else ""
+    s = re.sub(r"^\([^)]*\)\s*", "", s).strip()
+    return s or "unknown database error"
+
+
+def _friendly_db_error(table: str, e: Exception) -> str:
+    """Map a DB execution error to a specific, user-friendly reason (no raw driver text)."""
+    msg = str(e).lower()
+    if "already exists" in msg:
+        return f"A table named “{table}” already exists. Choose a different name."
+    if "duplicate column" in msg:
+        return "There are duplicate column names. Each column needs a unique name."
+    if "type" in msg and ("does not exist" in msg or "unknown" in msg or "no such" in msg):
+        return "One of the column types isn’t supported by the database. Pick a type from the list."
+    if "syntax" in msg:
+        return f"The database rejected the schema: {_clean_db_error(str(e))}."
+    # Unknown — give the real reason from the DB, just without the driver wrapper.
+    return f"The table couldn’t be created: {_clean_db_error(str(e))}."
+
+
 async def _schema_preview(state: AgentState) -> AgentState:
-    engine = state.get("engine", "sqlite")
-    existing = await dbtools.list_tables()
     client = get_llm()
     resp = await client.chat.completions.create(
         model=get_settings().llm_model,
         messages=[
             {"role": "system", "content": (
-                f"Design a new table for the request ({engine}). Return JSON: "
-                '{"table": "...", "columns": [{"name": "...", "type": "...", "pk": bool}], '
-                '"create_sql": "CREATE TABLE ..."}'
+                "Design ONE new table from the user's request. Output structure only — never "
+                "SQL; the server builds the SQL from your columns. Use only what the user "
+                "describes; do not invent tables, columns, or constraints they did not mention.\n"
+                "Rules:\n"
+                f"- type: one of these logical types only (engine-agnostic): {', '.join(LOGICAL_TYPES)}.\n"
+                "- primaryKey: exactly ONE column. If the request implies none, add an integer "
+                "\"id\". Never mark more than one.\n"
+                "- notNull / unique / defaultValue: set only when the request clearly implies it.\n"
+                "- identifiers: table and column names must be valid SQL identifiers — start "
+                "with a letter or underscore, then letters/digits/underscore only.\n"
+                "- If the request is vague, use a minimal, sensible set of columns.\n"
+                'Return JSON only: {"table": "...", "columns": [{"variable": "...", '
+                '"type": "...", "primaryKey": false, "notNull": false, "unique": false, '
+                '"defaultValue": null}]}'
             )},
             {"role": "user", "content": state.get("user_message", "")},
         ],
@@ -112,24 +255,25 @@ async def _schema_preview(state: AgentState) -> AgentState:
     except Exception:  # noqa: BLE001
         spec = {}
 
-    table = str(spec.get("table") or "").strip()
-    if table and table.lower() in {t.lower() for t in existing}:
-        return {**state, "current_stage": StageType.DONE.value,
-                "output": {"type": OUTPUT_ERROR, "message": f"Table `{table}` already exists. To create a new one, try a different name or delete the old one."}}
+    # No validation here — the schema is just a draft for the user to review/edit. Name
+    # collisions, empty columns, and invalid SQL are all checked at approval, AFTER the
+    # user has finalized the schema in the editor (see _approval).
+    body = "Review the columns below, then create the table."
+    return {**state, "current_stage": StageType.SCHEMA_PREVIEW.value,
+            "output": {"type": OUTPUT_SCHEMA_PREVIEW, "message": body,
+                       "table": str(spec.get("table") or "").strip(),
+                       "columns": spec.get("columns") or []}}
 
-    cols = spec.get("columns") or []
-    sql = _strip_fences(str(spec.get("create_sql") or ""))
-    t1 = tier1_static(sql, engine)
-    if not t1.ok or t1.kind != "DDL":
-        return {**state, "current_stage": StageType.DONE.value,
-                "output": {"type": OUTPUT_ERROR, "message": f"Invalid CREATE SQL: {t1.error or t1.kind}"}}
 
-    # The column table is rendered by the FE schema editor (from the tool_event built in
-    # _events_from_output), so the message body stays short — intro + SQL for reference.
-    body = f"Review the column data types below, then create the table.\n\n```sql\n{sql}\n```"
-    return {**state, "sql": sql, "current_stage": StageType.SCHEMA_PREVIEW.value,
-            "output": {"type": OUTPUT_SCHEMA_PREVIEW, "sql": sql, "message": body,
-                       "table": table, "columns": cols}}
+def _reopen_editor(state: AgentState, message: str, *, table: object = None, columns: object = None) -> AgentState:
+    """Loop the workflow back to the APPROVAL interrupt so the schema editor re-opens with
+    an error message — instead of ending the workflow. The user fixes the schema and
+    re-submits, never having to start over. Keeps their columns (passed in, or the last shown)."""
+    out = state.get("output") or {}
+    return {**state, "approved": False, "current_stage": StageType.SCHEMA_PREVIEW.value,
+            "output": {"type": OUTPUT_SCHEMA_PREVIEW, "message": message,
+                       "table": table if table is not None else (out.get("table") or ""),
+                       "columns": columns if columns is not None else (out.get("columns") or [])}}
 
 
 async def _approval(state: AgentState) -> AgentState:
@@ -140,33 +284,57 @@ async def _approval(state: AgentState) -> AgentState:
         return {**state, "approved": False, "current_stage": StageType.DONE.value,
                 "output": {**(state.get("output") or {}), "message": "Table creation cancelled.", "cancelled": True}}
 
+    # The user approved, but did they edit the schema in the editor? If so, re-build + re-verify the SQL
     edited = (decision or {}).get("schema") if isinstance(decision, dict) else None
-    if edited and edited.get("columns"):
-        engine = state.get("engine", "sqlite")
-        try:
-            sql = _build_create_sql(edited.get("tableName"), edited["columns"])  # table renamable here
-        except ValueError as e:
-            return {**state, "approved": False, "current_stage": StageType.DONE.value,
-                    "output": {"type": OUTPUT_ERROR, "message": f"Invalid schema edit: {e}"}}
-        t1 = tier1_static(sql, engine)
-        if not t1.ok or t1.kind != "DDL":
-            return {**state, "approved": False, "current_stage": StageType.DONE.value,
-                    "output": {"type": OUTPUT_ERROR, "message": f"Edited schema produced invalid SQL: {t1.error or t1.kind}"}}
-        return {**state, "approved": True, "sql": sql, "current_stage": StageType.EXECUTION.value}
+    if not (edited and edited.get("columns")):
+        return _reopen_editor(state, "Please define at least one column.")
 
-    return {**state, "approved": True, "current_stage": StageType.EXECUTION.value}
+    cols = edited["columns"]
+    table = str(edited.get("tableName") or "").strip()
+
+    # Validate the schema up front so the user gets the EXACT thing to fix (bad/duplicate
+    # name, missing type, >1 primary key, ...), not a raw SQL error later.
+    err = _validate_schema(table, cols)
+    if err:
+        return _reopen_editor(state, err, table=table, columns=cols)
+
+    # Name collision on the FINAL (possibly user-renamed) table name.
+    existing = await dbtools.list_tables()
+    if table.lower() in {t.lower() for t in existing}:
+        return _reopen_editor(state, f"A table named “{table}” already exists. Choose a different name.",
+                              table=table, columns=cols)
+
+    engine = state.get("engine", "sqlite")
+    try:
+        sql = _build_create_sql(table, cols, engine)
+    except ValueError as e:  # defense-in-depth; _validate_schema should have caught it
+        return _reopen_editor(state, f"That schema isn’t valid: {e}.", table=table, columns=cols)
+    t1 = tier1_static(sql, engine)
+    if not t1.ok or t1.kind != "DDL":
+        return _reopen_editor(state, f"That schema isn’t valid: {_clean_db_error(t1.error or t1.kind)}.",
+                              table=table, columns=cols)
+
+    # Stash the final schema in output so an EXECUTION failure can re-open the editor with it.
+    return {**state, "approved": True, "sql": sql, "current_stage": StageType.EXECUTION.value,
+            "output": {"type": OUTPUT_SCHEMA_PREVIEW, "table": table, "columns": cols}}
 
 
 async def _execution(state: AgentState) -> AgentState:
     if not state.get("approved"):
         return {**state, "output": {"type": "execution_skipped", "message": "Cancelled."}}
     sql = state.get("sql") or ""
+    table = str((state.get("output") or {}).get("table") or "")
     try:
         await dbtools.run(sql)
-        out = {"type": OUTPUT_EXECUTION, "sql": sql, "message": "Table created successfully."}
     except Exception as e:  # noqa: BLE001
-        out = {"type": OUTPUT_ERROR, "sql": sql, "message": f"Error creating table: {e}"}
-    return {**state, "current_stage": StageType.DONE.value, "output": out}
+        # DB rejected the CREATE → re-open the editor with a specific reason so the user can fix it.
+        logger.warning("create_table execution failed for %r: %s", table, e)  # raw detail for devs
+        return _reopen_editor(state, _friendly_db_error(table, e))
+    n = len((state.get("output") or {}).get("columns") or [])
+    name = table or "table"
+    msg = f"Created the table “{name}” with {n} column{'s' if n != 1 else ''}."
+    return {**state, "current_stage": StageType.DONE.value,
+            "output": {"type": OUTPUT_EXECUTION, "sql": sql, "message": msg}}
 
 
 def _route_after_preview(state: AgentState) -> str:
@@ -176,8 +344,17 @@ def _route_after_preview(state: AgentState) -> str:
 
 
 def _route_after_approval(state: AgentState) -> str:
-    # Cancelled or an invalid edit (approved=False) → skip execution, keep the message.
-    return "EXECUTION" if state.get("approved") else StageType.DONE.value
+    stage = state.get("current_stage")
+    if stage == StageType.EXECUTION.value:
+        return "EXECUTION"
+    if stage == StageType.SCHEMA_PREVIEW.value:
+        return "APPROVAL"  # validation failed → re-open the editor (loop back to interrupt)
+    return StageType.DONE.value  # cancelled
+
+
+def _route_after_execution(state: AgentState) -> str:
+    # DB error set the stage back to SCHEMA_PREVIEW → re-open the editor; otherwise done.
+    return "APPROVAL" if state.get("current_stage") == StageType.SCHEMA_PREVIEW.value else StageType.DONE.value
 
 
 async def _done(state: AgentState) -> AgentState:
@@ -199,8 +376,10 @@ class CreateTableWorkflow:
             g.add_conditional_edges("SCHEMA_PREVIEW", _route_after_preview,
                                     {"APPROVAL": "APPROVAL", StageType.DONE.value: StageType.DONE.value})
             g.add_conditional_edges("APPROVAL", _route_after_approval,
-                                    {"EXECUTION": "EXECUTION", StageType.DONE.value: StageType.DONE.value})
-            g.add_edge("EXECUTION", StageType.DONE.value)
+                                    {"EXECUTION": "EXECUTION", "APPROVAL": "APPROVAL",
+                                     StageType.DONE.value: StageType.DONE.value})
+            g.add_conditional_edges("EXECUTION", _route_after_execution,
+                                    {"APPROVAL": "APPROVAL", StageType.DONE.value: StageType.DONE.value})
             g.add_edge(StageType.DONE.value, END)
             self._graph = g.compile(checkpointer=await get_async_checkpointer())
         return self._graph
