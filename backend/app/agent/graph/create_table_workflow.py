@@ -17,8 +17,9 @@ from langgraph.types import Command, interrupt
 from app.agent.graph import dbtools
 from app.agent.graph.checkpointer import get_async_checkpointer
 from app.agent.graph.sql_verification import tier1_static
+from app.features.metadata import repository as metadata_repo
+from app.features.metadata.scope import resolve_scope
 from app.agent.graph.state import (
-    OUTPUT_ERROR,
     OUTPUT_EXECUTION,
     OUTPUT_SCHEMA_PREVIEW,
     AgentState,
@@ -38,6 +39,27 @@ _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TYPE_RE = re.compile(r"^[A-Za-z][A-Za-z ]*(\(\s*\d+\s*(,\s*\d+\s*)?\))?$")
 _DEFAULT_KEYWORDS = {"NULL", "TRUE", "FALSE", "CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME"}
 _INT_TYPES = {"INTEGER", "INT", "SMALLINT", "BIGINT", "SERIAL", "BIGSERIAL"}
+
+# Reserved SQL keywords that can't be used as an unquoted table/column name — an
+# identifier matching one (e.g. SELECT, ORDER, USER) is rejected before building SQL so
+# the user gets a clear message instead of a cryptic driver syntax error. Union of the
+# common reserved words across SQLite and PostgreSQL (kept uppercase for case-insensitive
+# comparison). This is intentionally broad: better to ask the user to rename than to emit
+# SQL that breaks on one engine.
+_RESERVED_KEYWORDS = frozenset({
+    "ADD", "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "AUTHORIZATION", "BEGIN",
+    "BETWEEN", "BINARY", "BOTH", "BY", "CASE", "CAST", "CHECK", "COLLATE", "COLUMN",
+    "COMMIT", "CONSTRAINT", "CREATE", "CROSS", "CURRENT", "CURRENT_DATE", "CURRENT_TIME",
+    "CURRENT_TIMESTAMP", "CURRENT_USER", "DATABASE", "DEFAULT", "DEFERRABLE", "DELETE",
+    "DESC", "DISTINCT", "DO", "DROP", "ELSE", "END", "EXCEPT", "EXISTS", "FALSE", "FETCH",
+    "FOR", "FOREIGN", "FROM", "FULL", "GRANT", "GROUP", "HAVING", "IN", "INDEX", "INNER",
+    "INSERT", "INTERSECT", "INTO", "IS", "JOIN", "LEADING", "LEFT", "LIKE", "LIMIT",
+    "LOCALTIME", "LOCALTIMESTAMP", "NATURAL", "NOT", "NULL", "OFFSET", "ON", "ONLY", "OR",
+    "ORDER", "OUTER", "OVER", "PRIMARY", "REFERENCES", "RETURNING", "RIGHT", "ROLLBACK",
+    "SELECT", "SESSION_USER", "SET", "SOME", "TABLE", "THEN", "TO", "TRAILING",
+    "TRANSACTION", "TRIGGER", "TRUE", "UNION", "UNIQUE", "UPDATE", "USER", "USING",
+    "VALUES", "VIEW", "WHEN", "WHERE", "WINDOW", "WITH",
+})
 
 # Logical type → concrete type per engine. The LLM/editor emits a logical type (engine-
 # agnostic); the builder maps it so the same column produces valid SQL on either engine.
@@ -164,15 +186,20 @@ _IDENT_HINT = ("Use only letters, digits and underscores, and start with a lette
                "underscore (no spaces or symbols).")
 
 
-def _validate_schema(table: object, columns: list[dict]) -> str | None:
+def _validate_schema(table: object, table_description: object, columns: list[dict]) -> str | None:
     """Return a specific, user-friendly reason the schema can't be created, or None if it
     looks valid. Run BEFORE building SQL so the user is told the exact thing to fix — not a
-    raw driver error and not a vague 'could not create'."""
+    raw driver error and not a vague 'could not create'. Every table & column also REQUIRES a
+    description (the data dictionary)."""
     tname = str(table or "").strip()
     if not tname:
         return "The table needs a name."
     if not _IDENT_RE.match(tname):
         return f"The table name “{tname}” isn’t valid. {_IDENT_HINT}"
+    if tname.upper() in _RESERVED_KEYWORDS:
+        return f"“{tname}” is a reserved SQL keyword and can’t be used as a table name. Pick another name."
+    if not str(table_description or "").strip():
+        return "Add a short description for the table (what it stores)."
     if not columns:
         return "Add at least one column."
 
@@ -184,6 +211,8 @@ def _validate_schema(table: object, columns: list[dict]) -> str | None:
             return f"Column #{i} is missing a name."
         if not _IDENT_RE.match(name):
             return f"The column name “{name}” isn’t valid. {_IDENT_HINT}"
+        if name.upper() in _RESERVED_KEYWORDS:
+            return f"“{name}” is a reserved SQL keyword and can’t be used as a column name. Pick another name."
         if name.lower() in seen:
             return f"Two columns are named “{name}”. Each column needs a unique name."
         seen.add(name.lower())
@@ -193,6 +222,8 @@ def _validate_schema(table: object, columns: list[dict]) -> str | None:
             return f"Column “{name}” is missing a type."
         if not _TYPE_RE.match(ctype):
             return f"“{ctype}” isn’t a valid type for column “{name}”. Pick a type from the list."
+        if not str(c.get("description") or "").strip():
+            return f"Add a description for column “{name}” (what it means)."
 
         if c.get("primaryKey"):
             pk_count += 1
@@ -240,10 +271,15 @@ async def _schema_preview(state: AgentState) -> AgentState:
                 "- notNull / unique / defaultValue: set only when the request clearly implies it.\n"
                 "- identifiers: table and column names must be valid SQL identifiers — start "
                 "with a letter or underscore, then letters/digits/underscore only.\n"
+                "- description: write a SHORT plain-language meaning for the table and for "
+                "EVERY column (what it holds, units, codes) — this is the data dictionary the "
+                "query agent will rely on, so never leave one empty.\n"
+                "- enumValues: for a categorical/coded column, the list of allowed values IF "
+                'the request makes them clear (e.g. status → ["pending","shipped"]); else null.\n'
                 "- If the request is vague, use a minimal, sensible set of columns.\n"
-                'Return JSON only: {"table": "...", "columns": [{"variable": "...", '
-                '"type": "...", "primaryKey": false, "notNull": false, "unique": false, '
-                '"defaultValue": null}]}'
+                'Return JSON only: {"table": "...", "tableDescription": "...", "columns": '
+                '[{"variable": "...", "type": "...", "primaryKey": false, "notNull": false, '
+                '"unique": false, "defaultValue": null, "description": "...", "enumValues": null}]}'
             )},
             {"role": "user", "content": state.get("user_message", "")},
         ],
@@ -258,14 +294,16 @@ async def _schema_preview(state: AgentState) -> AgentState:
     # No validation here — the schema is just a draft for the user to review/edit. Name
     # collisions, empty columns, and invalid SQL are all checked at approval, AFTER the
     # user has finalized the schema in the editor (see _approval).
-    body = "Review the columns below, then create the table."
+    body = "Review the columns and descriptions below, then create the table."
     return {**state, "current_stage": StageType.SCHEMA_PREVIEW.value,
             "output": {"type": OUTPUT_SCHEMA_PREVIEW, "message": body,
                        "table": str(spec.get("table") or "").strip(),
+                       "tableDescription": str(spec.get("tableDescription") or "").strip(),
                        "columns": spec.get("columns") or []}}
 
 
-def _reopen_editor(state: AgentState, message: str, *, table: object = None, columns: object = None) -> AgentState:
+def _reopen_editor(state: AgentState, message: str, *, table: object = None,
+                   table_description: object = None, columns: object = None) -> AgentState:
     """Loop the workflow back to the APPROVAL interrupt so the schema editor re-opens with
     an error message — instead of ending the workflow. The user fixes the schema and
     re-submits, never having to start over. Keeps their columns (passed in, or the last shown)."""
@@ -273,6 +311,7 @@ def _reopen_editor(state: AgentState, message: str, *, table: object = None, col
     return {**state, "approved": False, "current_stage": StageType.SCHEMA_PREVIEW.value,
             "output": {"type": OUTPUT_SCHEMA_PREVIEW, "message": message,
                        "table": table if table is not None else (out.get("table") or ""),
+                       "tableDescription": table_description if table_description is not None else (out.get("tableDescription") or ""),
                        "columns": columns if columns is not None else (out.get("columns") or [])}}
 
 
@@ -291,32 +330,60 @@ async def _approval(state: AgentState) -> AgentState:
 
     cols = edited["columns"]
     table = str(edited.get("tableName") or "").strip()
+    table_desc = str(edited.get("tableDescription") or "").strip()
 
     # Validate the schema up front so the user gets the EXACT thing to fix (bad/duplicate
-    # name, missing type, >1 primary key, ...), not a raw SQL error later.
-    err = _validate_schema(table, cols)
+    # name, missing type/description, >1 primary key, ...), not a raw SQL error later.
+    err = _validate_schema(table, table_desc, cols)
     if err:
-        return _reopen_editor(state, err, table=table, columns=cols)
+        return _reopen_editor(state, err, table=table, table_description=table_desc, columns=cols)
 
     # Name collision on the FINAL (possibly user-renamed) table name.
     existing = await dbtools.list_tables()
     if table.lower() in {t.lower() for t in existing}:
         return _reopen_editor(state, f"A table named “{table}” already exists. Choose a different name.",
-                              table=table, columns=cols)
+                              table=table, table_description=table_desc, columns=cols)
 
     engine = state.get("engine", "sqlite")
     try:
         sql = _build_create_sql(table, cols, engine)
     except ValueError as e:  # defense-in-depth; _validate_schema should have caught it
-        return _reopen_editor(state, f"That schema isn’t valid: {e}.", table=table, columns=cols)
+        return _reopen_editor(state, f"That schema isn’t valid: {e}.", table=table,
+                              table_description=table_desc, columns=cols)
     t1 = tier1_static(sql, engine)
     if not t1.ok or t1.kind != "DDL":
         return _reopen_editor(state, f"That schema isn’t valid: {_clean_db_error(t1.error or t1.kind)}.",
-                              table=table, columns=cols)
+                              table=table, table_description=table_desc, columns=cols)
 
-    # Stash the final schema in output so an EXECUTION failure can re-open the editor with it.
+    # Stash the final schema (+ descriptions) in output so EXECUTION can persist the data
+    # dictionary and an EXECUTION failure can re-open the editor with everything intact.
     return {**state, "approved": True, "sql": sql, "current_stage": StageType.EXECUTION.value,
-            "output": {"type": OUTPUT_SCHEMA_PREVIEW, "table": table, "columns": cols}}
+            "output": {"type": OUTPUT_SCHEMA_PREVIEW, "table": table,
+                       "tableDescription": table_desc, "columns": cols}}
+
+
+async def _save_descriptions(out: dict) -> None:
+    """Persist the table/column descriptions to the data dictionary. Best-effort — never
+    raises (the table is already created). File/session tables are skipped (scope deferred)."""
+    table = str(out.get("table") or "").strip()
+    scope = resolve_scope(table) if table else None
+    if scope is None:
+        return
+    rows: list[dict] = []
+    td = str(out.get("tableDescription") or "").strip()
+    if td:
+        rows.append({"table": table, "column": None, "description": td})
+    for c in out.get("columns") or []:
+        d = str(c.get("description") or "").strip()
+        var = c.get("variable")
+        if d and var:
+            enum = c.get("enumValues")
+            enum = enum if isinstance(enum, list) and enum else None
+            rows.append({"table": table, "column": var, "description": d, "enum": enum})
+    try:
+        await metadata_repo.upsert_descriptions(scope[0], scope[1], rows)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("failed to save descriptions for %r: %s", table, e)
 
 
 async def _execution(state: AgentState) -> AgentState:
@@ -330,17 +397,16 @@ async def _execution(state: AgentState) -> AgentState:
         # DB rejected the CREATE → re-open the editor with a specific reason so the user can fix it.
         logger.warning("create_table execution failed for %r: %s", table, e)  # raw detail for devs
         return _reopen_editor(state, _friendly_db_error(table, e))
+
+    # Table created → persist the semantic descriptions (data dictionary). Best-effort:
+    # a metadata write must never fail a successful table creation.
+    await _save_descriptions(state.get("output") or {})
+
     n = len((state.get("output") or {}).get("columns") or [])
     name = table or "table"
     msg = f"Created the table “{name}” with {n} column{'s' if n != 1 else ''}."
     return {**state, "current_stage": StageType.DONE.value,
             "output": {"type": OUTPUT_EXECUTION, "sql": sql, "message": msg}}
-
-
-def _route_after_preview(state: AgentState) -> str:
-    if (state.get("output") or {}).get("type") == OUTPUT_ERROR:
-        return StageType.DONE.value
-    return "APPROVAL"
 
 
 def _route_after_approval(state: AgentState) -> str:
@@ -373,8 +439,7 @@ class CreateTableWorkflow:
             g.add_node("EXECUTION", _execution)
             g.add_node(StageType.DONE.value, _done)
             g.set_entry_point("SCHEMA_PREVIEW")
-            g.add_conditional_edges("SCHEMA_PREVIEW", _route_after_preview,
-                                    {"APPROVAL": "APPROVAL", StageType.DONE.value: StageType.DONE.value})
+            g.add_edge("SCHEMA_PREVIEW", "APPROVAL")
             g.add_conditional_edges("APPROVAL", _route_after_approval,
                                     {"EXECUTION": "EXECUTION", "APPROVAL": "APPROVAL",
                                      StageType.DONE.value: StageType.DONE.value})

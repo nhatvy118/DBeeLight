@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.agent.pool import get_connection_pool
 from app.config import get_settings
+from app.features.metadata import repository as metadata_repo
 from app.features.projects import repository as repo
 
 logger = logging.getLogger("projects")
@@ -52,6 +53,7 @@ async def delete_project(project_id: str, user_id: str) -> dict | None:
     # drop any cached adapter so the file isn't held open while we unlink it
     await get_connection_pool().invalidate(project_id)
     _delete_sqlite_file(deleted.get("db_url") or "")
+    await metadata_repo.delete_for_scope("project", project_id)  # drop the project's data dictionary
     return deleted
 
 

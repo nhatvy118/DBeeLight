@@ -969,6 +969,56 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     });
   };
 
+  const handleSchemaTableDescChange = (aiIndex: number, value: string) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: { ...msg.schemaPreview, tableDescription: value },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaColumnDescChange = (aiIndex: number, colIdx: number, value: string) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: msg.schemaPreview.columns.map((c, i) =>
+            i === colIdx ? { ...c, description: value } : c
+          ),
+        },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaColumnEnumChange = (aiIndex: number, colIdx: number, value: string) => {
+    const values = value.split(',').map((v) => v.trim()).filter(Boolean);
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: msg.schemaPreview.columns.map((c, i) =>
+            i === colIdx ? { ...c, enumValues: values.length ? values : undefined } : c
+          ),
+        },
+      };
+      return updated;
+    });
+  };
+
   const handleToggleSchemaOptions = (aiIndex: number, colIdx: number) => {
     setMessages((prev) => {
       const updated = [...prev];
@@ -1588,7 +1638,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               onExportFile={(idx) => void handleExportExcel(idx)}
               onSchemaTypeChange={handleSchemaTypeChange}
               onSchemaVariableChange={handleSchemaVariableChange}
+              onSchemaColumnDescChange={handleSchemaColumnDescChange}
+              onSchemaColumnEnumChange={handleSchemaColumnEnumChange}
               onSchemaTableNameChange={handleSchemaTableNameChange}
+              onSchemaTableDescChange={handleSchemaTableDescChange}
               onToggleSchemaOptions={handleToggleSchemaOptions}
               onSchemaOptionChange={handleSchemaOptionChange}
               onSchemaAddColumn={handleSchemaAddColumn}

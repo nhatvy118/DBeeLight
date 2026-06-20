@@ -14,6 +14,7 @@ from typing import Any, cast
 from langgraph.graph import END, StateGraph
 
 from app.agent.graph import dbtools
+from app.agent.graph.schema_context import enrich_schema_text
 from app.agent.graph.sql_verification import require_dql_only, tier2_explain
 from app.agent.graph.state import OUTPUT_ERROR, AgentState, StageType, create_initial_state
 from app.agent.llm import get_llm
@@ -30,15 +31,13 @@ def _strip_fences(text: str) -> str:
 
 async def _schema_discovery(state: AgentState) -> AgentState:
     tables = await dbtools.list_tables()
-    desc = {}
-    for t in tables[:30]:
-        desc[t] = await dbtools.columns_inline(t)
-    return {**state, "table_schema": {"descriptions": desc, "all_tables": tables}}
+    schema_text = await enrich_schema_text(tables)  # live structure + semantic descriptions
+    return {**state, "table_schema": {"schema_text": schema_text, "all_tables": tables}}
 
 
 async def _query_execution(state: AgentState) -> AgentState:
     engine = state.get("engine", "sqlite")
-    schema = "\n".join(f"- {k}({v})" for k, v in (state.get("table_schema", {}).get("descriptions") or {}).items())
+    schema = (state.get("table_schema", {}) or {}).get("schema_text") or ""
     client = get_llm()
     msgs: list[dict] = [
         {"role": "system", "content": (

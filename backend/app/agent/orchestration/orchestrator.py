@@ -61,6 +61,7 @@ def _events_from_output(out: dict) -> list[dict]:
             "type": "schema_preview",
             "payload": {
                 "tableName": out.get("table") or "",
+                "tableDescription": out.get("tableDescription") or "",
                 "primaryKey": pk,
                 "columns": [{
                     "variable": c.get("variable", ""),
@@ -69,6 +70,8 @@ def _events_from_output(out: dict) -> list[dict]:
                     "notNull": bool(c.get("notNull")),
                     "unique": bool(c.get("unique")),
                     "defaultValue": c.get("defaultValue"),
+                    "description": c.get("description") or "",
+                    "enumValues": c.get("enumValues") if isinstance(c.get("enumValues"), list) else None,
                 } for c in cols],
             },
         }]

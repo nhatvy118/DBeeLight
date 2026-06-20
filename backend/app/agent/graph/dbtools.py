@@ -22,16 +22,6 @@ async def list_tables() -> list[str]:
     return out
 
 
-async def columns_inline(table_name: str) -> str:
-    """One-line "name type, name type, ..." summary of a table's columns."""
-    db = get_db()
-    adapter = db.adapter_for_table(table_name)
-    if adapter is None:
-        return ""
-    cols = await adapter.describe_table(table_name)
-    return ", ".join(f"{c.name} {c.type}" for c in cols)
-
-
 async def run(sql: str) -> QueryResult:
     db = get_db()
     adapter = db.any_adapter

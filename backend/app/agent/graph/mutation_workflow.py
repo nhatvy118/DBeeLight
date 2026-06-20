@@ -18,6 +18,7 @@ from langgraph.types import Command, interrupt
 
 from app.agent.graph import dbtools
 from app.agent.graph.checkpointer import get_async_checkpointer
+from app.agent.graph.schema_context import enrich_schema_text
 from app.agent.graph.sql_verification import verify_for_mutation
 from app.agent.graph.state import (
     OUTPUT_ERROR,
@@ -70,13 +71,13 @@ async def _schema_discovery(state: AgentState) -> AgentState:
     all_tables = await dbtools.list_tables()
     lower = {t.lower() for t in all_tables}
 
-    descriptions: dict[str, str] = {}
+    matched: list[str] = []
     missing: list[str] = []
     for t in tables:
         if op == "CREATE":
             continue
         if t.lower() in lower:
-            descriptions[t] = await dbtools.columns_inline(t)
+            matched.append(t)
         else:
             missing.append(t)
 
@@ -89,15 +90,16 @@ async def _schema_discovery(state: AgentState) -> AgentState:
             "output": {"type": OUTPUT_ERROR,
                        "message": f"**Tables not found:** {', '.join(missing)}\n\n**Available:** {avail}"},
         }
+    schema_text = await enrich_schema_text(matched)  # live structure + semantic descriptions
     return {**state, "schema_discovery_failed": False,
-            "table_schema": {"descriptions": descriptions, "all_tables": all_tables}}
+            "table_schema": {"schema_text": schema_text, "all_tables": all_tables}}
 
 
 async def _sql_preview(state: AgentState) -> AgentState:
     intent = state.get("intent") or {}
     op = str(intent.get("operation", "INSERT")).upper()
     engine = state.get("engine", "sqlite")
-    schema = "\n".join(f"- {k}({v})" for k, v in (state.get("table_schema", {}).get("descriptions") or {}).items())
+    schema = (state.get("table_schema", {}) or {}).get("schema_text") or ""
     client = get_llm()
 
     msgs = [

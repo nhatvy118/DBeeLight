@@ -78,6 +78,7 @@ export function readSchemaPreview(events?: ToolEvent[]): SchemaPreviewData | nul
   const p = payloadOf(e);
   if (!p) return null;
   const tableName = firstStr(p, 'tableName', 'table_name');
+  const tableDescription = firstStr(p, 'tableDescription', 'table_description') ?? '';
   const primaryKey = firstStr(p, 'primaryKey', 'primary_key') ?? null;
   const columnsRaw = Array.isArray(p.columns) ? (p.columns as Record<string, unknown>[]) : [];
   const columns = columnsRaw
@@ -88,10 +89,14 @@ export function readSchemaPreview(events?: ToolEvent[]): SchemaPreviewData | nul
       notNull: !!c?.notNull,
       unique: !!c?.unique,
       defaultValue: typeof c?.defaultValue === 'string' ? (c.defaultValue as string) : undefined,
+      description: typeof c?.description === 'string' ? (c.description as string) : '',
+      enumValues: Array.isArray(c?.enumValues)
+        ? (c.enumValues as unknown[]).map((v) => str(v)).filter((v): v is string => !!v)
+        : undefined,
     }))
     .filter((c): c is typeof c & { variable: string; type: string } => !!c.variable && !!c.type);
   if (!tableName || columns.length === 0) return null;
-  return { tableName, primaryKey, columns };
+  return { tableName, tableDescription, primaryKey, columns };
 }
 
 // --------------------------------------------------------------- file export

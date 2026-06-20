@@ -10,6 +10,7 @@ from urllib.parse import quote, urlparse
 from fastapi import APIRouter, Depends
 
 from app.agent.pool import get_connection_pool, user_pool_key
+from app.features.metadata import repository as metadata_repo
 from app.features.auth import repository as auth_repo
 from app.features.auth.deps import get_current_user_id
 
@@ -70,4 +71,7 @@ async def disconnect(user_id: str = Depends(get_current_user_id)):
     logger.info("→ disconnect(user_id=%r)", user_id)  # autolog
     await auth_repo.set_active_db_url(user_id, None)
     await get_connection_pool().invalidate(user_pool_key(user_id))
+    # The per-user external scope id is REUSED on the next connection, so drop its data
+    # dictionary — otherwise the old DB's descriptions would leak onto the new one.
+    await metadata_repo.delete_for_scope("project", user_pool_key(user_id))
     return {"success": True, "message": "Disconnected"}

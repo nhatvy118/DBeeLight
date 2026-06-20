@@ -54,6 +54,14 @@ async def get_db_url_any(project_id: str) -> str | None:
     return row["db_url"] if row else None
 
 
+async def get_description_any(project_id: str) -> str | None:
+    """Project description by id only (NO owner filter) — used as the database-level context
+    for SQL generation. Returns None for synthetic/external scopes with no project row."""
+    pool = get_pool()
+    row = await pool.fetchrow("SELECT description FROM projects WHERE id = $1", project_id)
+    return (row["description"] or None) if row else None
+
+
 async def set_db_url(project_id: str, user_id: str, db_url: str) -> None:
     logger.info("→ set_db_url(project_id=%r user_id=%r db_url=***)", project_id, user_id)  # autolog
     pool = get_pool()

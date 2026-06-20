@@ -47,12 +47,14 @@ function NavItem({
   onClick,
   collapsed,
   accent,
+  tag,
 }: {
   icon: IconComponent;
   label: string;
   onClick: () => void;
   collapsed: boolean;
   accent?: boolean;
+  tag?: { text: string; tone: 'accent' | 'green' };
 }) {
   return (
     <button
@@ -74,7 +76,12 @@ function NavItem({
       onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = accent ? 'var(--accent-ink)' : 'var(--text-soft)'; }}
     >
       <Icon size={19} />
-      {!collapsed && <span>{label}</span>}
+      {!collapsed && <span style={{ flex: 1 }}>{label}</span>}
+      {!collapsed && tag && (
+        <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: 0, borderRadius: 5, padding: '1px 6px', flexShrink: 0,
+          color: tag.tone === 'green' ? 'var(--green-ink)' : 'var(--accent-ink)',
+          background: tag.tone === 'green' ? 'var(--green-soft)' : 'var(--accent-soft)' }}>{tag.text}</span>
+      )}
     </button>
   );
 }
@@ -588,8 +595,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
         {/* primary nav */}
         <div style={{ padding: isCollapsed ? '6px 12px' : '6px 14px', display: 'flex', flexDirection: 'column', gap: 3 }}>
           <NavItem icon={Icons.NewChat} label="New chat" collapsed={isCollapsed} accent onClick={() => { void handleNewChat(); }} />
-          <NavItem icon={Icons.Database} label={connectedDb ? 'Data sources' : 'Connect data'} collapsed={isCollapsed} onClick={() => { onRequestCloseDrawer?.(); setIsDatabasePopupOpen(true); }} />
-          <NavItem icon={Icons.FolderPlus} label="New project" collapsed={isCollapsed} onClick={() => { onRequestCloseDrawer?.(); setIsProjectModalOpen(true); }} />
+          <NavItem icon={Icons.Database} label={connectedDb ? 'Data sources' : 'Connect data'} tag={{ text: 'External', tone: 'green' }} collapsed={isCollapsed} onClick={() => { onRequestCloseDrawer?.(); setIsDatabasePopupOpen(true); }} />
+          <NavItem icon={Icons.FolderPlus} label="New project" tag={{ text: 'Internal', tone: 'accent' }} collapsed={isCollapsed} onClick={() => { onRequestCloseDrawer?.(); setIsProjectModalOpen(true); }} />
         </div>
 
         {/* connected-data status */}
@@ -624,7 +631,12 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
         <div style={{ flex: 1, overflowY: 'auto', padding: isCollapsed ? '12px 0' : '14px 14px', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {!isCollapsed && (
             <div>
-              <SectionLabel strong>Projects (App storage)</SectionLabel>
+              <SectionLabel strong>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  Projects
+                  <span style={{ fontSize: 9, fontWeight: 800, color: 'var(--accent-ink)', background: 'var(--accent-soft)', borderRadius: 5, padding: '1px 6px', letterSpacing: 0 }}>Internal</span>
+                </span>
+              </SectionLabel>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 {projects.length === 0 ? (
                   <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>No projects yet</div>
@@ -713,7 +725,12 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
 
           {!isCollapsed && (
             <div>
-              <SectionLabel strong>Project (External storage)</SectionLabel>
+              <SectionLabel strong>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  Project
+                  <span style={{ fontSize: 9, fontWeight: 800, color: 'var(--green-ink)', background: 'var(--green-soft)', borderRadius: 5, padding: '1px 6px', letterSpacing: 0 }}>External</span>
+                </span>
+              </SectionLabel>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 {isLoading ? (
                   <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>Loading…</div>
