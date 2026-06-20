@@ -79,9 +79,9 @@ function NavItem({
   );
 }
 
-function SectionLabel({ children }: { children: ReactNode }) {
+function SectionLabel({ children, strong = false }: { children: ReactNode; strong?: boolean }) {
   return (
-    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-faint)', padding: '0 12px', marginBottom: 8 }}>
+    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: strong ? 'var(--accent-ink)' : 'var(--text-faint)', padding: '0 12px', marginBottom: 8 }}>
       {children}
     </div>
   );
@@ -624,7 +624,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
         <div style={{ flex: 1, overflowY: 'auto', padding: isCollapsed ? '12px 0' : '14px 14px', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {!isCollapsed && (
             <div>
-              <SectionLabel>Projects</SectionLabel>
+              <SectionLabel strong>Projects (App storage)</SectionLabel>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 {projects.length === 0 ? (
                   <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>No projects yet</div>
@@ -713,7 +713,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
 
           {!isCollapsed && (
             <div>
-              <SectionLabel>Chat history</SectionLabel>
+              <SectionLabel strong>Project (External storage)</SectionLabel>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 {isLoading ? (
                   <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>Loading…</div>
