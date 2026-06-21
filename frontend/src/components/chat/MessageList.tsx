@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ChatMessage from './ChatMessage';
 import VegaLiteChart from './VegaLiteChart';
+import { ResultTableCard, type TableData } from './RichResponse';
 import type { ChartRecipe } from '../../services/api';
 
 /** Pull the saveable chart recipe (sql + mark + encoding) out of a spec's usermeta.source. */
@@ -119,6 +120,9 @@ export type UiMessage = {
   /** Vega-Lite chart spec JSON strings emitted by the chart agent (from tool_events).
    *  Multiple specs render as a responsive grid (a mini dashboard). */
   charts?: string[];
+  /** Structured read-only SELECT result (from a `query_result` event) — rendered as a table
+   *  card by the frontend (the server ships {columns, rows}, never markdown). */
+  queryResult?: TableData | null;
 };
 
 type MessageListProps = {
@@ -252,6 +256,9 @@ export default function MessageList({
             }
             typingStopSignal={!msg.isUser && index === messages.length - 1 ? typingStopSignal : 0}
           />
+          {!msg.isUser && msg.queryResult && (msg.queryResult.columns.length > 0 || msg.queryResult.rows.length > 0) && (
+            <ResultTableCard data={msg.queryResult} />
+          )}
           {!msg.isUser && msg.charts && msg.charts.length > 0 && (() => {
             // Read the per-chart layout hint (spec.usermeta.layout, set by the chart tool).
             // 'full' spans the whole row; otherwise a chart takes one auto-fit column.

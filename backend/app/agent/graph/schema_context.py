@@ -1,15 +1,21 @@
-"""Build the schema text fed to the SQL-generating LLM: the LIVE structure (tables,
-columns, types — always the source of truth) enriched with the semantic data dictionary
-(table/column descriptions + enum values) so the model understands what columns mean.
+"""Render the connected DB's schema as text for an LLM.
 
-Descriptions are best-effort: a column without one still appears (from the live schema),
-just without the "— meaning" suffix. External/undescribed tables degrade gracefully.
+Two layers:
+- `render_schema()` — pure formatter over the structured schema dict (dbtools.full_schema).
+  DDL-ish, compact. PK / NOT NULL / FK (→) are always shown; default / UNIQUE are write-only
+  metadata and dropped in `lean` mode (the read path doesn't need them).
+- `enrich_schema_text()` — pulls the live structure + the semantic dictionary (table/column
+  descriptions + user-entered enum values) and renders them together.
+
+Descriptions are best-effort: a column without one still appears (from the live schema), just
+without the "— meaning"/"[enum]" suffix. External/undescribed tables degrade gracefully.
 """
 from __future__ import annotations
 
 import logging
 
-from app.agent.context import get_db
+from app.agent.adapters.base import Column
+from app.agent.graph import dbtools
 from app.features.metadata import repository as metadata_repo
 from app.features.metadata.scope import resolve_scope
 from app.features.projects import repository as proj_repo
@@ -17,18 +23,58 @@ from app.features.projects import repository as proj_repo
 logger = logging.getLogger("agent.graph.schema_context")
 
 
-async def enrich_schema_text(tables: list[str], limit: int = 30) -> str:
-    """Return a human/LLM-readable schema for `tables`, enriched with descriptions."""
-    tables = [t for t in tables][:limit]
-    if not tables:
-        return ""
-    db = get_db()
+def _column_segment(c: Column, meta: dict | None, *, lean: bool) -> str:
+    seg = f"{c.name} {c.type}"
+    if c.pk:
+        seg += " PK"
+    elif not c.nullable:
+        seg += " NOT NULL"
+    if c.references:
+        seg += f" → {c.references}"           # FK target (JOIN hint) — always useful
+    if not lean and c.unique:
+        seg += " UNIQUE"                       # write-only hint (UPSERT / row identity)
+    if not lean and c.default is not None:
+        seg += f" DEFAULT {c.default}"         # write-only hint (column is omittable on INSERT)
+    if meta and meta.get("enum"):
+        seg += f" [{meta['enum']}]"            # user-entered allowed values
+    if meta and meta.get("desc"):
+        seg += f" — {meta['desc']}"            # user-entered meaning
+    return seg
 
-    # Live structure (authoritative).
-    cols_by_table: dict[str, list] = {}
-    for t in tables:
-        adapter = db.adapter_for_table(t)
-        cols_by_table[t] = (await adapter.describe_table(t)) if adapter else []
+
+def render_schema(
+    cols_by_table: dict[str, list[Column]],
+    *,
+    db_desc: str | None = None,
+    tbl_desc: dict[str, str] | None = None,
+    col_desc: dict[tuple[str, str], dict] | None = None,
+    lean: bool = False,
+    limit: int = 30,
+) -> str:
+    """Format the structured schema into DDL-ish text: `table — desc(col TYPE PK …, …)`."""
+    tbl_desc = tbl_desc or {}
+    col_desc = col_desc or {}
+    lines: list[str] = []
+    if db_desc:
+        lines.append(f"[Database] {db_desc}")
+    for t in list(cols_by_table.keys())[:limit]:
+        segs = [
+            _column_segment(c, col_desc.get((t.lower(), str(c.name).lower())), lean=lean)
+            for c in cols_by_table[t]
+        ]
+        td = tbl_desc.get(t.lower())
+        header = t + (f" — {td}" if td else "")
+        lines.append(f"{header}(" + ", ".join(segs) + ")")
+    return "\n".join(lines)
+
+
+async def enrich_schema_text(*, mode: str = "write", limit: int = 30) -> str:
+    """Live structure (dbtools.full_schema, bulk) + semantic dictionary, rendered as text.
+    `mode="read"` drops write-only metadata (default/UNIQUE) the SELECT path doesn't need."""
+    cols_by_table = await dbtools.full_schema()  # {table: [Column]} — bulk, no N+1
+    if not cols_by_table:
+        return ""
+    tables = list(cols_by_table.keys())[:limit]
 
     # Descriptions: all primary tables share one project scope; file/session tables → no scope.
     scope = None
@@ -36,7 +82,8 @@ async def enrich_schema_text(tables: list[str], limit: int = 30) -> str:
     for t in tables:
         sc = resolve_scope(t)
         if sc:
-            scope, _ = sc, scoped.append(t)
+            scope = sc           # shared by every scoped (project) table
+            scoped.append(t)     # only these get a description lookup
 
     tbl_desc: dict[str, str] = {}
     col_desc: dict[tuple[str, str], dict] = {}
@@ -49,15 +96,5 @@ async def enrich_schema_text(tables: list[str], limit: int = 30) -> str:
         except Exception as e:  # noqa: BLE001 — enrichment must never break query generation
             logger.warning("schema enrichment lookup failed: %s", e)
 
-    lines: list[str] = []
-    if db_desc:
-        lines.append(f"[Database] {db_desc}")
-    for t in tables:
-        td = tbl_desc.get(t.lower())
-        lines.append(f"- {t}" + (f" — {td}" if td else ""))
-        for c in cols_by_table[t]:
-            m = col_desc.get((t.lower(), str(c.name).lower()))
-            d = f" — {m['desc']}" if m else ""
-            e = f" [allowed values: {m['enum']}]" if m and m.get("enum") else ""
-            lines.append(f"    {c.name} {c.type}{d}{e}")
-    return "\n".join(lines)
+    return render_schema(cols_by_table, db_desc=db_desc, tbl_desc=tbl_desc, col_desc=col_desc,
+                         lean=(mode == "read"), limit=limit)

@@ -8,6 +8,8 @@ import re
 
 from app.agent.adapters.base import QueryResult
 from app.agent.context import get_db
+from app.agent.graph.dbtools import full_schema
+from app.agent.graph.schema_context import render_schema
 from app.agent.tools.registry import tool
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -32,41 +34,18 @@ def _safe_ident(name: str) -> str:
 
 
 @tool(
-    description="List all tables in the connected database.",
+    description=(
+        "Get the schema of the connected database in one call: every table with its columns, "
+        "data types, nullability, primary keys, foreign keys (shown as → target), and defaults. "
+        "This is the single way to inspect structure before writing SQL."
+    ),
     parameters={"type": "object", "properties": {}},
 )
-async def list_tables() -> str:
-    db = get_db()
-    out: list[str] = []
-    if db.primary is not None:
-        tables = await db.primary.list_tables()
-        out.append("**Tables (project DB):** " + (", ".join(f"`{t}`" for t in tables) or "(none)"))
-    if db.session is not None:
-        tables = await db.session.list_tables()
-        out.append("**Tables (uploaded files):** " + (", ".join(f"`{t}`" for t in tables) or "(none)"))
-    return "\n\n".join(out) or "No database connected."
-
-
-@tool(
-    description="Describe the columns and data types of a table.",
-    parameters={
-        "type": "object",
-        "properties": {"table_name": {"type": "string"}},
-        "required": ["table_name"],
-    },
-)
-async def describe_table(table_name: str) -> str:
-    db = get_db()
-    adapter = db.adapter_for_table(table_name)
-    if adapter is None:
+async def get_schema() -> str:
+    cols_by_table = await full_schema()
+    if not cols_by_table:
         return "No database connected."
-    cols = await adapter.describe_table(_safe_ident(table_name))
-    if not cols:
-        return f"Table `{table_name}` not found."
-    lines = ["| Column | Type | Nullable | PK |", "| --- | --- | --- | --- |"]
-    for c in cols:
-        lines.append(f"| {c.name} | {c.type} | {'YES' if c.nullable else 'NO'} | {'✓' if c.pk else ''} |")
-    return "\n".join(lines)
+    return render_schema(cols_by_table)
 
 
 @tool(
@@ -148,8 +127,7 @@ async def explain_sql(sql: str) -> str:
 
 # Names of the DB tools (attached to the DatabaseAgent's InProcessBackend)
 DB_TOOL_NAMES = [
-    "list_tables",
-    "describe_table",
+    "get_schema",
     "select_data",
     "execute_query",
     "get_connection_info",

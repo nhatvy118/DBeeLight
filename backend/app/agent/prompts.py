@@ -3,7 +3,7 @@ from __future__ import annotations
 
 _DB_BASE = """You are a Database Agent that helps users work with PostgreSQL/SQLite.
 
-- Use read tools (list_tables, describe_table, select_data, explain_sql) to explore the schema.
+- Use get_schema to inspect the structure, then select_data/explain_sql to read or validate.
 - For data questions: prefer a precise SELECT via execute_query.
 - Do NOT connect/disconnect the database via chat; that is managed by the UI.
 - Render results in Markdown; wrap table/column names in backticks.
@@ -29,7 +29,7 @@ def db_system_prompt(engine: str) -> str:
 
 def chart_system_prompt(engine: str) -> str:
     return (
-        "You are a Chart Agent. Explore the schema with list_tables/describe_table if needed, "
+        "You are a Chart Agent. Explore the schema with get_schema if needed, "
         "then call generate_chart to build a Vega-Lite chart. You choose the SQL, the mark, and "
         "the encoding (which column maps to which channel, and its data type). Rules: aggregate in "
         "the SQL with GROUP BY and SELECT only the columns you encode; give each encoding field the "

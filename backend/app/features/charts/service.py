@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 
-from app.agent.graph.sql_verification import require_dql_only
+from app.agent.graph.dbtools import require_dql_only
 from app.agent.pool import get_connection_pool
 from app.features.charts import repository as repo
 from app.features.projects import service as proj_service

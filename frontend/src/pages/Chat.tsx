@@ -34,6 +34,7 @@ import {
   readFileExport,
   readSessionFiles,
   readCharts,
+  readQueryResult,
   triggerExcelDownload,
   type SqlPreviewData,
 } from '../utils/toolEvents';
@@ -319,6 +320,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             : sqlAction.sqlActionState,
           exportToExcel: msg.role === 'assistant' ? readFileExport(msg.tool_events) : null,
           charts: msg.role === 'assistant' ? readCharts(msg.tool_events) : undefined,
+          queryResult: msg.role === 'assistant' ? readQueryResult(msg.tool_events) : null,
           schemaPreview,
           schemaLocked:
             msg.role === 'assistant' && schemaPreview
@@ -631,6 +633,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             })(),
             exportToExcel: readFileExport((res as any).tool_events),
             charts: readCharts((res as any).tool_events),
+            queryResult: readQueryResult((res as any).tool_events),
             schemaPreview: readSchemaPreview((res as any).tool_events),
             schemaLocked: false,
           },
@@ -862,6 +865,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             })(),
             exportToExcel: readFileExport((res as any).tool_events),
             charts: readCharts((res as any).tool_events),
+            queryResult: readQueryResult((res as any).tool_events),
             schemaPreview: readSchemaPreview((res as any).tool_events),
           };
           return updated;

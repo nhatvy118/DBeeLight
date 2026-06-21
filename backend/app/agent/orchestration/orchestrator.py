@@ -53,6 +53,15 @@ def _events_from_output(out: dict) -> list[dict]:
             "type": "sql_execution",
             "payload": {"sql": out["sql"], "result": out.get("message", "")},
         }]
+    # read-only SELECT → structured result the FE renders as a table (server renders NOTHING).
+    if t == "query_result":
+        r = out.get("result") or {}
+        return [{
+            "tool": "execute_query",
+            "type": "query_result",
+            "payload": {"sql": out.get("sql") or "", "columns": r.get("columns") or [],
+                        "rows": r.get("rows") or []},
+        }]
     # create_table schema preview → structured event the FE editor reads (no text marker).
     if t == "schema_preview" and out.get("columns"):
         cols = out["columns"]
@@ -200,12 +209,17 @@ class Orchestrator:
         rebuilds + re-verifies the CREATE SQL from it. Mutation ignores it (resume is a bare bool).
         Routes to the correct workflow by checking which checkpoint is still pending."""
         engine = get_db().engine
-        wf = self.mutation_wf
-        route = "db_mutation"
-        resume_val: object = approved
-        if await self.create_table_wf.pending(session_id):
+        ct_pending = await self.create_table_wf.pending(session_id)
+        mut_pending = await self.mutation_wf.pending(session_id)
+        if not ct_pending and not mut_pending:
+            return ChatResult(response="There is no pending action to confirm.", route="db_general")
+
+        if ct_pending:
             wf, route = self.create_table_wf, "db_create_table"
-            resume_val = {"approved": approved, "schema": edited_schema}
+            resume_val: object = {"approved": approved, "schema": edited_schema}
+        else:
+            wf, route = self.mutation_wf, "db_mutation"
+            resume_val = approved
         state, pending = await wf.run(session_id, "", engine, resume=resume_val)
         out = state.get("output") or {}
         return ChatResult(

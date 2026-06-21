@@ -32,6 +32,9 @@ class Column:
     type: str
     nullable: bool = True
     pk: bool = False
+    default: str | None = None      # column DEFAULT expression, if any (mutation hint)
+    unique: bool = False            # part of a single-column UNIQUE constraint (mutation hint)
+    references: str | None = None   # foreign key target as "table.column" (JOIN hint)
 
 
 class DatabaseAdapter(ABC):
@@ -67,16 +70,12 @@ class DatabaseAdapter(ABC):
                 lambda sync_conn: df.to_sql(table_name, sync_conn, if_exists=if_exists, index=False)
             )
 
-    def _filter_allowed(self, tables: list[str]) -> list[str]:
-        if self.allowed_tables is None:
-            return tables
-        return [t for t in tables if t in self.allowed_tables]
-
     @abstractmethod
-    async def list_tables(self) -> list[str]: ...
-
-    @abstractmethod
-    async def describe_table(self, table_name: str) -> list[Column]: ...
+    async def get_schema(self) -> dict[str, list[Column]]:
+        """Full schema in ONE query: {table_name: [Column, ...]} for every table.
+        The single structure-introspection entry point (names/columns/types/PK all derive
+        from here), so adapters need no separate list_tables/describe_table round-trips."""
+        ...
 
     @abstractmethod
     async def explain(self, sql: str) -> str: ...

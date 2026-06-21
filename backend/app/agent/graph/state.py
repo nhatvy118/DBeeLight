@@ -6,49 +6,40 @@ from typing import Any, TypedDict
 
 
 class StageType(str, Enum):
-    INTENT = "INTENT"
+    """Single source of truth for graph node names (and the interrupt 'stage' marker sent to the
+    FE for SQL_PREVIEW / SCHEMA_PREVIEW). Every workflow node is wired by one of these, never a
+    raw string, so add_node and add_edge can never drift."""
     SCHEMA_DISCOVERY = "SCHEMA_DISCOVERY"
+    QUERY_EXECUTION = "QUERY_EXECUTION"
     SQL_PREVIEW = "SQL_PREVIEW"
     SCHEMA_PREVIEW = "SCHEMA_PREVIEW"
-    SQL_APPROVAL = "SQL_APPROVAL"
+    APPROVAL = "APPROVAL"
     EXECUTION = "EXECUTION"
     DONE = "DONE"
-    ERROR = "ERROR"
 
 
 # Output type for the frontend
 OUTPUT_SQL_STATEMENT = "sql_statement"
 OUTPUT_SCHEMA_PREVIEW = "schema_preview"
 OUTPUT_EXECUTION = "execution_complete"
+OUTPUT_QUERY_RESULT = "query_result"   # read-only SELECT result: structured {columns, rows} for the FE
 OUTPUT_ERROR = "error"
-OUTPUT_AGENT = "agent_response"
 
 
 class AgentState(TypedDict, total=False):
-    session_id: str
     user_message: str
     engine: str                 # sqlite | postgresql
-    intent: dict[str, Any]
-    table_schema: dict[str, Any]
+    schema_text: str            # enriched schema text, set by SCHEMA_DISCOVERY for the SQL generator
     sql: str | None
     approved: bool
-    current_stage: str
-    error: str | None
     output: dict[str, Any]
-    query_result: Any
-    schema_discovery_failed: bool
 
 
-def create_initial_state(session_id: str, user_message: str, engine: str) -> AgentState:
+def create_initial_state(user_message: str, engine: str) -> AgentState:
     return {
-        "session_id": session_id,
         "user_message": user_message,
         "engine": engine,
-        "intent": {},
-        "table_schema": {},
         "sql": None,
         "approved": False,
-        "current_stage": StageType.INTENT.value,
-        "error": None,
         "output": {},
     }

@@ -46,6 +46,7 @@ export function readSqlPreview(events?: ToolEvent[]): SqlPreviewData | null {
   if (!Array.isArray(events)) return null;
   const sqlPayloadEvents = events.filter((e) => {
     if (e?.type === 'sql_execution') return false;
+    if (e?.type === 'query_result') return false; // read-only result, not an executable preview
     if (e?.tool && e.tool !== 'execute_query') return false;
     const p = payloadOf(e);
     return !!p && typeof p.sql === 'string' && (p.sql as string).trim().length > 0;
@@ -116,6 +117,27 @@ export function readFileExport(events?: ToolEvent[]): ExportData | null {
     typeof rcRaw === 'number' ? rcRaw : typeof rcRaw === 'string' ? parseInt(rcRaw, 10) || 0 : 0;
   if (!filename && !sessionFileId && !base64) return null;
   return { filename, base64, sessionFileId, rowCount, tableName };
+}
+
+// ------------------------------------------------------------- query result
+
+export type QueryResultData = { columns: string[]; rows: string[][] };
+
+/** Structured read-only SELECT result (event type `query_result`): the server ships
+ *  {columns, rows} and the frontend renders the table — no markdown round-trip. Cells are
+ *  coerced to strings (null → '') so the renderer never has to special-case types. */
+export function readQueryResult(events?: ToolEvent[]): QueryResultData | null {
+  if (!Array.isArray(events)) return null;
+  const e = events.find((ev) => ev?.type === 'query_result' && ev?.payload);
+  const p = payloadOf(e);
+  if (!p) return null;
+  const columns = Array.isArray(p.columns) ? (p.columns as unknown[]).map((c) => String(c ?? '')) : [];
+  const rows = Array.isArray(p.rows)
+    ? (p.rows as unknown[]).map((r) =>
+        Array.isArray(r) ? (r as unknown[]).map((v) => (v == null ? '' : String(v))) : [])
+    : [];
+  if (columns.length === 0 && rows.length === 0) return null;
+  return { columns, rows };
 }
 
 // --------------------------------------------------------------------- charts

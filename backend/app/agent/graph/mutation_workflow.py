@@ -3,11 +3,10 @@
 Unlike the skeleton: the pending SQL lives in the **server-side checkpoint**; approve is just a
 boolean resume (the client does NOT send SQL) → closes the SQL-injection hole.
 
-Flow: INTENT → SCHEMA_DISCOVERY → SQL_PREVIEW → SQL_APPROVAL(interrupt) → EXECUTION → DONE
+Flow: SCHEMA_DISCOVERY → SQL_PREVIEW → APPROVAL(interrupt) → EXECUTION → DONE
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import cast
@@ -19,7 +18,7 @@ from langgraph.types import Command, interrupt
 from app.agent.graph import dbtools
 from app.agent.graph.checkpointer import get_async_checkpointer
 from app.agent.graph.schema_context import enrich_schema_text
-from app.agent.graph.sql_verification import verify_for_mutation
+from app.agent.graph.sql_gen import generate_sql
 from app.agent.graph.state import (
     OUTPUT_ERROR,
     OUTPUT_EXECUTION,
@@ -28,114 +27,36 @@ from app.agent.graph.state import (
     StageType,
     create_initial_state,
 )
-from app.agent.llm import get_llm
-from app.config import get_settings
 
 logger = logging.getLogger("agent.graph.mutation")
 
 
-def _strip_fences(text: str) -> str:
-    t = (text or "").strip()
-    t = re.sub(r"^```[a-zA-Z]*\n?", "", t)
-    return re.sub(r"\n?```$", "", t).strip()
-
-
-async def _intent_parse(state: AgentState) -> AgentState:
-    client = get_llm()
-    resp = await client.chat.completions.create(
-        model=get_settings().llm_model,
-        messages=[
-            {"role": "system", "content": (
-                "Analyze the DB request, return JSON: operation (INSERT/UPDATE/DELETE/ALTER/DROP), "
-                "tables (list of table names), resolved_query (rewrite the request in full)."
-            )},
-            {"role": "user", "content": state.get("user_message", "")},
-        ],
-        temperature=0,
-        response_format={"type": "json_object"},
-    )
-    try:
-        intent = json.loads(resp.choices[0].message.content or "{}")
-    except Exception:  # noqa: BLE001
-        intent = {}
-    intent.setdefault("operation", "INSERT")
-    intent.setdefault("tables", [])
-    intent.setdefault("resolved_query", state.get("user_message", ""))
-    return {**state, "intent": intent, "current_stage": StageType.SCHEMA_DISCOVERY.value}
-
 
 async def _schema_discovery(state: AgentState) -> AgentState:
-    intent = state.get("intent") or {}
-    op = str(intent.get("operation", "")).upper()
-    tables = [str(t).strip() for t in (intent.get("tables") or []) if str(t).strip()]
-    all_tables = await dbtools.list_tables()
-    lower = {t.lower() for t in all_tables}
-
-    matched: list[str] = []
-    missing: list[str] = []
-    for t in tables:
-        if op == "CREATE":
-            continue
-        if t.lower() in lower:
-            matched.append(t)
-        else:
-            missing.append(t)
-
-    if missing:
-        avail = ", ".join(f"`{t}`" for t in all_tables[:40]) or "(none)"
-        return {
-            **state,
-            "schema_discovery_failed": True,
-            "error": f"Tables not found: {', '.join(missing)}",
-            "output": {"type": OUTPUT_ERROR,
-                       "message": f"**Tables not found:** {', '.join(missing)}\n\n**Available:** {avail}"},
-        }
-    schema_text = await enrich_schema_text(matched)  # live structure + semantic descriptions
-    return {**state, "schema_discovery_failed": False,
-            "table_schema": {"schema_text": schema_text, "all_tables": all_tables}}
+    schema_text = await enrich_schema_text(mode="write")  # full: includes default/UNIQUE
+    return {**state, "schema_text": schema_text}
 
 
 async def _sql_preview(state: AgentState) -> AgentState:
-    intent = state.get("intent") or {}
-    op = str(intent.get("operation", "INSERT")).upper()
     engine = state.get("engine", "sqlite")
-    schema = (state.get("table_schema", {}) or {}).get("schema_text") or ""
-    client = get_llm()
+    schema = state.get("schema_text") or ""
+    sql, err, kind = await generate_sql(state.get("user_message", ""), schema, engine, mode="write")
+    if err:
+        return {**state, "sql": None,
+                "output": {"type": OUTPUT_ERROR, "message": f"Could not generate valid SQL.\n{err}"}}
 
-    msgs = [
-        {"role": "system", "content": (
-            f"Generate EXACTLY ONE {op} SQL statement ({engine}) for the request. Return SQL only.\nSchema:\n{schema}"
-        )},
-        {"role": "user", "content": intent.get("resolved_query", state.get("user_message", ""))},
-    ]
-    sql = ""
-    last_err = ""
-    kind = "DML"  # DQL | DML | DDL — surfaced to the FE so it knows this needs approval
-    for attempt in range(3):
-        resp = await client.chat.completions.create(model=get_settings().llm_model, messages=msgs, temperature=0)
-        sql = _strip_fences(resp.choices[0].message.content or "")
-        ok, err, kind = await verify_for_mutation(sql, engine)
-        if ok:
-            break
-        last_err = err
-        msgs += [
-            {"role": "assistant", "content": sql},
-            {"role": "system", "content": f"SQL failed verify/EXPLAIN. Fix it, return SQL only.\nError: {err}"},
-        ]
-    else:
-        return {**state, "sql": None, "error": last_err,
-                "output": {"type": OUTPUT_ERROR, "message": f"Could not generate valid SQL.\n{last_err}"}}
-
-    preview = await _preview(op, sql)
+    preview = await _preview(sql)
     body = f"```sql\n{sql}\n```\n\n{preview}\n\n_Click Execute to run._"
     return {
-        **state, "sql": sql, "current_stage": StageType.SQL_PREVIEW.value,
+        **state, "sql": sql,
         "output": {"type": OUTPUT_SQL_STATEMENT, "executed": False, "sql": sql,
                    "message": body, "sql_kind": kind},
     }
 
 
-async def _preview(op: str, sql: str) -> str:
+async def _preview(sql: str) -> str:
+    # Only UPDATE/DELETE get an affected-rows preview; derive the op from the SQL itself.
+    op = (sql.strip().split(None, 1)[0].upper() if sql.strip() else "")
     if op not in ("UPDATE", "DELETE"):
         return "_See the SQL above._"
     where = ""
@@ -152,16 +73,16 @@ async def _preview(op: str, sql: str) -> str:
     return f"**Rows that would be affected (preview):**\n\n{dbtools.md_table(res)}"
 
 
-async def _sql_approval(state: AgentState) -> AgentState:
+async def _approval(state: AgentState) -> AgentState:
     # SQL lives in state (server-side checkpoint); the client only sends a bool decision.
     ok = interrupt({"stage": StageType.SQL_PREVIEW.value, "output": state.get("output")})
     if not ok:
         return {**state, "approved": False,
                 "output": {**(state.get("output") or {}), "message": "SQL execution cancelled.", "cancelled": True}}
-    return {**state, "approved": True, "current_stage": StageType.EXECUTION.value}
+    return {**state, "approved": True}
 
 
-async def _sql_execution(state: AgentState) -> AgentState:
+async def _execution(state: AgentState) -> AgentState:
     if not state.get("approved"):
         return {**state, "output": {"type": "execution_skipped", "message": "Cancelled."}}
     sql = state.get("sql") or ""
@@ -170,24 +91,25 @@ async def _sql_execution(state: AgentState) -> AgentState:
         msg = f"Executed successfully. ({res.rowcount} rows affected)"
         out = {"type": OUTPUT_EXECUTION, "sql": sql, "message": msg}
     except Exception as e:  # noqa: BLE001
-        out = {"type": OUTPUT_ERROR, "sql": sql, "message": f"Error running SQL: {e}"}
-    return {**state, "current_stage": StageType.DONE.value, "output": out}
+        out = {"type": OUTPUT_ERROR, "sql": sql,
+               "message": f"The SQL couldn’t run: {dbtools.clean_db_error(str(e))}."}
+    return {**state, "output": out}
 
 
 async def _done(state: AgentState) -> AgentState:
-    return {**state, "current_stage": StageType.DONE.value}
+    return state  # terminal node: converge edges → END (no state change)
 
 
 def _route_after_schema(state: AgentState) -> str:
-    if state.get("schema_discovery_failed") or (state.get("output") or {}).get("type") == OUTPUT_ERROR:
+    if (state.get("output") or {}).get("type") == OUTPUT_ERROR:
         return StageType.DONE.value
-    return "SQL_PREVIEW"
+    return StageType.SQL_PREVIEW.value
 
 
 def _route_after_preview(state: AgentState) -> str:
     if (state.get("output") or {}).get("type") == OUTPUT_ERROR:
         return StageType.DONE.value
-    return "SQL_APPROVAL"
+    return StageType.APPROVAL.value
 
 
 class MutationWorkflow:
@@ -197,20 +119,20 @@ class MutationWorkflow:
     async def _compiled(self):
         if self._graph is None:
             g = StateGraph(AgentState)
-            g.add_node("INTENT", _intent_parse)
-            g.add_node("SCHEMA_DISCOVERY", _schema_discovery)
-            g.add_node("SQL_PREVIEW", _sql_preview)
-            g.add_node("SQL_APPROVAL", _sql_approval)
-            g.add_node("EXECUTION", _sql_execution)
+            g.add_node(StageType.SCHEMA_DISCOVERY.value, _schema_discovery)
+            g.add_node(StageType.SQL_PREVIEW.value, _sql_preview)
+            g.add_node(StageType.APPROVAL.value, _approval)
+            g.add_node(StageType.EXECUTION.value, _execution)
             g.add_node(StageType.DONE.value, _done)
-            g.set_entry_point("INTENT")
-            g.add_edge("INTENT", "SCHEMA_DISCOVERY")
-            g.add_conditional_edges("SCHEMA_DISCOVERY", _route_after_schema,
-                                    {"SQL_PREVIEW": "SQL_PREVIEW", StageType.DONE.value: StageType.DONE.value})
-            g.add_conditional_edges("SQL_PREVIEW", _route_after_preview,
-                                    {"SQL_APPROVAL": "SQL_APPROVAL", StageType.DONE.value: StageType.DONE.value})
-            g.add_edge("SQL_APPROVAL", "EXECUTION")
-            g.add_edge("EXECUTION", StageType.DONE.value)
+            g.set_entry_point(StageType.SCHEMA_DISCOVERY.value)
+            g.add_conditional_edges(StageType.SCHEMA_DISCOVERY.value, _route_after_schema,
+                                    {StageType.SQL_PREVIEW.value: StageType.SQL_PREVIEW.value,
+                                     StageType.DONE.value: StageType.DONE.value})
+            g.add_conditional_edges(StageType.SQL_PREVIEW.value, _route_after_preview,
+                                    {StageType.APPROVAL.value: StageType.APPROVAL.value,
+                                     StageType.DONE.value: StageType.DONE.value})
+            g.add_edge(StageType.APPROVAL.value, StageType.EXECUTION.value)
+            g.add_edge(StageType.EXECUTION.value, StageType.DONE.value)
             g.add_edge(StageType.DONE.value, END)
             self._graph = g.compile(checkpointer=await get_async_checkpointer())
         return self._graph
@@ -227,7 +149,7 @@ class MutationWorkflow:
         graph = await self._compiled()
         cfg = self._cfg(session_id)
         if resume is None:
-            await graph.ainvoke(create_initial_state(session_id, user_message, engine), cfg)
+            await graph.ainvoke(create_initial_state(user_message, engine), cfg)
         else:
             await graph.ainvoke(Command(resume=resume), cfg)
         snap = await graph.aget_state(cfg)

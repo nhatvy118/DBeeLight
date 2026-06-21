@@ -2,36 +2,15 @@ import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getSession, getMessages } from '../services/api';
+import type { ToolEvent } from '../services/api';
+import { readQueryResult } from '../utils/toolEvents';
 
 type RawMessage = {
   role: string;
   content?: string;
   timestamp?: string;
+  tool_events?: ToolEvent[];
 };
-
-const INTERNAL_MARKER_PATTERNS: RegExp[] = [
-  /\[CREATE_TABLE_SCHEMA_JSON_START\][\s\S]*?\[CREATE_TABLE_SCHEMA_JSON_END\]/g,
-  /\[SCHEMA_CONFIRM_INTERNAL_START\][\s\S]*?\[SCHEMA_CONFIRM_INTERNAL_END\]/g,
-  // Legacy Superset chart-embed markers — kept here so historical chats
-  // with these markers still print clean. Superset itself is gone.
-  /\[CHART_EMBED_URL_START\][\s\S]*?\[CHART_EMBED_URL_END\]/g,
-  /\[CHART_EMBED_META_START\][\s\S]*?\[CHART_EMBED_META_END\]/g,
-  /\[UPLOADED_EXCEL_PATH_START\][\s\S]*?\[UPLOADED_EXCEL_PATH_END\]/g,
-  /\[UPLOADED_EXCEL_NAME_START\][\s\S]*?\[UPLOADED_EXCEL_NAME_END\]/g,
-  /\[SQL_ACTION_ID_START\][\s\S]*?\[SQL_ACTION_ID_END\]/g,
-  /\[EXCEL_BASE64_START\][\s\S]*?\[EXCEL_BASE64_END\]/g,
-  /\[EXPORT_FILE_ID_START\][\s\S]*?\[EXPORT_FILE_ID_END\]/g,
-  /\[FILENAME_START\][\s\S]*?\[FILENAME_END\]/g,
-  /\[ROW_COUNT_START\][\s\S]*?\[ROW_COUNT_END\]/g,
-  /\[CREATE_TABLE_SCHEMA_PREVIEW\]/g,
-  /^\[SHARED SESSION\s*[—-]\s*READ-ONLY MODE\][\s\S]*?\n\s*User message:\s*/i,
-];
-
-function stripInternal(text: string): string {
-  let out = text || '';
-  for (const re of INTERNAL_MARKER_PATTERNS) out = out.replace(re, '');
-  return out.replace(/\n{3,}/g, '\n\n').trim();
-}
 
 type Props = {
   sessionId: string;
@@ -96,7 +75,7 @@ export default function PrintChat({ sessionId }: Props) {
 
   const visible = messages
     .filter((m) => m.role === 'user' || m.role === 'assistant')
-    .map((m) => ({ ...m, content: stripInternal(m.content || '') }))
+    .map((m) => ({ ...m, content: (m.content || '').trim() }))
     .filter((m) => m.content.length > 0);
 
   return (
@@ -171,6 +150,24 @@ export default function PrintChat({ sessionId }: Props) {
             <div className="prose prose-sm max-w-none">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
             </div>
+            {m.role === 'assistant' && (() => {
+              // Read-only SELECT results are structured (query_result event), not in the
+              // message markdown — render them as a plain table so the printout isn't missing data.
+              const qr = readQueryResult(m.tool_events);
+              if (!qr || (qr.columns.length === 0 && qr.rows.length === 0)) return null;
+              return (
+                <table>
+                  <thead>
+                    <tr>{qr.columns.map((c, ci) => <th key={ci}>{c}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {qr.rows.map((r, ri) => (
+                      <tr key={ri}>{r.map((cell, ci) => <td key={ci}>{cell}</td>)}</tr>
+                    ))}
+                  </tbody>
+                </table>
+              );
+            })()}
           </section>
         ))}
         {visible.length === 0 && (

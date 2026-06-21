@@ -259,8 +259,10 @@ function downloadExcel(data: TableData) {
   URL.revokeObjectURL(url);
 }
 
-export function ResultTableCard({ node }: { node: any }) {
-  const data = extractTableData(node);
+export function ResultTableCard({ node, data: dataProp }: { node?: any; data?: TableData }) {
+  // Structured data (from a query_result event) is preferred; otherwise fall back to extracting
+  // it from a markdown-table hast node (mutation preview still renders off markdown).
+  const data = dataProp ?? extractTableData(node);
   const [tab, setTab] = useState<'table' | 'chart'>('table');
 
   if (!data.columns.length && !data.rows.length) return null;

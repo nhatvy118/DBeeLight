@@ -16,7 +16,7 @@ from langgraph.types import Command, interrupt
 
 from app.agent.graph import dbtools
 from app.agent.graph.checkpointer import get_async_checkpointer
-from app.agent.graph.sql_verification import tier1_static
+from app.agent.graph.dbtools import tier1_static
 from app.features.metadata import repository as metadata_repo
 from app.features.metadata.scope import resolve_scope
 from app.agent.graph.state import (
@@ -36,9 +36,9 @@ logger = logging.getLogger("agent.graph.create_table")
 # The columns come from the client editor, so identifiers/types are sanitized and the
 # rebuilt SQL is re-verified by tier1_static (must be DDL) before it can run.
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_TYPE_RE = re.compile(r"^[A-Za-z][A-Za-z ]*(\(\s*\d+\s*(,\s*\d+\s*)?\))?$")
+_TYPE_RE = re.compile(r"^([A-Za-z ]+?)\s*(\(\d+(?:,\d+)?\))?$")  # base type + optional (n[,m])
 _DEFAULT_KEYWORDS = {"NULL", "TRUE", "FALSE", "CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME"}
-_INT_TYPES = {"INTEGER", "INT", "SMALLINT", "BIGINT", "SERIAL", "BIGSERIAL"}
+_INT_TYPES = {"INT", "INTEGER", "SMALLINT", "BIGINT"}  # integer PK → auto-increment surrogate
 
 # Reserved SQL keywords that can't be used as an unquoted table/column name — an
 # identifier matching one (e.g. SELECT, ORDER, USER) is rejected before building SQL so
@@ -63,7 +63,7 @@ _RESERVED_KEYWORDS = frozenset({
 
 # Logical type → concrete type per engine. The LLM/editor emits a logical type (engine-
 # agnostic); the builder maps it so the same column produces valid SQL on either engine.
-# Unknown types fall through unchanged (already sanitized by _safe_type).
+# This map is the SOURCE OF TRUTH for valid types: a base type not in it is rejected (_parse_type).
 _TYPE_MAP: dict[str, dict[str, str]] = {
     "INT":       {"sqlite": "INTEGER", "postgresql": "INTEGER"},
     "INTEGER":   {"sqlite": "INTEGER", "postgresql": "INTEGER"},
@@ -102,20 +102,23 @@ LOGICAL_TYPES = [
 ]
 
 
-def _is_int_type(t: str) -> bool:
-    return t.upper().split("(")[0].strip() in _INT_TYPES
+def _parse_type(raw: object) -> tuple[str, str]:
+    """Validate a column type against _TYPE_MAP and split it into (BASE, params), e.g.
+    ("VARCHAR", "(255)"). Raises ValueError on an unknown type or non-numeric parameter — so
+    junk like 'FOO' or 'DROP TABLE' is rejected here with a clear message, not at the DB."""
+    m = _TYPE_RE.match(str(raw or "").strip().upper())
+    if not m:
+        raise ValueError(f"invalid type {raw!r}")
+    base, params = m.group(1).strip(), m.group(2) or ""
+    if base not in _TYPE_MAP:
+        raise ValueError(f"unknown type {raw!r}")
+    return base, params
 
 
-def _map_type(raw: object, engine: str) -> str:
-    """Sanitize a column type and map it to the concrete type for `engine`.
-    Unknown types pass through (sanitized)."""
-    tt = _safe_type(raw)  # validates + uppercases, may include "(...)"
-    m = re.match(r"^([A-Z ]+?)\s*(\(\s*\d+\s*(?:,\s*\d+\s*)?\))?$", tt)
-    base = m.group(1).strip() if m else tt
-    params = (m.group(2) if m else None) or ""
-    mapped = _TYPE_MAP.get(base, {}).get(engine)
-    if mapped is None:
-        return tt  # unknown type → keep as the user/LLM wrote it (already safe)
+def _map_type(base: str, params: str, engine: str) -> str:
+    """Concrete type for `engine` from a parsed (base, params). params kept only where the
+    mapped type takes them (VARCHAR/CHAR/NUMERIC on postgres; dropped for sqlite TEXT/etc.)."""
+    mapped = _TYPE_MAP[base][engine]
     return f"{mapped}{params}" if params and mapped in _PARAM_TYPES else mapped
 
 
@@ -124,13 +127,6 @@ def _safe_ident(name: object) -> str:
     if not _IDENT_RE.match(n):
         raise ValueError(f"invalid name {name!r}")
     return f'"{n}"'
-
-
-def _safe_type(t: object) -> str:
-    tt = str(t or "").strip()
-    if not _TYPE_RE.match(tt):
-        raise ValueError(f"invalid type {t!r}")
-    return tt.upper()
 
 
 def _safe_default(v: object) -> str:
@@ -153,20 +149,19 @@ def _build_create_sql(table: object, columns: list[dict], engine: str = "sqlite"
     defs: list[str] = []
     for c in columns:
         name = _safe_ident(c.get("variable"))
-        raw_type = _safe_type(c.get("type"))  # sanitized + uppercased (for int-PK detection)
+        base, params = _parse_type(c.get("type"))  # validated against _TYPE_MAP
         is_pk = bool(c.get("primaryKey"))
 
         # Integer primary key = auto-increment surrogate; let each dialect handle it.
         # SERIAL/BIGSERIAL (postgres) already imply the sequence/default, so skip other flags.
-        if is_pk and _is_int_type(raw_type):
+        if is_pk and base in _INT_TYPES:
             if engine == "postgresql":
-                serial = "BIGSERIAL" if raw_type.split("(")[0].strip() in {"BIGINT", "BIGSERIAL"} else "SERIAL"
-                defs.append(f"{name} {serial} PRIMARY KEY")
+                defs.append(f"{name} {'BIGSERIAL' if base == 'BIGINT' else 'SERIAL'} PRIMARY KEY")
             else:  # sqlite: INTEGER PRIMARY KEY auto-increments via rowid
                 defs.append(f"{name} INTEGER PRIMARY KEY")
             continue
 
-        parts = [name, _map_type(c.get("type"), engine)]
+        parts = [name, _map_type(base, params, engine)]
         if is_pk:
             parts.append("PRIMARY KEY")
         if c.get("notNull"):
@@ -220,7 +215,9 @@ def _validate_schema(table: object, table_description: object, columns: list[dic
         ctype = str(c.get("type") or "").strip()
         if not ctype:
             return f"Column “{name}” is missing a type."
-        if not _TYPE_RE.match(ctype):
+        try:
+            _parse_type(ctype)  # must be a known type in _TYPE_MAP (rejects junk early)
+        except ValueError:
             return f"“{ctype}” isn’t a valid type for column “{name}”. Pick a type from the list."
         if not str(c.get("description") or "").strip():
             return f"Add a description for column “{name}” (what it means)."
@@ -230,14 +227,6 @@ def _validate_schema(table: object, table_description: object, columns: list[dic
     if pk_count > 1:
         return "Only one column can be the primary key, but more than one is marked."
     return None
-
-
-def _clean_db_error(raw: str) -> str:
-    """Strip the driver wrapper from a DB error, keeping the human-readable reason. e.g.
-    '(sqlite3.OperationalError) near \"x\": syntax error\\n[SQL: ...]' → 'near \"x\": syntax error'."""
-    s = (raw or "").strip().splitlines()[0] if raw else ""
-    s = re.sub(r"^\([^)]*\)\s*", "", s).strip()
-    return s or "unknown database error"
 
 
 def _friendly_db_error(table: str, e: Exception) -> str:
@@ -250,9 +239,9 @@ def _friendly_db_error(table: str, e: Exception) -> str:
     if "type" in msg and ("does not exist" in msg or "unknown" in msg or "no such" in msg):
         return "One of the column types isn’t supported by the database. Pick a type from the list."
     if "syntax" in msg:
-        return f"The database rejected the schema: {_clean_db_error(str(e))}."
+        return f"The database rejected the schema: {dbtools.clean_db_error(str(e))}."
     # Unknown — give the real reason from the DB, just without the driver wrapper.
-    return f"The table couldn’t be created: {_clean_db_error(str(e))}."
+    return f"The table couldn’t be created: {dbtools.clean_db_error(str(e))}."
 
 
 async def _schema_preview(state: AgentState) -> AgentState:
@@ -295,7 +284,7 @@ async def _schema_preview(state: AgentState) -> AgentState:
     # collisions, empty columns, and invalid SQL are all checked at approval, AFTER the
     # user has finalized the schema in the editor (see _approval).
     body = "Review the columns and descriptions below, then create the table."
-    return {**state, "current_stage": StageType.SCHEMA_PREVIEW.value,
+    return {**state,
             "output": {"type": OUTPUT_SCHEMA_PREVIEW, "message": body,
                        "table": str(spec.get("table") or "").strip(),
                        "tableDescription": str(spec.get("tableDescription") or "").strip(),
@@ -308,7 +297,7 @@ def _reopen_editor(state: AgentState, message: str, *, table: object = None,
     an error message — instead of ending the workflow. The user fixes the schema and
     re-submits, never having to start over. Keeps their columns (passed in, or the last shown)."""
     out = state.get("output") or {}
-    return {**state, "approved": False, "current_stage": StageType.SCHEMA_PREVIEW.value,
+    return {**state, "approved": False,
             "output": {"type": OUTPUT_SCHEMA_PREVIEW, "message": message,
                        "table": table if table is not None else (out.get("table") or ""),
                        "tableDescription": table_description if table_description is not None else (out.get("tableDescription") or ""),
@@ -316,16 +305,15 @@ def _reopen_editor(state: AgentState, message: str, *, table: object = None,
 
 
 async def _approval(state: AgentState) -> AgentState:
-    # Resume value is a bool (legacy) or {"approved": bool, "schema": {...edited columns...}}.
     decision = interrupt({"stage": StageType.SCHEMA_PREVIEW.value, "output": state.get("output")})
-    approved = decision if isinstance(decision, bool) else bool((decision or {}).get("approved"))
-    if not approved:
-        return {**state, "approved": False, "current_stage": StageType.DONE.value,
+    decision = decision or {}
+    if not decision.get("approved"):
+        return {**state, "approved": False,
                 "output": {**(state.get("output") or {}), "message": "Table creation cancelled.", "cancelled": True}}
 
-    # The user approved, but did they edit the schema in the editor? If so, re-build + re-verify the SQL
-    edited = (decision or {}).get("schema") if isinstance(decision, dict) else None
-    if not (edited and edited.get("columns")):
+    # The user approved — the SQL is (re)built + (re)verified from the schema they finalized in the editor.
+    edited = decision.get("schema") or {}
+    if not edited.get("columns"):
         return _reopen_editor(state, "Please define at least one column.")
 
     cols = edited["columns"]
@@ -338,12 +326,6 @@ async def _approval(state: AgentState) -> AgentState:
     if err:
         return _reopen_editor(state, err, table=table, table_description=table_desc, columns=cols)
 
-    # Name collision on the FINAL (possibly user-renamed) table name.
-    existing = await dbtools.list_tables()
-    if table.lower() in {t.lower() for t in existing}:
-        return _reopen_editor(state, f"A table named “{table}” already exists. Choose a different name.",
-                              table=table, table_description=table_desc, columns=cols)
-
     engine = state.get("engine", "sqlite")
     try:
         sql = _build_create_sql(table, cols, engine)
@@ -352,12 +334,9 @@ async def _approval(state: AgentState) -> AgentState:
                               table_description=table_desc, columns=cols)
     t1 = tier1_static(sql, engine)
     if not t1.ok or t1.kind != "DDL":
-        return _reopen_editor(state, f"That schema isn’t valid: {_clean_db_error(t1.error or t1.kind)}.",
+        return _reopen_editor(state, f"That schema isn’t valid: {dbtools.clean_db_error(t1.error or t1.kind)}.",
                               table=table, table_description=table_desc, columns=cols)
-
-    # Stash the final schema (+ descriptions) in output so EXECUTION can persist the data
-    # dictionary and an EXECUTION failure can re-open the editor with everything intact.
-    return {**state, "approved": True, "sql": sql, "current_stage": StageType.EXECUTION.value,
+    return {**state, "approved": True, "sql": sql,
             "output": {"type": OUTPUT_SCHEMA_PREVIEW, "table": table,
                        "tableDescription": table_desc, "columns": cols}}
 
@@ -405,26 +384,29 @@ async def _execution(state: AgentState) -> AgentState:
     n = len((state.get("output") or {}).get("columns") or [])
     name = table or "table"
     msg = f"Created the table “{name}” with {n} column{'s' if n != 1 else ''}."
-    return {**state, "current_stage": StageType.DONE.value,
-            "output": {"type": OUTPUT_EXECUTION, "sql": sql, "message": msg}}
+    return {**state, "output": {"type": OUTPUT_EXECUTION, "sql": sql, "message": msg}}
 
 
 def _route_after_approval(state: AgentState) -> str:
-    stage = state.get("current_stage")
-    if stage == StageType.EXECUTION.value:
-        return "EXECUTION"
-    if stage == StageType.SCHEMA_PREVIEW.value:
-        return "APPROVAL"  # validation failed → re-open the editor (loop back to interrupt)
-    return StageType.DONE.value  # cancelled
+    # Route on semantic state, not a stage signal: approved → run the CREATE; cancelled → done;
+    # otherwise the node re-emitted the editor (validation/collision failed) → re-open it.
+    if state.get("approved"):
+        return StageType.EXECUTION.value
+    if (state.get("output") or {}).get("cancelled"):
+        return StageType.DONE.value
+    return StageType.APPROVAL.value
 
 
 def _route_after_execution(state: AgentState) -> str:
-    # DB error set the stage back to SCHEMA_PREVIEW → re-open the editor; otherwise done.
-    return "APPROVAL" if state.get("current_stage") == StageType.SCHEMA_PREVIEW.value else StageType.DONE.value
+    # _execution re-emits a schema_preview output ONLY when the DB rejected the CREATE → re-open
+    # the editor; a successful run emits execution_complete → done.
+    if (state.get("output") or {}).get("type") == OUTPUT_SCHEMA_PREVIEW:
+        return StageType.APPROVAL.value
+    return StageType.DONE.value
 
 
 async def _done(state: AgentState) -> AgentState:
-    return {**state, "current_stage": StageType.DONE.value}
+    return state  # terminal node: converge edges → END (no state change)
 
 
 class CreateTableWorkflow:
@@ -434,17 +416,19 @@ class CreateTableWorkflow:
     async def _compiled(self):
         if self._graph is None:
             g = StateGraph(AgentState)
-            g.add_node("SCHEMA_PREVIEW", _schema_preview)
-            g.add_node("APPROVAL", _approval)
-            g.add_node("EXECUTION", _execution)
+            g.add_node(StageType.SCHEMA_PREVIEW.value, _schema_preview)
+            g.add_node(StageType.APPROVAL.value, _approval)
+            g.add_node(StageType.EXECUTION.value, _execution)
             g.add_node(StageType.DONE.value, _done)
-            g.set_entry_point("SCHEMA_PREVIEW")
-            g.add_edge("SCHEMA_PREVIEW", "APPROVAL")
-            g.add_conditional_edges("APPROVAL", _route_after_approval,
-                                    {"EXECUTION": "EXECUTION", "APPROVAL": "APPROVAL",
+            g.set_entry_point(StageType.SCHEMA_PREVIEW.value)
+            g.add_edge(StageType.SCHEMA_PREVIEW.value, StageType.APPROVAL.value)
+            g.add_conditional_edges(StageType.APPROVAL.value, _route_after_approval,
+                                    {StageType.EXECUTION.value: StageType.EXECUTION.value,
+                                     StageType.APPROVAL.value: StageType.APPROVAL.value,
                                      StageType.DONE.value: StageType.DONE.value})
-            g.add_conditional_edges("EXECUTION", _route_after_execution,
-                                    {"APPROVAL": "APPROVAL", StageType.DONE.value: StageType.DONE.value})
+            g.add_conditional_edges(StageType.EXECUTION.value, _route_after_execution,
+                                    {StageType.APPROVAL.value: StageType.APPROVAL.value,
+                                     StageType.DONE.value: StageType.DONE.value})
             g.add_edge(StageType.DONE.value, END)
             self._graph = g.compile(checkpointer=await get_async_checkpointer())
         return self._graph
@@ -461,7 +445,7 @@ class CreateTableWorkflow:
         graph = await self._compiled()
         cfg = self._cfg(session_id)
         if resume is None:
-            await graph.ainvoke(create_initial_state(session_id, user_message, engine), cfg)
+            await graph.ainvoke(create_initial_state(user_message, engine), cfg)
         else:
             await graph.ainvoke(Command(resume=resume), cfg)
         snap = await graph.aget_state(cfg)
