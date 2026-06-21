@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import sqlglot
 from sqlglot import exp
@@ -50,7 +50,7 @@ def tier1_static(sql: str, engine: str = "sqlite") -> Tier1Result:
     return Tier1Result(ok=True, kind=kind, normalized=node.sql(dialect=_dialect(engine) or None))
 
 
-def _classify(node: exp.Expression) -> Kind:
+def _classify(node: Any) -> Kind: 
     if isinstance(node, (exp.Select, exp.Union, exp.With)):
         return "DQL"
     if isinstance(node, (exp.Insert, exp.Update, exp.Delete)):
