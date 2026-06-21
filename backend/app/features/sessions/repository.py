@@ -119,8 +119,10 @@ async def get_history(session_id: str, limit: int = 20) -> list[dict]:
     logger.info("→ get_history(session_id=%r limit=%r)", session_id, limit)  # autolog
     pool = get_pool()
     rows = await pool.fetch(
-        "SELECT role, content, tool_events FROM messages WHERE session_id=$1 "
-        "ORDER BY created_at ASC LIMIT $2",
+        "SELECT role, content, tool_events FROM ("
+        "  SELECT role, content, tool_events, created_at FROM messages "
+        "  WHERE session_id=$1 ORDER BY created_at DESC LIMIT $2"
+        ") t ORDER BY created_at ASC",
         session_id, limit,
     )
     out = []

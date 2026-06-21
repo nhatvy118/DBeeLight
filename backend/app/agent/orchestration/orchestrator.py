@@ -14,6 +14,7 @@ from app.agent.graph.create_table_workflow import CreateTableWorkflow
 from app.agent.graph.mutation_workflow import MutationWorkflow
 from app.agent.graph.readonly_workflow import ReadOnlyWorkflow
 from app.agent.loop import run_tool_loop
+from app.agent import summarization
 from app.agent.orchestration import intent as intent_mod
 from app.agent.orchestration import normalize as normalize_mod
 from app.agent.tools.backends import ExcelHttpBackend, InProcessBackend
@@ -113,12 +114,10 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not load excel-server tools (%s) — will retry on use.", e)
 
-    async def normalize(
-        self, user_message: str, history: list[dict] | None = None, summary: str = ""
-    ) -> str:
-        """Resolve references + translate to English → a standalone, route-agnostic
-        query. Run this BEFORE classify; pass the result to both classify and the route."""
-        return await normalize_mod.normalize(user_message, history or [], summary=summary)
+    async def normalize(self, user_message: str, history: list[dict] | None = None) -> str:
+        """Resolve references (against recent history) + translate to English → a standalone,
+        route-agnostic query. Run this BEFORE classify; pass the result to both."""
+        return await normalize_mod.normalize(user_message, history or [])
 
     async def classify(self, query: str) -> intent_mod.Intent:
         """Classify an already-normalized query (used for permission gating before running)."""
@@ -129,7 +128,6 @@ class Orchestrator:
         user_message: str,
         intent: intent_mod.Intent,
         history: list[dict] | None = None,
-        summary: str = "",
     ) -> ChatResult:
         """Execute the branch already chosen by `intent` (classified once by the caller).
 
@@ -137,10 +135,6 @@ class Orchestrator:
         """
         history = history or []
         engine = get_db().engine
-
-        def _sp(base: str) -> str:
-            return f"[Previous conversation summary]\n{summary}\n\n{base}" if summary else base
-
         route = intent.route or "db_general"
 
         if route in ("db_mutation", "db_create_table"):
@@ -163,6 +157,15 @@ class Orchestrator:
             return ChatResult(response=str(out.get("message") or ""), route=route,
                               tool_events=_events_from_output(out))
 
+        # Only the agentic tool-loop routes below use conversation memory → summarize LAZILY
+        # here (the summary LLM call only fires for long convos AND only when actually needed;
+        # SQL workflows above never pay it).
+        summary, recent = await summarization.summarize(history)
+
+        def _sp(base: str) -> str:
+            return f"[Previous conversation summary]\n{summary}\n\n{base}" if summary else base
+
+        history = recent
         if route == "excel":
             if not self.excel_backend.list_tools_openai():
                 await self.excel_backend.refresh()

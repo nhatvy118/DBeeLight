@@ -46,8 +46,8 @@ async def summarize(history: list[dict]) -> tuple[str, list[dict]]:
             model=get_settings().llm_model,
             messages=[
                 {"role": "system", "content": (
-                    "Briefly summarize the database-related conversation below, keeping the "
-                    "important tables/columns/conditions/intent so later turns retain context."
+                    "Briefly summarize the conversation below, keeping the "
+                    "important content as well as tables/columns/conditions/intent so later turns retain context."
                 )},
                 {"role": "user", "content": convo},
             ],

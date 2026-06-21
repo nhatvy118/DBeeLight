@@ -124,21 +124,6 @@ export default function Header({ onMenuClick }: HeaderProps) {
     return () => document.removeEventListener('mousedown', onClick);
   }, [exportMenuOpen]);
 
-  const handleExportMarkdown = async () => {
-    const sessionId = currentSessionFromUrl();
-    if (!sessionId) {
-      toast.warning('Open a chat session before exporting.');
-      return;
-    }
-    setExportMenuOpen(false);
-    try {
-      const { downloadSessionMarkdown } = await import('../../services/api');
-      await downloadSessionMarkdown(sessionId);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to export');
-    }
-  };
-
   const handleExportPdf = () => {
     const sessionId = currentSessionFromUrl();
     if (!sessionId) {
@@ -286,7 +271,6 @@ export default function Header({ onMenuClick }: HeaderProps) {
                   style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', width: 232, borderRadius: 'var(--r)', padding: 7, zIndex: 50, transformOrigin: 'top right' }}
                   role="menu"
                 >
-                  {menuItem(<Icons.Download size={18} />, 'Download Markdown', handleExportMarkdown)}
                   {menuItem(<Icons.Export size={18} />, 'Save as PDF', handleExportPdf)}
                 </div>
               )}

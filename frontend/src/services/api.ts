@@ -271,36 +271,6 @@ export async function getMessages(
   return (await response.json()) as MessagesPage;
 }
 
-/**
- * Download the session as a Markdown file. Triggers a browser save dialog
- * via a synthesized link click — no API client state, just file pipe.
- */
-export async function downloadSessionMarkdown(sessionId: string): Promise<void> {
-  const response = await fetch(
-    url(`/api/sessions/${encodeURIComponent(sessionId)}/export.md`),
-    { credentials: 'include' },
-  );
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error((data as any).detail || 'Failed to export session');
-  }
-
-  // Filename hint: prefer Content-Disposition; fall back to ``chat.md``.
-  const disposition = response.headers.get('Content-Disposition') || '';
-  const match = disposition.match(/filename="?([^"]+)"?/);
-  const filename = match ? match[1] : 'chat.md';
-
-  const blob = await response.blob();
-  const objectUrl = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = objectUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  window.URL.revokeObjectURL(objectUrl);
-  a.remove();
-}
-
 export async function healthCheck(): Promise<HealthResponse> {
   const response = await fetch(url('/api/health'), { method: 'GET', credentials: 'include' });
   if (!response.ok) throw new Error('Health check failed');

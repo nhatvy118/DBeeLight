@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from app.agent import summarization, titling
+from app.agent import titling
 from app.agent.context import DbContext, RequestContext, reset_ctx, set_ctx
 from app.agent.orchestration import get_orchestrator
 from app.agent.orchestration.orchestrator import ChatResult
@@ -156,12 +156,11 @@ async def handle(
     is_first_message = not history  
     orch = get_orchestrator()
 
-    # (summary) — not just the last few verbatim turns.
-    summary, recent = await summarization.summarize(history)
-
     # Normalize the turn once (resolve references + English) → one standalone query used
-    # by BOTH the classifier and every downstream route.
-    normalized = await orch.normalize(message, recent, summary=summary)
+    # by BOTH the classifier and every downstream route. Uses raw recent history; the
+    # (expensive) running summary is computed lazily inside process_query, only for the
+    # tool-loop routes that actually need conversation memory.
+    normalized = await orch.normalize(message, history)
 
     # Gating: for share recipients (not owner-edit), check the route access_level.
     intent = await orch.classify(normalized)
@@ -185,7 +184,7 @@ async def handle(
         ctx = await _build_ctx(user_id, session_id, access, active_file_ids)
         token = set_ctx(ctx)
         try:
-            result = await orch.process_query(normalized, intent=intent, history=recent, summary=summary)
+            result = await orch.process_query(normalized, intent=intent, history=history)
         finally:
             reset_ctx(token)
             await _dispose_ctx(ctx)

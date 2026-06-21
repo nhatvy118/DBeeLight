@@ -74,16 +74,3 @@ async def delete(session_id: str, user_id: str = Depends(get_current_user_id)):
     return {"success": True}
 
 
-@router.get("/api/sessions/{session_id}/export.md")
-async def export_md(session_id: str, user_id: str = Depends(get_current_user_id)):
-    from fastapi.responses import Response
-    s = await repo.get_session(session_id, user_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found")
-    lines = [f"# {s['title']}\n"]
-    for m in await repo.get_history(session_id):
-        who = "User" if m["role"] == "user" else "Assistant"
-        lines.append(f"## {who}\n\n{m['content']}\n")
-    md = "\n".join(lines)
-    return Response(content=md, media_type="text/markdown",
-                    headers={"Content-Disposition": f'attachment; filename="{session_id}.md"'})
