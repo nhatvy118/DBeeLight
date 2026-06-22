@@ -12,6 +12,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 
+def _json_cell(v: object) -> object:
+    """Coerce a DB cell to a JSON-serializable value. Native JSON types pass through; everything
+    else (Decimal, datetime/date, UUID, bytes, …) becomes its str() — so the structured result
+    can be json.dumps'd into tool_events/the API response without a serialization error."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    return str(v)
+
+
 @dataclass
 class QueryResult:
     columns: list[str]
@@ -21,7 +30,7 @@ class QueryResult:
     def to_dict(self) -> dict:
         return {
             "columns": self.columns,
-            "rows": [list(r) for r in self.rows],
+            "rows": [[_json_cell(v) for v in r] for r in self.rows],
             "rowcount": self.rowcount,
         }
 
