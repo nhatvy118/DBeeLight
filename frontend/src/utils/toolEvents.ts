@@ -21,6 +21,7 @@ export type SqlPreviewData = {
   explain?: string;
   type_sql?: string;
   mutationPreviewMarkdown?: string | null;
+  actionId?: string;
 };
 
 export type SessionFileAttachment = { name: string; fileId?: string };
@@ -61,12 +62,8 @@ export function readSqlPreview(events?: ToolEvent[]): SqlPreviewData | null {
   const type_sql = str(p.type_sql);
   const mutationPreviewMarkdown =
     firstStr(p, 'mutation_preview_markdown', 'mutationPreviewMarkdown') ?? null;
-  return { sql, explain, type_sql, mutationPreviewMarkdown };
-}
-
-/** True once the SQL has actually run (server emits a `sql_execution` event). */
-export function isSqlExecuted(events?: ToolEvent[]): boolean {
-  return Array.isArray(events) && events.some((e) => e?.type === 'sql_execution');
+  const actionId = firstStr(p, 'actionId', 'action_id');
+  return { sql, explain, type_sql, mutationPreviewMarkdown, actionId };
 }
 
 // ------------------------------------------------------------- schema preview
@@ -81,6 +78,7 @@ export function readSchemaPreview(events?: ToolEvent[]): SchemaPreviewData | nul
   const tableName = firstStr(p, 'tableName', 'table_name');
   const tableDescription = firstStr(p, 'tableDescription', 'table_description') ?? '';
   const primaryKey = firstStr(p, 'primaryKey', 'primary_key') ?? null;
+  const actionId = firstStr(p, 'actionId', 'action_id');
   const columnsRaw = Array.isArray(p.columns) ? (p.columns as Record<string, unknown>[]) : [];
   const columns = columnsRaw
     .map((c) => ({
@@ -97,7 +95,7 @@ export function readSchemaPreview(events?: ToolEvent[]): SchemaPreviewData | nul
     }))
     .filter((c): c is typeof c & { variable: string; type: string } => !!c.variable && !!c.type);
   if (!tableName || columns.length === 0) return null;
-  return { tableName, tableDescription, primaryKey, columns };
+  return { tableName, tableDescription, primaryKey, columns, actionId };
 }
 
 // --------------------------------------------------------------- file export

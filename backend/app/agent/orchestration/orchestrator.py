@@ -33,6 +33,23 @@ class ChatResult:
     pending_sql: str | None = None
     needs_clarification: bool = False
     tool_events: list[dict] = field(default_factory=list)
+    action_id: str | None = None        # gated-action UUID (create_table / mutation)
+    action_state: str | None = None     # 'pending' | 'executed' | 'cancelled' | 'failed'
+
+
+def _action_state_from_output(out: dict) -> str | None:
+    """Lifecycle state of a gated action, derived from the workflow output type. The service
+    persists this to sql_actions so the FE reads action state from ONE source (the table)."""
+    t = out.get("type")
+    if t == "schema_preview":
+        return "cancelled" if out.get("cancelled") else "pending"
+    if t == "sql_statement":
+        return "pending"
+    if t == "execution_complete":
+        return "executed"
+    if t == "error" and out.get("sql"):
+        return "failed"
+    return None
 
 
 def _events_from_output(out: dict) -> list[dict]:
@@ -44,14 +61,16 @@ def _events_from_output(out: dict) -> list[dict]:
         return [{
             "tool": "execute_query",
             "type": "sql_preview",
-            "payload": {"sql": out["sql"], "type_sql": out.get("sql_kind") or "DML"},
+            "payload": {"sql": out["sql"], "type_sql": out.get("sql_kind") or "DML",
+                        "actionId": out.get("action_id")},
         }]
     # Statement that actually ran → 'sql_execution' (green "Query executed").
     if t == "execution_complete" and out.get("sql"):
         return [{
             "tool": "execute_query",
             "type": "sql_execution",
-            "payload": {"sql": out["sql"], "result": out.get("message", "")},
+            "payload": {"sql": out["sql"], "result": out.get("message", ""),
+                        "actionId": out.get("action_id")},
         }]
     # read-only SELECT → structured result the FE renders as a table (server renders NOTHING).
     if t == "query_result":
@@ -70,6 +89,7 @@ def _events_from_output(out: dict) -> list[dict]:
             "tool": "show_create_table_schema",
             "type": "schema_preview",
             "payload": {
+                "actionId": out.get("action_id"),
                 "tableName": out.get("table") or "",
                 "tableDescription": out.get("tableDescription") or "",
                 "primaryKey": pk,
@@ -157,6 +177,8 @@ class Orchestrator:
                 route=route,
                 requires_approval=pending,
                 tool_events=_events_from_output(out),
+                action_id=out.get("action_id"),
+                action_state=_action_state_from_output(out),
             )
 
         if route == "db_readonly":
@@ -227,6 +249,8 @@ class Orchestrator:
             route=route,
             requires_approval=pending,
             tool_events=_events_from_output(out),
+            action_id=out.get("action_id"),
+            action_state=_action_state_from_output(out),
         )
 
 

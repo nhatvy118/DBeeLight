@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from typing import cast
 
 from langchain_core.runnables import RunnableConfig
@@ -284,8 +285,9 @@ async def _schema_preview(state: AgentState) -> AgentState:
     # collisions, empty columns, and invalid SQL are all checked at approval, AFTER the
     # user has finalized the schema in the editor (see _approval).
     body = "Review the columns and descriptions below, then create the table."
-    return {**state,
-            "output": {"type": OUTPUT_SCHEMA_PREVIEW, "message": body,
+    action_id = state.get("action_id") or str(uuid.uuid4())  # stable across reopen via state
+    return {**state, "action_id": action_id,
+            "output": {"type": OUTPUT_SCHEMA_PREVIEW, "message": body, "action_id": action_id,
                        "table": str(spec.get("table") or "").strip(),
                        "tableDescription": str(spec.get("tableDescription") or "").strip(),
                        "columns": spec.get("columns") or []}}
@@ -298,7 +300,7 @@ def _reopen_editor(state: AgentState, message: str, *, table: object = None,
     re-submits, never having to start over. Keeps their columns (passed in, or the last shown)."""
     out = state.get("output") or {}
     return {**state, "approved": False,
-            "output": {"type": OUTPUT_SCHEMA_PREVIEW, "message": message,
+            "output": {"type": OUTPUT_SCHEMA_PREVIEW, "message": message, "action_id": state.get("action_id"),
                        "table": table if table is not None else (out.get("table") or ""),
                        "tableDescription": table_description if table_description is not None else (out.get("tableDescription") or ""),
                        "columns": columns if columns is not None else (out.get("columns") or [])}}
@@ -309,7 +311,8 @@ async def _approval(state: AgentState) -> AgentState:
     decision = decision or {}
     if not decision.get("approved"):
         return {**state, "approved": False,
-                "output": {**(state.get("output") or {}), "message": "Table creation cancelled.", "cancelled": True}}
+                "output": {**(state.get("output") or {}), "action_id": state.get("action_id"),
+                           "message": "Table creation cancelled.", "cancelled": True}}
 
     # The user approved — the SQL is (re)built + (re)verified from the schema they finalized in the editor.
     edited = decision.get("schema") or {}
@@ -337,7 +340,7 @@ async def _approval(state: AgentState) -> AgentState:
         return _reopen_editor(state, f"That schema isn’t valid: {dbtools.clean_db_error(t1.error or t1.kind)}.",
                               table=table, table_description=table_desc, columns=cols)
     return {**state, "approved": True, "sql": sql,
-            "output": {"type": OUTPUT_SCHEMA_PREVIEW, "table": table,
+            "output": {"type": OUTPUT_SCHEMA_PREVIEW, "table": table, "action_id": state.get("action_id"),
                        "tableDescription": table_desc, "columns": cols}}
 
 
@@ -384,7 +387,8 @@ async def _execution(state: AgentState) -> AgentState:
     n = len((state.get("output") or {}).get("columns") or [])
     name = table or "table"
     msg = f"Created the table “{name}” with {n} column{'s' if n != 1 else ''}."
-    return {**state, "output": {"type": OUTPUT_EXECUTION, "sql": sql, "message": msg}}
+    return {**state, "output": {"type": OUTPUT_EXECUTION, "sql": sql, "message": msg,
+                                "action_id": state.get("action_id")}}
 
 
 def _route_after_approval(state: AgentState) -> str:

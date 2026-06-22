@@ -94,6 +94,7 @@ export type SchemaPreviewData = {
   tableDescription?: string;
   primaryKey?: string | null;
   columns: SchemaPreviewColumn[];
+  actionId?: string;
 };
 
 export type UiAttachment = {
@@ -115,6 +116,8 @@ export type UiMessage = {
   exportToExcel?: ExportData | null;
   schemaPreview?: SchemaPreviewData | null;
   schemaLocked?: boolean;
+  /** Locked because the action was cancelled (vs confirmed/created) — drives the header label. */
+  schemaCancelled?: boolean;
   /** Assistant message is waiting on LangGraph ``interrupt()`` (schema or SQL gate). */
   workflowResumePending?: boolean;
   /** Vega-Lite chart spec JSON strings emitted by the chart agent (from tool_events).
@@ -311,6 +314,7 @@ export default function MessageList({
           {!msg.isUser && msg.schemaPreview && (() => {
             const sp = msg.schemaPreview;
             const locked = !!msg.schemaLocked;
+            const cancelled = !!msg.schemaCancelled;   // locked, but it was cancelled (not created)
             // Progress meter: the table description + every column description must be filled.
             const total = sp.columns.length + 1;
             const done = sp.columns.filter((c) => (c.description || '').trim()).length + ((sp.tableDescription || '').trim() ? 1 : 0);
@@ -323,12 +327,12 @@ export default function MessageList({
             const nameOk = !tableNameReserved && !anyColNameReserved;
 
             return (
-            <div className="card" style={{ overflow: 'hidden', marginTop: 14, marginBottom: 8, borderColor: locked ? 'var(--green-soft)' : 'var(--border)' }}>
+            <div className="card" style={{ overflow: 'hidden', marginTop: 14, marginBottom: 8, borderColor: locked && !cancelled ? 'var(--green-soft)' : 'var(--border)' }}>
               {/* Header — title + editable table name */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '11px 16px', borderBottom: '1px solid var(--border)', background: locked ? 'var(--green-soft)' : 'var(--surface-2)' }}>
-                {locked ? <Icons.Check size={16} style={{ color: 'var(--green-ink)' }} /> : <Icons.Table size={16} style={{ color: 'var(--text-soft)' }} />}
-                <span style={{ fontSize: 13.5, fontWeight: 700, color: locked ? 'var(--green-ink)' : 'var(--text)' }}>
-                  {locked ? 'Schema confirmed' : 'Proposed table'}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '11px 16px', borderBottom: '1px solid var(--border)', background: locked && !cancelled ? 'var(--green-soft)' : 'var(--surface-2)' }}>
+                {cancelled ? <Icons.Close size={16} style={{ color: 'var(--text-muted)' }} /> : locked ? <Icons.Check size={16} style={{ color: 'var(--green-ink)' }} /> : <Icons.Table size={16} style={{ color: 'var(--text-soft)' }} />}
+                <span style={{ fontSize: 13.5, fontWeight: 700, color: cancelled ? 'var(--text-muted)' : locked ? 'var(--green-ink)' : 'var(--text)' }}>
+                  {cancelled ? 'Schema cancelled' : locked ? 'Schema confirmed' : 'Proposed table'}
                 </span>
                 {locked ? (
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-soft)', background: 'var(--surface)', padding: '2px 8px', borderRadius: 6, border: '1px solid var(--border)' }}>
@@ -625,7 +629,7 @@ export default function MessageList({
                   style={{ padding: '9px 18px', fontSize: 13.5, opacity: (locked || isLastTyping || !allDone || !nameOk) ? 0.7 : 1 }}
                 >
                   <Icons.Check size={15} />
-                  {locked ? 'Schema confirmed' : 'Confirm & create table'}
+                  {cancelled ? 'Cancelled' : locked ? 'Schema confirmed' : 'Confirm & create table'}
                 </button>
               </div>
             </div>

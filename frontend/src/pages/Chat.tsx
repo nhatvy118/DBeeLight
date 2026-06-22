@@ -29,7 +29,6 @@ import {
 } from '../services/api';
 import {
   readSqlPreview,
-  isSqlExecuted,
   readSchemaPreview,
   readFileExport,
   readSessionFiles,
@@ -170,28 +169,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const isLoadingOlderRef = useRef(false);
   const skipAutoScrollRef = useRef(false);  // set when prepending older msgs, so we don't jump to bottom
 
-  const hashString = (input: string): string => {
-    let hash = 0;
-    for (let i = 0; i < input.length; i += 1) {
-      hash = ((hash << 5) - hash + input.charCodeAt(i)) | 0;
-    }
-    return Math.abs(hash).toString(36);
-  };
-
-  const buildSqlActionId = (
-    sid: string | null,
-    _messageContent: string,
-    sqlText: string,
-    sqlOrdinal: number,
-  ): string => {
-    // Stable across live send and history reload: keyed on session + the SQL's ordinal
-    // among the session's gated statements + the SQL itself. We deliberately do NOT hash
-    // the message text (it differs slightly live vs reloaded) so the executed/cancelled
-    // state recorded on the server matches on reload.
-    const base = `${sid ?? 'nosession'}|${sqlOrdinal}|${sqlText}`;
-    return `sqlact_${hashString(base)}`;
-  };
-
   const isDqlStatement = (typeSql?: string) => (typeSql ?? '').trim().toUpperCase() === 'DQL';
 
   const pendingWorkflowResumeFromMessage = (msg: { pending_workflow_resume?: boolean }) =>
@@ -201,9 +178,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     events: ToolEvent[] | undefined,
     _pendingWorkflowResume: boolean,
   ): { sqlToExecute: string | null; sqlActionState: 'pending' | 'executed' | undefined } => {
-    if (isSqlExecuted(events)) {
-      return { sqlToExecute: null, sqlActionState: 'executed' };
-    }
+    // 'executed'/'cancelled' come ONLY from the sql_actions state map (single source of truth),
+    // applied over this base in convertMessages — not re-derived from a tool_event here.
     const payload = readSqlPreview(events);
     if (!payload?.sql) {
       return { sqlToExecute: null, sqlActionState: undefined };
@@ -239,28 +215,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return parts.join('\n\n').trim();
   };
 
-  const SCHEMA_CONFIRM_USER_RE = /^Confirm schema table /i;
-
-  /** Locked only after the user explicitly confirmed schema in chat history. */
-  const deriveSchemaLockedFromHistory = (
-    rawMessages: SessionMessage[],
-    assistantIndex: number,
-  ): boolean => {
-    for (let i = assistantIndex + 1; i < rawMessages.length; i += 1) {
-      const m = rawMessages[i];
-      if (m.role === 'user' && SCHEMA_CONFIRM_USER_RE.test((m.content || '').trim())) {
-        return true;
-      }
-      if (m.role === 'assistant') {
-        const text = m.content || '';
-        if (/```\s*sql[\s\S]*CREATE\s+TABLE/i.test(text)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  };
-
   const getDbInfoFromSessionResponse = (
     res: GetSessionResponse,
   ): { has_db: boolean; db_kind: 'project' | 'external' | null; db_label: string | null } | null => {
@@ -291,7 +245,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     sid: string,
     sqlActionStates: Record<string, 'pending' | 'running' | 'executed' | 'failed' | 'cancelled'>,
   ): UiMessage[] => {
-    let sqlOrdinal = 0;
     const filteredMessages = raw.filter((msg) => msg.role === 'user' || msg.role === 'assistant');
     return filteredMessages
       .map((msg, msgIndex) => {
@@ -307,8 +260,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             ? resolveSqlExecuteAction(msg.tool_events, pendingWorkflowResumeFromMessage(msg))
             : { sqlToExecute: null, sqlActionState: undefined };
         const sqlToExecute = sqlAction.sqlToExecute;
-        const sqlActionId = sqlToExecute ? buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++) : undefined;
+        // Single source of truth: the action id comes from the server (in the sql_preview event),
+        // never re-derived on the client. State is read from sql_actions by that id.
+        const sqlActionId = sqlPreview?.actionId;
         const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
+        const schemaActionState = schemaPreview?.actionId ? sqlActionStates[schemaPreview.actionId] : undefined;
         return {
           text: msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
           isUser: msg.role === 'user',
@@ -322,10 +278,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           charts: msg.role === 'assistant' ? readCharts(msg.tool_events) : undefined,
           queryResult: msg.role === 'assistant' ? readQueryResult(msg.tool_events) : null,
           schemaPreview,
+          // Single source of truth: the schema editor locks once its action state (in sql_actions,
+          // keyed by the server action_id) reaches a TERMINAL state — executed or cancelled.
           schemaLocked:
-            msg.role === 'assistant' && schemaPreview
-              ? deriveSchemaLockedFromHistory(filteredMessages, msgIndex)
+            msg.role === 'assistant' && schemaPreview?.actionId
+              ? schemaActionState === 'executed' || schemaActionState === 'cancelled'
               : undefined,
+          schemaCancelled:
+            msg.role === 'assistant' && schemaActionState === 'cancelled',
         };
       })
       .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.charts && m.charts.length > 0) || (m.attachments && m.attachments.length > 0));
@@ -1095,18 +1055,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       return;
     }
 
-    setMessages((prev) => [
-      ...prev,
-      { text: `Confirm schema table ${schema.tableName}`, isUser: true },
-    ]);
-
     setIsSending(true);
     try {
       const res = await resumeWorkflow(
         sessionId,
         true,
         selectedProject?.id || null,
-        `Confirm schema table ${schema.tableName}`,
         schema,  // user-edited columns/types/constraints/table name → server rebuilds the SQL
       );
       if (res.success) {
@@ -1171,14 +1125,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     setIsSending(true);
     try {
-      const fallbackActionId =
-        msg.sqlActionId || buildSqlActionId(
-          sessionId,
-          msg.text,
-          msg.sqlToExecute,
-          Math.max(0, messages.slice(0, aiIndex + 1).filter((m) => !!m.sqlToExecute).length - 1),
-        );
-      const res = await executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, false, null);
+      const res = await executeSql(msg.sqlToExecute, msg.sqlActionId ?? null, sessionId, selectedProject?.id || null, false, null);
       if (res.success) {
         const resText = res.response ?? '';
         const cleanedRaw = (resText ?? '').trim();
@@ -1282,14 +1229,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       updated[aiIndex] = { ...msg, sqlActionState: 'cancelled' };
       return updated;
     });
-    const fallbackActionId =
-      msg.sqlActionId || buildSqlActionId(
-        sessionId,
-        msg.text,
-        msg.sqlToExecute,
-        Math.max(0, messages.slice(0, aiIndex + 1).filter((m) => !!m.sqlToExecute).length - 1),
-      );
-    void executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, true, 'cancelled');
+    void executeSql(msg.sqlToExecute, msg.sqlActionId ?? null, sessionId, selectedProject?.id || null, true, 'cancelled');
   };
 
   // When switching to a *different* project: save current session for the project we're leaving, then clear UI.

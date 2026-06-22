@@ -191,6 +191,8 @@ async def handle(
 
     await sess_repo.add_message(session_id, "user", message)
     await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
+    if result.action_id and result.action_state:
+        await sess_repo.set_sql_action(session_id, result.action_id, result.action_state)
 
     # Auto-name the session from its first user message (best-effort, never fatal).
     if is_first_message:
@@ -219,4 +221,6 @@ async def approve(
         reset_ctx(token)
         await _dispose_ctx(ctx)
     await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
+    if result.action_id and result.action_state:
+        await sess_repo.set_sql_action(session_id, result.action_id, result.action_state)
     return result

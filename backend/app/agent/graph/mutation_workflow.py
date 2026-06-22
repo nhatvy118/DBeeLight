@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from typing import cast
 
 from langchain_core.runnables import RunnableConfig
@@ -47,9 +48,10 @@ async def _sql_preview(state: AgentState) -> AgentState:
 
     preview = await _preview(sql)
     body = f"```sql\n{sql}\n```\n\n{preview}\n\n_Click Execute to run._"
+    action_id = state.get("action_id") or str(uuid.uuid4())
     return {
-        **state, "sql": sql,
-        "output": {"type": OUTPUT_SQL_STATEMENT, "executed": False, "sql": sql,
+        **state, "sql": sql, "action_id": action_id,
+        "output": {"type": OUTPUT_SQL_STATEMENT, "executed": False, "sql": sql, "action_id": action_id,
                    "message": body, "sql_kind": kind},
     }
 
@@ -78,7 +80,8 @@ async def _approval(state: AgentState) -> AgentState:
     ok = interrupt({"stage": StageType.SQL_PREVIEW.value, "output": state.get("output")})
     if not ok:
         return {**state, "approved": False,
-                "output": {**(state.get("output") or {}), "message": "SQL execution cancelled.", "cancelled": True}}
+                "output": {**(state.get("output") or {}), "action_id": state.get("action_id"),
+                           "message": "SQL execution cancelled.", "cancelled": True}}
     return {**state, "approved": True}
 
 
@@ -89,9 +92,9 @@ async def _execution(state: AgentState) -> AgentState:
     try:
         res = await dbtools.run(sql)
         msg = f"Executed successfully. ({res.rowcount} rows affected)"
-        out = {"type": OUTPUT_EXECUTION, "sql": sql, "message": msg}
+        out = {"type": OUTPUT_EXECUTION, "sql": sql, "message": msg, "action_id": state.get("action_id")}
     except Exception as e:  # noqa: BLE001
-        out = {"type": OUTPUT_ERROR, "sql": sql,
+        out = {"type": OUTPUT_ERROR, "sql": sql, "action_id": state.get("action_id"),
                "message": f"The SQL couldn’t run: {dbtools.clean_db_error(str(e))}."}
     return {**state, "output": out}
 

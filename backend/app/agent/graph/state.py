@@ -32,6 +32,7 @@ class AgentState(TypedDict, total=False):
     schema_text: str            # enriched schema text, set by SCHEMA_DISCOVERY for the SQL generator
     sql: str | None
     approved: bool
+    action_id: str              # stable UUID for the gated action (survives interrupt via checkpoint)
     output: dict[str, Any]
 
 
