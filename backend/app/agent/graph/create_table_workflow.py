@@ -17,7 +17,6 @@ from langgraph.types import Command, interrupt
 
 from app.agent.graph import dbtools
 from app.agent.graph.checkpointer import get_async_checkpointer
-from app.agent.graph.dbtools import tier1_static
 from app.agent.graph.stages import StageCb, stream_stages
 from app.features.metadata import repository as metadata_repo
 from app.features.metadata.scope import resolve_scope
@@ -336,10 +335,6 @@ async def _approval(state: AgentState) -> AgentState:
     except ValueError as e:  # defense-in-depth; _validate_schema should have caught it
         return _reopen_editor(state, f"That schema isn’t valid: {e}.", table=table,
                               table_description=table_desc, columns=cols)
-    t1 = tier1_static(sql, engine)
-    if not t1.ok or t1.kind != "DDL":
-        return _reopen_editor(state, f"That schema isn’t valid: {dbtools.clean_db_error(t1.error or t1.kind)}.",
-                              table=table, table_description=table_desc, columns=cols)
     return {**state, "approved": True, "sql": sql,
             "output": {"type": OUTPUT_SCHEMA_PREVIEW, "table": table, "action_id": state.get("action_id"),
                        "tableDescription": table_desc, "columns": cols}}

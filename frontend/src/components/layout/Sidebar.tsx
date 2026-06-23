@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import {
@@ -312,7 +312,18 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
     return () => { cancelled = true; };
   }, [user]);
 
-  const fetchSessions = async () => {
+  // De-dupe rapid calls. On startup the Sidebar mounts more than once (showSidebar flips
+  // false→true as path / user / isLoading settle, plus StrictMode double-invokes effects), so
+  // the mount fetch can fire a burst. We skip a fetch that's already in flight, and collapse the
+  // startup burst with a short throttle. Event-driven refreshes (after a real change) pass
+  // force=true to bypass the throttle.
+  const fetchInFlightRef = useRef(false);
+  const lastFetchAtRef = useRef(0);
+
+  const fetchSessions = async (opts?: { force?: boolean }) => {
+    if (fetchInFlightRef.current) return;  // never two at once
+    if (!opts?.force && Date.now() - lastFetchAtRef.current < 1000) return;  // collapse the burst
+    fetchInFlightRef.current = true;
     try {
       setIsLoading(true);
       // Only fetch unassigned sessions (sessions where project_id IS NULL)
@@ -323,6 +334,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
     } catch (err) {
       console.error('Failed to fetch sessions:', err);
     } finally {
+      lastFetchAtRef.current = Date.now();
+      fetchInFlightRef.current = false;
       setIsLoading(false);
     }
   };
@@ -352,8 +365,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
   // Listen for changes in projectSessions to update the display
   useEffect(() => {
     const handleStorageChange = () => {
-      // Force re-render by fetching sessions again
-      void fetchSessions();
+      // A real change happened elsewhere → always refetch (bypass the startup throttle).
+      void fetchSessions({ force: true });
     };
 
     window.addEventListener('storage', handleStorageChange);

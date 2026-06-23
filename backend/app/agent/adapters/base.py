@@ -8,8 +8,54 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from sqlalchemy import text
+import sqlglot
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+_SQLGLOT_DIALECT = {"sqlite": "sqlite", "postgresql": "postgres"}
+
+
+def _enable_sqlite_transactional_ddl(engine: AsyncEngine) -> None:
+    """Make SQLite honour transactions for DDL too (so a multi-statement batch is all-or-nothing).
+
+    The pysqlite/aiosqlite driver, left at its default isolation level, silently COMMITs before
+    every DDL statement — so an ALTER inside a failed batch would NOT roll back. The fix
+    (SQLAlchemy's documented recipe) is to disable the driver's implicit transaction handling and
+    emit BEGIN ourselves, which restores proper transactional DDL. SQLite only — Postgres DDL is
+    already transactional.
+    """
+    sync_engine = engine.sync_engine
+
+    @event.listens_for(sync_engine, "connect")
+    def _disable_pysqlite_autobegin(dbapi_connection, _record):  # noqa: ANN001
+        dbapi_connection.isolation_level = None  # stop implicit BEGIN + COMMIT-before-DDL
+
+    @event.listens_for(sync_engine, "begin")
+    def _emit_begin(conn):  # noqa: ANN001
+        conn.exec_driver_sql("BEGIN")
+
+
+def split_statements(sql: str, engine: str) -> list[str]:
+    """Split SQL into individual statements to run in one transaction.
+
+    Fast path: no `;` in the body → a single statement, returned verbatim (no parsing, no
+    re-rendering — keeps PRAGMA/EXPLAIN and every read query byte-identical). Only when there is
+    an inner `;` do we parse with sqlglot to split safely (a `;` inside a string literal stays
+    one statement). Unparseable SQL is returned as-is for the DB to reject.
+    """
+    raw = (sql or "").strip().rstrip(";")
+    if not raw:
+        return []
+    if ";" not in raw:
+        return [raw]
+    dialect = _SQLGLOT_DIALECT.get(engine) or None
+    try:
+        parts = [s for s in sqlglot.parse(raw, read=dialect) if s is not None]
+    except Exception:  # noqa: BLE001 — let the DB surface the real error
+        return [raw]
+    if len(parts) <= 1:
+        return [raw]
+    return [p.sql(dialect=dialect) for p in parts]
 
 
 def _json_cell(v: object) -> object:
@@ -52,6 +98,8 @@ class DatabaseAdapter(ABC):
     def __init__(self, sqlalchemy_url: str, allowed_tables: frozenset[str] | None = None):
         self._engine: AsyncEngine = create_async_engine(sqlalchemy_url, pool_pre_ping=True)
         self.allowed_tables = allowed_tables
+        if self._engine.dialect.name == "sqlite":
+            _enable_sqlite_transactional_ddl(self._engine)
 
     async def dispose(self) -> None:
         await self._engine.dispose()
@@ -62,14 +110,28 @@ class DatabaseAdapter(ABC):
         return True
 
     async def execute(self, sql: str, params: dict | None = None) -> QueryResult:
-        """Run any SQL. SELECT → returns rows; otherwise → rowcount."""
+        """Run SQL in ONE transaction (all-or-nothing). Handles one OR several statements — a
+        single statement runs verbatim; multiple (e.g. SQLite needs one ALTER per column) are
+        split and run in order.
+
+        Returns the rows of the LAST statement that returned any (for SELECT), and `rowcount` =
+        the TOTAL affected across all statements — so a 10-row multi-INSERT reports 10, not the
+        last statement's 1."""
+        statements = split_statements(sql, self.engine_name)
+        columns: list[str] = []
+        rows: list[tuple] = []
+        total_rowcount = 0
         async with self._engine.begin() as conn:
-            result = await conn.execute(text(sql), params or {})
-            if result.returns_rows:
-                rows = result.fetchall()
-                cols = list(result.keys())
-                return QueryResult(columns=cols, rows=[tuple(r) for r in rows], rowcount=len(rows))
-            return QueryResult(columns=[], rows=[], rowcount=result.rowcount or 0)
+            for stmt in statements:
+                result = await conn.execute(text(stmt), params or {})
+                if result.returns_rows:
+                    fetched = result.fetchall()
+                    columns = list(result.keys())
+                    rows = [tuple(r) for r in fetched]
+                    total_rowcount += len(fetched)
+                else:
+                    total_rowcount += result.rowcount or 0
+        return QueryResult(columns=columns, rows=rows, rowcount=total_rowcount)
 
     async def import_dataframe(self, table_name: str, df, if_exists: str = "replace") -> None:
         """Write a pandas DataFrame as a table. Works across engines (SQLite/Postgres):

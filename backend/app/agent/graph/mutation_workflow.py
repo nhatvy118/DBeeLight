@@ -8,13 +8,14 @@ Flow: SCHEMA_DISCOVERY → SQL_PREVIEW → APPROVAL(interrupt) → EXECUTION →
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from typing import cast
 
+import sqlglot
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
+from sqlglot import exp
 
 from app.agent.graph import dbtools
 from app.agent.graph.checkpointer import get_async_checkpointer
@@ -47,33 +48,46 @@ async def _sql_preview(state: AgentState) -> AgentState:
         return {**state, "sql": None,
                 "output": {"type": OUTPUT_ERROR, "message": f"Could not generate valid SQL.\n{err}"}}
 
-    preview = await _preview(sql)
-    body = f"```sql\n{sql}\n```\n\n{preview}\n\n_Click Execute to run._"
+    # Ship the SQL + structured affected-rows preview as DATA; the FE renders both (same as the
+    # query_result path). The server does NOT format a table here.
+    preview = await _affected_rows(sql, engine)
     action_id = state.get("action_id") or str(uuid.uuid4())
     return {
         **state, "sql": sql, "action_id": action_id,
         "output": {"type": OUTPUT_SQL_STATEMENT, "executed": False, "sql": sql, "action_id": action_id,
-                   "message": body, "sql_kind": kind},
+                   "message": f"```sql\n{sql}\n```", "sql_kind": kind, "preview": preview},
     }
 
 
-async def _preview(sql: str) -> str:
-    # Only UPDATE/DELETE get an affected-rows preview; derive the op from the SQL itself.
-    op = (sql.strip().split(None, 1)[0].upper() if sql.strip() else "")
-    if op not in ("UPDATE", "DELETE"):
-        return "_See the SQL above._"
-    where = ""
-    wm = re.search(r"\bwhere\b(.*)$", sql, re.IGNORECASE | re.DOTALL)
-    if wm:
-        where = " WHERE " + wm.group(1).strip().rstrip(";")
-    tm = re.search(r"(?:from|update)\s+[\"`]?([A-Za-z0-9_]+)", sql, re.IGNORECASE)
-    if not tm:
-        return "_Could not infer a table to preview._"
+async def _affected_rows(sql: str, engine: str) -> dict | None:
+    """For UPDATE/DELETE, return the rows that WOULD be affected as structured data
+    ({columns, rows, rowcount}) by running a read-only SELECT with the same target table + WHERE.
+    None when there's nothing to preview.
+
+    Built from the parsed AST (not regex / string interpolation), so quoted identifiers,
+    subqueries and complex WHEREs are handled correctly and nothing is concatenated into SQL.
+    The FE renders the table; the server does no formatting."""
+    dialect = "sqlite" if engine == "sqlite" else "postgres"
     try:
-        res = await dbtools.run(f'SELECT * FROM "{tm.group(1)}"{where} LIMIT 50')
-    except Exception as e:  # noqa: BLE001
-        return f"_Preview error: {e}_"
-    return f"**Rows that would be affected (preview):**\n\n{dbtools.md_table(res)}"
+        nodes = [s for s in sqlglot.parse(sql, read=dialect) if s is not None]
+    except Exception:  # noqa: BLE001
+        return None
+    node = next((n for n in nodes if isinstance(n, (exp.Update, exp.Delete))), None)
+    if node is None:
+        return None
+    table = node.args.get("this")  # target table of the UPDATE/DELETE
+    if table is None:
+        return None
+    select = exp.select("*").from_(table.copy())
+    where = node.args.get("where")
+    if where is not None:
+        select = select.where(where.this.copy())  # same condition → same rows
+    select = select.limit(50)
+    try:
+        res = await dbtools.run(select.sql(dialect=dialect))
+    except Exception:  # noqa: BLE001 — preview is best-effort; never block the approval on it
+        return None
+    return res.to_dict()
 
 
 async def _approval(state: AgentState) -> AgentState:

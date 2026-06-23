@@ -126,6 +126,9 @@ export type UiMessage = {
   /** Structured read-only SELECT result (from a `query_result` event) — rendered as a table
    *  card by the frontend (the server ships {columns, rows}, never markdown). */
   queryResult?: TableData | null;
+  /** Structured preview of the rows an UPDATE/DELETE would affect (from the `sql_preview`
+   *  event) — rendered as a table while the action is pending. */
+  mutationPreview?: TableData | null;
 };
 
 type MessageListProps = {
@@ -262,6 +265,15 @@ export default function MessageList({
           {!msg.isUser && msg.queryResult && (msg.queryResult.columns.length > 0 || msg.queryResult.rows.length > 0) && (
             <ResultTableCard data={msg.queryResult} />
           )}
+          {!msg.isUser && msg.mutationPreview && msg.sqlActionState === 'pending' &&
+            (msg.mutationPreview.columns.length > 0 || msg.mutationPreview.rows.length > 0) && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                  Rows that would be affected
+                </div>
+                <ResultTableCard data={msg.mutationPreview} />
+              </div>
+            )}
           {!msg.isUser && msg.charts && msg.charts.length > 0 && (() => {
             // Read the per-chart layout hint (spec.usermeta.layout, set by the chart tool).
             // 'full' spans the whole row; otherwise a chart takes one auto-fit column.

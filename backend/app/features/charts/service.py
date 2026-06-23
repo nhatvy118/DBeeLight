@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 
-from app.agent.graph.dbtools import require_dql_only
+from app.agent.graph.dbtools import is_read_only
 from app.agent.pool import get_connection_pool
 from app.features.charts import repository as repo
 from app.features.projects import service as proj_service
@@ -40,9 +40,8 @@ async def save_chart(user_id: str, project_id: str, body: dict) -> dict:
     if not sql or not mark or not isinstance(encoding, dict) or not encoding:
         raise ChartError("A chart needs sql, mark and encoding.")
     adapter = await _project_adapter(project_id, user_id)  # validates project + db
-    err = require_dql_only(sql, adapter.engine_name)
-    if err:
-        raise ChartError(f"Only a read-only SELECT can be saved as a chart: {err}")
+    if not is_read_only(sql, adapter.engine_name):
+        raise ChartError("Only a read-only SELECT can be saved as a chart.")
     # Idempotent: the same SQL + mark in this project is already on the dashboard → don't duplicate.
     existing = await repo.find_chart(project_id, user_id, sql, mark)
     if existing:
@@ -71,9 +70,8 @@ async def update_chart(user_id: str, chart_id: str, body: dict) -> None:
         if not new_sql:
             raise ChartError("SQL cannot be empty.")
         adapter = await _project_adapter(chart["project_id"], user_id)
-        err = require_dql_only(new_sql, adapter.engine_name)
-        if err:
-            raise ChartError(f"Only a read-only SELECT is allowed: {err}")
+        if not is_read_only(new_sql, adapter.engine_name):
+            raise ChartError("Only a read-only SELECT is allowed.")
     title = body.get("title")
     layout = body.get("layout", chart.get("layout"))
     await repo.update_chart(
@@ -122,9 +120,8 @@ async def render_dashboard(user_id: str, project_id: str) -> list[dict]:
         encoding = json.loads(c["encoding"]) if isinstance(c["encoding"], str) else (c["encoding"] or {})
         transform = json.loads(c["transform"]) if c.get("transform") else None
         item = {"id": c["id"], "title": c["title"], "layout": c.get("layout"), "sql": c["sql"]}
-        err = require_dql_only(c["sql"], adapter.engine_name)
-        if err:
-            out.append({**item, "error": f"Chart SQL is not read-only: {err}"})
+        if not is_read_only(c["sql"], adapter.engine_name):
+            out.append({**item, "error": "Chart SQL is not read-only."})
             continue
         try:
             res = await adapter.execute(c["sql"])

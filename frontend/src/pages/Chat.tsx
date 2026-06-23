@@ -277,6 +277,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           exportToExcel: msg.role === 'assistant' ? readFileExport(msg.tool_events) : null,
           charts: msg.role === 'assistant' ? readCharts(msg.tool_events) : undefined,
           queryResult: msg.role === 'assistant' ? readQueryResult(msg.tool_events) : null,
+          mutationPreview: msg.role === 'assistant' ? (sqlPreview?.preview ?? null) : null,
           schemaPreview,
           // Single source of truth: the schema editor locks once its action state (in sql_actions,
           // keyed by the server action_id) reaches a TERMINAL state — executed or cancelled.
@@ -594,6 +595,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             exportToExcel: readFileExport((res as any).tool_events),
             charts: readCharts((res as any).tool_events),
             queryResult: readQueryResult((res as any).tool_events),
+            mutationPreview: readSqlPreview((res as any).tool_events)?.preview ?? null,
             schemaPreview: readSchemaPreview((res as any).tool_events),
             schemaLocked: false,
           },
@@ -826,6 +828,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             exportToExcel: readFileExport((res as any).tool_events),
             charts: readCharts((res as any).tool_events),
             queryResult: readQueryResult((res as any).tool_events),
+            mutationPreview: readSqlPreview((res as any).tool_events)?.preview ?? null,
             schemaPreview: readSchemaPreview((res as any).tool_events),
           };
           return updated;
