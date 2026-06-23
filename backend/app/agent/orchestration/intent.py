@@ -39,10 +39,10 @@ that and classify the literal intent.
 Match the user's MEANING, not specific keywords — most users write plain language, not
 SQL. The SQL terms below are only anchors for what each route covers.
 
-- db_readonly     : User wants to SEE / FIND / COUNT / EXPLORE the DATA (the rows) —
-                    "show", "list", "how many <rows>", "which", "top N", "average",
-                    "filter". (SELECT over data: joins, aggregates.) Returns actual rows.
-                    No changes. NOT for questions about the schema/structure itself.
+- db_readonly     : A SIMPLE data LOOKUP that ONE SELECT answers and returns as a table —
+                    "show", "list", "top N", "how many <rows>", "what's the total/average",
+                    "filter". The user wants to SEE the rows/number, not an explanation.
+                    One query, no analysis, no changes. NOT for schema/structure questions.
 - db_create_table : User wants to CREATE A NEW table — "create a table", "make a new
                     table", "set up a table for X". Only when creating a table is the
                     intent, not a side-effect of another op.
@@ -50,12 +50,14 @@ SQL. The SQL terms below are only anchors for what each route covers.
                     "change", "set", "delete", "remove", "rename", "drop", "empty",
                     "alter". (INSERT/UPDATE/DELETE/MERGE/ALTER/DROP/TRUNCATE/RENAME.)
                     Creating a NEW table → db_create_table.
-- db_general      : Questions ABOUT the database itself — its STRUCTURE or MEANING, not
-                    the row data: what tables exist, how many / what columns a table has,
-                    data types, keys, relationships; "describe / explain this table or
-                    column", what a table or column MEANS in business terms (the data
-                    dictionary). The agent answers by calling tools (get_schema /
-                    describe_schema), not a single SELECT.
+- db_general      : Questions that need EXPLAINING or ANALYZING (not just one table of rows):
+                    (a) STRUCTURE / MEANING — what tables exist, how many / what columns a
+                    table has, data types, keys, relationships, "describe / explain this
+                    table or column", what something MEANS in business terms (the data
+                    dictionary); and (b) ANALYSIS — "why did revenue drop", "what's driving
+                    churn", trends, comparisons, root-cause. The agent inspects the schema and
+                    runs SEVERAL read-only queries, then reasons toward an answer. Read-only
+                    (never changes data) — distinct from db_readonly's single-result lookup.
 - excel           : The request is about operating on an Excel/CSV FILE — anything done
                     inside a spreadsheet: format cells, formulas, sheets, in-file charts,
                     "save as xlsx", etc. The target/artifact is a file, not the database.
@@ -73,8 +75,12 @@ SQL. The SQL terms below are only anchors for what each route covers.
 2. "Show top N and plot" → chart (downstream agent fetches the data).
 3. "Run query and save to Excel" → excel (final artifact is the file).
 4. "Create table + insert sample data" → db_create_table (downstream handles the insert).
-5. STRUCTURE vs DATA: "how many columns / tables / keys" or "what X means" → db_general;
-   "how many rows" / "list / show the data" → db_readonly.
+5. LOOKUP vs ANALYSIS/MEANING (both read-only):
+   - One SELECT that returns a table/number the user wants to SEE → db_readonly
+     ("show this month's revenue", "top 10 customers", "how many orders").
+   - Needs explaining or several queries to answer → db_general
+     ("why did revenue drop", "what's driving churn", "compare Q1 vs Q2 and explain").
+   - Structure / meaning ("how many columns", "what does the status column mean") → db_general.
 
 # Output fields
 

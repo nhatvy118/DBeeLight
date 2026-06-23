@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 from app.agent.context import get_db
+from app.agent.graph.dbtools import is_read_only
 from app.agent.tools.registry import tool
 
 # Marks we render. Excludes geoshape/image (need projections / external data).
@@ -113,6 +114,8 @@ async def generate_chart(
         return "No database connected."
     if mark not in _MARKS:
         return f"Unsupported mark '{mark}'. Allowed: {sorted(_MARKS)}"
+    if not is_read_only(sql, adapter.engine_name):
+        return "The chart SQL must be a read-only SELECT (no INSERT/UPDATE/DELETE/DDL)."
 
     res = await adapter.execute(sql)
     err = _validate_encoding(encoding, res.columns)

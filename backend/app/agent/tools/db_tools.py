@@ -4,12 +4,22 @@ The LLM only produces business args (query, table_name, ...); the connection is 
 """
 from __future__ import annotations
 
-import re
-
 from app.agent.adapters.base import QueryResult
-from app.agent.graph.dbtools import full_schema
+from app.agent.graph.dbtools import clean_db_error, engine_name, full_schema, is_read_only, run
 from app.agent.graph.schema_context import enrich_schema_text, render_schema
 from app.agent.tools.registry import tool
+
+
+def _result_to_text(res: QueryResult, limit: int = 100) -> str:
+    """Render a query result as a compact Markdown table for the LLM to read and reason over."""
+    if not res.columns:
+        return f"OK ({res.rowcount} rows affected)."
+    head = "| " + " | ".join(res.columns) + " |"
+    sep = "| " + " | ".join("---" for _ in res.columns) + " |"
+    body = ["| " + " | ".join("" if v is None else str(v) for v in r) + " |" for r in res.rows[:limit]]
+    extra = "" if len(res.rows) <= limit else f"\n…{len(res.rows) - limit} more rows (showing {limit})."
+    return "\n".join([head, sep, *body]) + extra
+
 
 @tool(
     description=(
@@ -42,10 +52,34 @@ async def describe_schema() -> str:
     return text or "No database connected."
 
 
+@tool(
+    description=(
+        "Run a READ-ONLY SELECT and get the rows back, to ANALYZE the data. Use this to answer "
+        "analytical questions ('why did revenue drop', 'what's driving X', trends, comparisons, "
+        "root-cause) by running SEVERAL queries and reasoning over the results. Read-only only: "
+        "SELECT / CTE / aggregate queries — never INSERT/UPDATE/DELETE or any DDL."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"query": {"type": "string", "description": "A read-only SELECT query"}},
+        "required": ["query"],
+    },
+)
+async def execute_query(query: str) -> str:
+    if not is_read_only(query, engine_name()):
+        return "Rejected: only read-only SELECT queries are allowed here (no INSERT/UPDATE/DELETE/DDL)."
+    try:
+        res = await run(query)
+    except Exception as e:  # noqa: BLE001
+        return f"Query error: {clean_db_error(str(e))}"
+    return _result_to_text(res)
+
+
 # Names of the DB tools (attached to the DatabaseAgent's InProcessBackend).
-# db_general is a STRUCTURE/MEANING agent only — reading row data is the db_readonly route's
-# job (the SELECT workflow), so no select_data/execute_query/explain_sql here.
+# db_general is the agentic READ agent: inspect schema/meaning (get_schema / describe_schema) and
+# run read-only queries to analyze (execute_query). It never mutates — writes go to db_mutation.
 DB_TOOL_NAMES = [
     "get_schema",
     "describe_schema",
+    "execute_query",
 ]

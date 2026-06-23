@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -15,6 +16,23 @@ from app.agent.tools.backends import ToolBackend
 from app.config import get_settings
 
 logger = logging.getLogger("agent.loop")
+
+# Async progress callback (streamed to the client as SSE stages). Default no-op.
+StageCb = Callable[[str], Awaitable[None]]
+
+
+async def _noop_stage(_message: str) -> None:
+    return None
+
+
+# Human-readable stage label shown while a tool runs (tool-loop routes have no graph nodes, so
+# stages come from the tools the agent calls). Unknown tools fall back to "Running <name>".
+_TOOL_STAGES = {
+    "get_schema": "Reading the database schema",
+    "describe_schema": "Reading the data dictionary",
+    "execute_query": "Querying the data",
+    "generate_chart": "Building the chart",
+}
 
 
 @dataclass
@@ -39,8 +57,10 @@ async def run_tool_loop(
     user_message: str,
     backends: list[ToolBackend],
     model: str | None = None,
+    on_stage: StageCb | None = None,
 ) -> LoopResult:
     s = get_settings()
+    emit = on_stage or _noop_stage
     model = model or s.llm_model
     client = get_llm()
 
@@ -59,6 +79,7 @@ async def run_tool_loop(
     final_text = ""
     exhausted = False
 
+    await emit("Thinking")  # immediate feedback while the first model call runs
     for _ in range(s.max_tool_iterations):
         completion = await client.chat.completions.create(
             model=model,
@@ -94,6 +115,7 @@ async def run_tool_loop(
 
         for tc in tool_calls:
             name = tc.function.name
+            await emit(_TOOL_STAGES.get(name) or f"Running {name}")
             try:
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:

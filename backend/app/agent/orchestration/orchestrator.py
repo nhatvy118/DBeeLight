@@ -212,17 +212,19 @@ class Orchestrator:
             res = await run_tool_loop(
                 system_prompt=prompts.excel_system_prompt(),
                 history=history, user_message=user_message, backends=[self.excel_backend],
+                on_stage=emit,
             )
         elif route == "chart":
             res = await run_tool_loop(
                 system_prompt=prompts.chart_system_prompt(engine),
                 history=history, user_message=user_message,
-                backends=[self.chart_backend, self.db_backend],
+                backends=[self.chart_backend, self.db_backend], on_stage=emit,
             )
         else:  # db_general (tool loop chung)
             res = await run_tool_loop(
                 system_prompt=prompts.db_system_prompt(engine),
                 history=history, user_message=user_message, backends=[self.db_backend],
+                on_stage=emit,
             )
 
         return ChatResult(
