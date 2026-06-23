@@ -9,5 +9,5 @@ ENV FASTMCP_HOST=0.0.0.0 \
     EXCEL_FILES_PATH=/data/uploads
 
 EXPOSE 8931
-# Mount tại /mcp:8931 ; api-server nối qua EXCEL_MCP_URL=http://excel-server:8931/mcp
+# Mount tại /mcp:8931 ; backend nối qua EXCEL_MCP_URL=http://excel-server:8931/mcp
 CMD ["python", "-m", "excel_mcp", "streamable-http"]

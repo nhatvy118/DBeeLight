@@ -42,10 +42,10 @@ Hiện tại project dùng **routing tối thiểu (không dùng react-router)**
 
 ## Google Login
 
-Google OAuth2 được xử lý ở **backend (api-server)** để giữ an toàn `client_secret`.
+Google OAuth2 được xử lý ở **backend** để giữ an toàn `client_secret`.
 
 1) Tạo OAuth Client (Web) trong Google Cloud Console  
-2) Tạo file `api-server/.env`:
+2) Tạo file `backend/.env`:
 
 ```env
 GOOGLE_CLIENT_ID=your_google_client_id

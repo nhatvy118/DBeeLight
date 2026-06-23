@@ -1,13 +1,12 @@
-name: Deploy api-server to EC2
+name: Deploy backend to EC2
 
 on:
   push:
     branches: [main]
     paths:
-      - "api-server/**"
-      - "mcp-client/**"
+      - "backend/**"
       - "docker-compose.yml"
-      - ".github/workflows/deploy-api-server.yml"
+      - ".github/workflows/deploy-backend.yml"
   workflow_dispatch: {}
 
 env:
@@ -41,8 +40,8 @@ jobs:
       - name: Build & push
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: api-server/Dockerfile
+          context: ./backend
+          file: ./backend/Dockerfile
           push: true
           tags: |
             ${{ env.IMAGE }}:latest
@@ -55,7 +54,7 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      - name: SSH and restart api-server
+      - name: SSH and restart backend
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -66,8 +65,8 @@ jobs:
             set -euo pipefail
             cd "${{ secrets.EC2_DEPLOY_PATH }}"
             git pull --ff-only
-            docker compose pull api-server
-            docker compose up -d --no-build api-server
+            docker compose pull backend
+            docker compose up -d --no-build backend
             docker image prune -f
         env:
           IMAGE: ${{ env.IMAGE }}

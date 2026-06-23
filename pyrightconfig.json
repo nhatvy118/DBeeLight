@@ -1,16 +1,10 @@
 {
   "executionEnvironments": [
     {
-      "root": "api-server",
-      "venvPath": "api-server",
+      "root": "backend",
+      "venvPath": "backend",
       "venv": ".venv",
-      "extraPaths": ["api-server"]
-    },
-    {
-      "root": "mcp-client",
-      "venvPath": "mcp-client",
-      "venv": ".venv",
-      "extraPaths": ["mcp-client"]
+      "extraPaths": ["backend"]
     }
   ],
   "exclude": ["**/node_modules", "**/__pycache__"]

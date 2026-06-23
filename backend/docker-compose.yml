@@ -20,7 +20,7 @@ services:
     ports:
       - "8931:8931"
     volumes:
-      # shared volume: api-server ghi file upload, excel-server đọc/ghi cùng chỗ
+      # shared volume: backend ghi file upload, excel-server đọc/ghi cùng chỗ
       - filedata:/data
 
   api:
@@ -37,7 +37,6 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-me}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       # GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET nếu dùng Google login
-      # RESEND_API_KEY nếu muốn gửi email mời share
     ports:
       - "5001:5001"      # khớp Vite proxy của frontend (vite.config.ts → localhost:5001)
     volumes:

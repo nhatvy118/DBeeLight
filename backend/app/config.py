@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     data_root: str = "./_data"
     sqlite_allowed_dirs: str = "./_data/databases:./_data/temp_dbs"
 
-    # Auth (cookie session — same as the old api-server)
+    # Auth (cookie session)
     google_client_id: str = ""
     google_client_secret: str = ""
     session_secret: str = "dev-session-secret-change-me"

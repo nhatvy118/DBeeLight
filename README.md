@@ -18,8 +18,8 @@ uv sync  # Tạo .venv và cài đặt dependencies
 **Lưu ý:** Không cần file `.env` nữa! Bạn sẽ cung cấp thông tin database qua chatbot.
 
 **Sử dụng:**
-- Database server được kết nối bởi `api-server` thông qua package `mcp_agent`.
-- Hãy chạy `api-server` và gọi các endpoint `/api/chat` để sử dụng.
+- Database server được kết nối bởi `backend` thông qua package `mcp_agent`.
+- Hãy chạy `backend` và gọi các endpoint `/api/chat` để sử dụng.
 
 **Tools:** connect_db, create_db_from_spec, list_databases, list_tables, get_table_stats, get_schema, generate_schema_doc, manage_constraint, manage_trigger, preview_table, validate_sql, explain_sql, run_mutation, và các tools CRUD cơ bản.
 
@@ -35,8 +35,8 @@ uv sync  # Tạo .venv và cài đặt excel-mcp-server
 ```
 
 **Sử dụng:**
-- Excel server được kết nối bởi `api-server` thông qua package `mcp_agent`.
-- Hãy chạy `api-server` và gọi các endpoint `/api/chat` để sử dụng.
+- Excel server được kết nối bởi `backend` thông qua package `mcp_agent`.
+- Hãy chạy `backend` và gọi các endpoint `/api/chat` để sử dụng.
 
 **Tools (24):** create_workbook, create_worksheet, get_workbook_metadata, read_data_from_excel, write_data_to_excel, copy_worksheet, delete_worksheet, rename_worksheet, copy_range, delete_range, validate_excel_range, get_data_validation_info, insert_rows, insert_columns, delete_sheet_rows, delete_sheet_columns, apply_formula, validate_formula_syntax, format_range, merge_cells, unmerge_cells, get_merged_cells, create_chart, create_pivot_table, create_table.
 
@@ -79,7 +79,7 @@ uv sync  # Tạo .venv và cài đặt dependencies
 
 **Sử dụng:**
 - `mcp-client` chỉ là package/library (không còn CLI).
-- Được dùng bởi `api-server` để cung cấp REST API.
+- Được dùng bởi `backend` để cung cấp REST API.
 
 **Kiến trúc (Hybrid Orchestrator):**
 

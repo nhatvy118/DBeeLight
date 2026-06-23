@@ -1,4 +1,4 @@
-"""ConnectionPool — holds adapters per project_id, lives in the api-server process.
+"""ConnectionPool — holds adapters per project_id, lives in the backend process.
 
 This is a "resource cache" (not identity state): any replica can rebuild it
 from db_url. Many requests on the same project share one adapter; the AsyncEngine inside

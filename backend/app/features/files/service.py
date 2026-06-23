@@ -77,7 +77,7 @@ def _looks_european(sample: str) -> bool:
 
 
 def _read_csv_smart(content: bytes, ext: str):
-    """CSV/TSV/TXT with encoding + delimiter + decimal sniffing (mirrors api-server)."""
+    """CSV/TSV/TXT with encoding + delimiter + decimal sniffing."""
     import pandas as pd  # lazy
 
     if content.startswith(b"\xef\xbb\xbf"):

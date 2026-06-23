@@ -5,7 +5,7 @@ Backend viết lại theo `docs/design.md`:
 - **database, chart** = tool **in-process** (gọi hàm trực tiếp, connection qua `ContextVar`).
 - **excel** = MCP server riêng, giao tiếp **HTTP** (`streamable-http`).
 - **Orchestrator** = singleton; **không** spawn subprocess per-user, **không** LRU.
-- Connection pool theo `project_id` nằm trong api-server; LLM không thấy DSN.
+- Connection pool theo `project_id` nằm trong backend; LLM không thấy DSN.
 
 ## Cấu trúc
 

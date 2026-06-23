@@ -1,21 +1,19 @@
-name: api-server CI
+name: backend CI
 
 on:
   pull_request:
     paths:
-      - "api-server/**"
-      - "mcp-client/**"
-      - ".github/workflows/api-server-ci.yml"
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
   push:
     branches: [main]
     paths:
-      - "api-server/**"
-      - "mcp-client/**"
-      - ".github/workflows/api-server-ci.yml"
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
 
 jobs:
   docker-build:
-    name: Build api-server Docker image
+    name: Build backend Docker image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,8 +23,8 @@ jobs:
       - name: Build image (no push)
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: api-server/Dockerfile
+          context: ./backend
+          file: ./backend/Dockerfile
           push: false
           tags: dbeelight-api:ci
           cache-from: type=gha

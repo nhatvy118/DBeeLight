@@ -1,4 +1,4 @@
-"""Auth service — Google OAuth redirect + cookie session (matches the old api-server).
+"""Auth service — Google OAuth redirect + cookie session.
 
 User stored in request.session["user"] (sub/email/name...). current_user = session["user"]["sub"].
 """
