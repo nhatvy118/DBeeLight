@@ -39,9 +39,10 @@ that and classify the literal intent.
 Match the user's MEANING, not specific keywords — most users write plain language, not
 SQL. The SQL terms below are only anchors for what each route covers.
 
-- db_readonly     : User wants to SEE / FIND / COUNT / EXPLORE existing data — "show",
-                    "list", "how many", "which", "top N", "average", "what tables",
-                    "describe". (SELECT, joins, aggregates, schema browsing.) No changes.
+- db_readonly     : User wants to SEE / FIND / COUNT / EXPLORE the DATA (the rows) —
+                    "show", "list", "how many <rows>", "which", "top N", "average",
+                    "filter". (SELECT over data: joins, aggregates.) Returns actual rows.
+                    No changes. NOT for questions about the schema/structure itself.
 - db_create_table : User wants to CREATE A NEW table — "create a table", "make a new
                     table", "set up a table for X". Only when creating a table is the
                     intent, not a side-effect of another op.
@@ -49,8 +50,12 @@ SQL. The SQL terms below are only anchors for what each route covers.
                     "change", "set", "delete", "remove", "rename", "drop", "empty",
                     "alter". (INSERT/UPDATE/DELETE/MERGE/ALTER/DROP/TRUNCATE/RENAME.)
                     Creating a NEW table → db_create_table.
-- db_general      : DB ops not fitting above — connection info, export, user/role
-                    management, dumps, backups, admin metadata.
+- db_general      : Questions ABOUT the database itself — its STRUCTURE or MEANING, not
+                    the row data: what tables exist, how many / what columns a table has,
+                    data types, keys, relationships; "describe / explain this table or
+                    column", what a table or column MEANS in business terms (the data
+                    dictionary). The agent answers by calling tools (get_schema /
+                    describe_schema), not a single SELECT.
 - excel           : The request is about operating on an Excel/CSV FILE — anything done
                     inside a spreadsheet: format cells, formulas, sheets, in-file charts,
                     "save as xlsx", etc. The target/artifact is a file, not the database.
@@ -59,12 +64,17 @@ SQL. The SQL terms below are only anchors for what each route covers.
 - off_topic       : NOT about data, databases, files, or charts — greetings, small talk,
                     weather, general knowledge, jokes, opinions, advice that needs no query.
 
-# Precedence rules when intents combine
+# Precedence & disambiguation rules
 
-1. Destructive beats read: db_mutation / db_create_table > db_readonly.
+1. Destructive beats read: db_mutation / db_create_table > db_readonly — but ONLY when the
+   destructive intent is clear. If you genuinely cannot tell whether the user wants to READ
+   or to CHANGE data (e.g. "remove duplicates from customers", "clear out old orders"), do
+   NOT default to the destructive route — clarify instead (see needs_clarification reason A).
 2. "Show top N and plot" → chart (downstream agent fetches the data).
 3. "Run query and save to Excel" → excel (final artifact is the file).
 4. "Create table + insert sample data" → db_create_table (downstream handles the insert).
+5. STRUCTURE vs DATA: "how many columns / tables / keys" or "what X means" → db_general;
+   "how many rows" / "list / show the data" → db_readonly.
 
 # Output fields
 
@@ -107,7 +117,7 @@ you are clarifying:
     the column name and type)
   - chart: what data to plot — which metric and dimension (and chart type if relevant)
   - excel: which file / sheet / range and what operation
-  - db_readonly: which table or data to read from
+  (db_readonly never reaches here — reads are never clarified, see reason B.)
 Rules:
 - Be SPECIFIC — name the missing piece. Never ask a vague "what do you mean?".
 - One question only. Do not chain multiple sub-questions.

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 from app.agent.llm import get_llm
 from app.agent.tools.backends import ToolBackend
@@ -28,12 +29,7 @@ class ToolEvent:
 class LoopResult:
     text: str
     tool_events: list[ToolEvent] = field(default_factory=list)
-
-
-def _cap(text: str, max_tokens: int) -> str:
-    # ~4 chars / token
-    limit = max(500, max_tokens * 4)
-    return text if len(text) <= limit else text[:limit] + "\n...[tool output truncated]"
+    exhausted: bool = False  # True if the loop hit max_tool_iterations while still calling tools
 
 
 async def run_tool_loop(
@@ -60,21 +56,25 @@ async def run_tool_loop(
     messages.append({"role": "user", "content": user_message})
 
     events: list[ToolEvent] = []
-    chunks: list[str] = []
+    final_text = ""
+    exhausted = False
 
     for _ in range(s.max_tool_iterations):
         completion = await client.chat.completions.create(
             model=model,
-            messages=messages,
-            tools=tools or None,
+            messages=cast(Any, messages),
+            tools=cast(Any, tools if tools else None),
             tool_choice="auto",
             temperature=0.1,
         )
         msg = completion.choices[0].message
-        if msg.content:
-            chunks.append(msg.content)
-        tool_calls = msg.tool_calls or []
+        # The SDK union now includes a "custom" tool-call variant (no .function); we only ever
+        # register function tools, so keep just those — this also narrows the type for pyright.
+        tool_calls = [tc for tc in (msg.tool_calls or []) if tc.type == "function"]
         if not tool_calls:
+            # No tool call → this turn IS the final answer. Use only its text (interim narration
+            # emitted alongside tool calls is kept in `messages` for context, not in the reply).
+            final_text = msg.content or ""
             break
 
         messages.append(
@@ -112,8 +112,21 @@ async def run_tool_loop(
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "name": name,
-                    "content": _cap(content, s.tool_result_max_tokens),
+                    "content": content,
                 }
             )
+    else:
+        # Loop ran out of iterations while the model still wanted tools (no `break`). The last
+        # tool results are already in `messages`; force ONE final, tool-free turn so the model
+        # MUST produce an answer from them instead of leaving the reply empty/truncated.
+        exhausted = True
+        logger.warning("tool loop hit max_tool_iterations (%d) — forcing a final answer",
+                       s.max_tool_iterations)
+        completion = await client.chat.completions.create(
+            model=model,
+            messages=cast(Any, messages),
+            temperature=0.1,
+        )
+        final_text = completion.choices[0].message.content or ""
 
-    return LoopResult(text="\n".join(c for c in chunks if c).strip(), tool_events=events)
+    return LoopResult(text=final_text.strip(), tool_events=events, exhausted=exhausted)
