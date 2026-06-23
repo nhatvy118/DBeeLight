@@ -36,7 +36,7 @@ class Settings(BaseSettings):
 
     # Tool loop
     tool_result_max_tokens: int = 4000
-    max_tool_iterations: int = 5
+    max_tool_iterations: int = 10
 
     # CORS
     cors_origins: str = "http://localhost:5173,http://localhost:3000"

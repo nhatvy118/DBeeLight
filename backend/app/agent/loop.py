@@ -124,11 +124,15 @@ async def run_tool_loop(
             if backend is None:
                 content = json.dumps({"error": f"Tool '{name}' does not exist"})
                 is_err = True
+                event_result = content
             else:
                 res = await backend.call_tool(name, args)
-                content = res.content
+                content = res.content                      # small text the model reads next turn
                 is_err = res.is_error
-            events.append(ToolEvent(tool=name, args=args, result=content, is_error=is_err))
+                # FE/persisted event carries the full payload when the tool supplied one
+                # (e.g. a chart spec with data) — keeping that data OUT of `messages`.
+                event_result = res.artifact if res.artifact is not None else content
+            events.append(ToolEvent(tool=name, args=args, result=event_result, is_error=is_err))
             messages.append(
                 {
                     "role": "tool",

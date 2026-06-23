@@ -12,7 +12,7 @@ import json
 
 from app.agent.context import get_db
 from app.agent.graph.dbtools import is_read_only
-from app.agent.tools.registry import tool
+from app.agent.tools.registry import ToolOutput, tool
 
 # Marks we render. Excludes geoshape/image (need projections / external data).
 _MARKS = {
@@ -27,7 +27,10 @@ _CHANNELS = {
     "row", "column", "facet",
 }
 _TYPES = {"quantitative", "nominal", "ordinal", "temporal"}
-_MAX_ROWS = 5000  # cap inline data so the spec/payload stays small
+# Plotting more marks than this is meaningless (the eye/canvas can't read it) and would bloat
+# the payload. We do NOT truncate (that would silently draw a WRONG chart from a partial result);
+# instead we reject and ask the agent to aggregate in SQL. So this is an alarm threshold, not a cap.
+_MAX_ROWS = 5000
 
 
 def _check_field_def(channel: str, defn: object, cols: set[str]) -> str | None:
@@ -122,7 +125,17 @@ async def generate_chart(
     if err:
         return f"Invalid chart spec: {err}"
 
-    values = [dict(zip(res.columns, row)) for row in res.rows[:_MAX_ROWS]]
+    # Too many rows → the SQL did not aggregate enough. Do NOT truncate (a 5k-row slice of a
+    # 1M-row result draws a misleading chart and skews every total). Tell the agent to aggregate.
+    if len(res.rows) > _MAX_ROWS:
+        return (
+            f"The query returned {len(res.rows)} rows — too many to plot, and truncating would "
+            f"produce a misleading chart. Aggregate in the SQL so the result has at most "
+            f"{_MAX_ROWS} rows: GROUP BY the category, bin/round the axis, or take the top-N and "
+            f"bucket the rest as 'Other', then call generate_chart again."
+        )
+
+    values = [dict(zip(res.columns, row)) for row in res.rows]
     if not values:
         # An empty result renders a blank chart — tell the agent so it can report it
         # (e.g. wrong table/filter, or the table has no rows) instead of drawing nothing.
@@ -147,9 +160,14 @@ async def generate_chart(
     if layout in ("full", "half"):
         usermeta["layout"] = layout
     spec["usermeta"] = usermeta
-    # Raw Vega-Lite JSON (no markers). The router surfaces it as a structured
-    # tool_event (type "chart"); the frontend renders from payload.spec.
-    return json.dumps(spec, default=str)
+    # Split channels: the full Vega-Lite spec (with inline data) goes to the FE as a chart
+    # tool_event / is persisted; the model only gets a short confirmation so the chart DATA
+    # never bloats the message loop. The FE renders from payload.spec.
+    # Neutral confirmation only. Do NOT tell the model to "reply now" here — that would make it
+    # stop after the FIRST chart of a multi-chart dashboard. Whether to draw another chart or to
+    # answer is decided from the system prompt, not pressured by each tool result.
+    summary = f"Chart built and shown to the user: {mark} over {sorted(set(res.columns))} ({len(values)} row(s))."
+    return ToolOutput(summary=summary, payload=json.dumps(spec, default=str))
 
 
 CHART_TOOL_NAMES = ["generate_chart"]

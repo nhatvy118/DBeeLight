@@ -12,6 +12,17 @@ ToolFn = Callable[..., Awaitable]
 
 
 @dataclass
+class ToolOutput:
+    """Return this (instead of a plain ``str``) to split what the model sees from what the
+    frontend gets. ``summary`` is fed back into the tool loop as the tool message — keep it
+    SMALL (a confirmation, never the data). ``payload`` is the full result shipped to the FE
+    as a tool event and persisted. Used by generate_chart so the chart DATA never bloats the
+    message loop (the model only needs to know the chart was built, not see every row)."""
+    summary: str
+    payload: str
+
+
+@dataclass
 class ToolSpec:
     name: str
     fn: ToolFn

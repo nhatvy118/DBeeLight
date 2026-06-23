@@ -19,8 +19,11 @@ logger = logging.getLogger("agent.backend")
 
 @dataclass
 class ToolResult:
-    content: str
+    content: str          # what the model sees (tool message in the loop)
     is_error: bool = False
+    # Full payload for the FE / persistence when it must differ from what the model sees
+    # (e.g. a chart spec with inline data). None → the event uses `content`.
+    artifact: str | None = None
 
     def to_tool_message(self) -> str:
         return self.content
@@ -48,6 +51,9 @@ class InProcessBackend:
         spec = registry.get(name)
         try:
             out = await spec.fn(**(args or {}))
+            if isinstance(out, registry.ToolOutput):
+                # Tool split a small model-facing summary from the full FE payload.
+                return ToolResult(content=out.summary, artifact=out.payload)
             return ToolResult(content=out if isinstance(out, str) else json.dumps(out, default=str))
         except Exception as e:  # noqa: BLE001
             logger.exception("InProcess tool %s failed: %s", name, e)

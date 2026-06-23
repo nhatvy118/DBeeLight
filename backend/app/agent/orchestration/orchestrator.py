@@ -5,6 +5,7 @@ holds backends (stateless): InProcess for db/chart, HTTP for excel.
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -121,6 +122,15 @@ def _events_from_output(out: dict) -> list[dict]:
     return []
 
 
+def _is_chart_spec(result: str) -> bool:
+    """True if a generate_chart result is a real Vega-Lite spec (vs a plain error string)."""
+    try:
+        spec = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(spec, dict) and "mark" in spec
+
+
 def _events_from_tool_loop(events) -> list[dict]:
     """Map raw tool-loop ToolEvents → the structured FE contract ({tool, type, payload}).
 
@@ -130,7 +140,10 @@ def _events_from_tool_loop(events) -> list[dict]:
     out: list[dict] = []
     for e in events or []:
         if e.tool == "generate_chart":
-            if e.is_error:
+            # Only emit a chart event when the tool actually returned a Vega-Lite spec.
+            # Soft failures (e.g. "no rows", "Invalid chart spec: …") come back as plain
+            # strings — those are feedback for the model, not a chart to render.
+            if e.is_error or not _is_chart_spec(e.result):
                 continue
             out.append({"tool": e.tool, "type": "chart", "payload": {"spec": e.result}})
         elif e.tool == "execute_query":
