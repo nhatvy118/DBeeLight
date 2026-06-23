@@ -6,6 +6,7 @@ holds backends (stateless): InProcess for db/chart, HTTP for excel.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from app.agent import prompts
@@ -23,6 +24,13 @@ from app.agent.tools.db_tools import DB_TOOL_NAMES
 from app.config import get_settings
 
 logger = logging.getLogger("agent.orchestrator")
+
+# Async progress callback (streamed to the client as SSE stages). Default no-op.
+StageCb = Callable[[str], Awaitable[None]]
+
+
+async def _noop_stage(_message: str) -> None:
+    return None
 
 
 @dataclass
@@ -157,12 +165,15 @@ class Orchestrator:
         user_message: str,
         intent: intent_mod.Intent,
         history: list[dict] | None = None,
+        on_stage: StageCb | None = None,
     ) -> ChatResult:
         """Execute the branch already chosen by `intent` (classified once by the caller).
 
         The caller handles needs_clarification before calling — `intent` here always has a route.
+        `on_stage` (optional) streams human-readable progress stages to the client.
         """
         history = history or []
+        emit = on_stage or _noop_stage
         engine = get_db().engine
         route = intent.route or "db_general"
 
@@ -170,7 +181,7 @@ class Orchestrator:
             session_id = get_ctx().session_id or "anon"
             wf = self.create_table_wf if route == "db_create_table" else self.mutation_wf
             # user_message is the normalized standalone query (see Orchestrator.normalize).
-            state, pending = await wf.run(session_id, user_message, engine)
+            state, pending = await wf.run(session_id, user_message, engine, on_stage=emit)
             out = state.get("output") or {}
             return ChatResult(
                 response=str(out.get("message") or ""),
@@ -183,14 +194,15 @@ class Orchestrator:
 
         if route == "db_readonly":
             session_id = get_ctx().session_id or "anon"
-            state = await self.readonly_wf.run(session_id, user_message, engine)
+            state = await self.readonly_wf.run(session_id, user_message, engine, on_stage=emit)
             out = state.get("output") or {}
             return ChatResult(response=str(out.get("message") or ""), route=route,
                               tool_events=_events_from_output(out))
 
         # Only the agentic tool-loop routes below use conversation memory → summarize LAZILY
         # here (the summary LLM call only fires for long convos AND only when actually needed;
-        # SQL workflows above never pay it).
+        # SQL workflows above never pay it). No stage is emitted for summary/history — stages
+        # come from graph nodes only (the tool-loop routes have no graph).
         summary, recent = await summarization.summarize(history)
 
         def _sp(base: str) -> str:

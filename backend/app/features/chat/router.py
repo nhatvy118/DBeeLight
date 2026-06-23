@@ -6,6 +6,7 @@ persistence live in ChatService; db_url is resolved server-side.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, Depends
@@ -71,16 +72,36 @@ async def chat(req: ChatRequest, user_id: str = Depends(get_current_user_id)):
     session_id = await _get_or_create_session(user_id, req.session_id, req.project_id)
 
     async def gen():
-        yield _frame({"type": "stage", "message": "Processing"})
+        # Stage frames are produced from *inside* service.handle (normalize → classify →
+        # per-route work). We run handle as a task and drain a queue so each stage streams
+        # to the client the moment it happens, instead of one upfront "Processing" frame.
+        queue: asyncio.Queue[dict | None] = asyncio.Queue()
+
+        async def on_stage(message: str) -> None:
+            await queue.put({"type": "stage", "status": "running", "message": message})
+
+        async def run() -> None:
+            try:
+                result = await service.handle(
+                    user_id, session_id, req.message, req.active_file_ids, on_stage=on_stage
+                )
+                await queue.put({"type": "final", "data": _response(result, session_id)})
+            except service.ChatError as e:
+                await queue.put({"type": "error", "status_code": 400, "message": str(e)})
+            except Exception as e:  # noqa: BLE001
+                await queue.put({"type": "error", "status_code": 500, "message": str(e)})
+            finally:
+                await queue.put(None)  # sentinel: stream is done
+
+        task = asyncio.create_task(run())
         try:
-            result = await service.handle(user_id, session_id, req.message, req.active_file_ids)
-        except service.ChatError as e:
-            yield _frame({"type": "error", "status_code": 400, "message": str(e)})
-            return
-        except Exception as e:
-            yield _frame({"type": "error", "status_code": 500, "message": str(e)})
-            return
-        yield _frame({"type": "final", "data": _response(result, session_id)})
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield _frame(item)
+        finally:
+            await task
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 

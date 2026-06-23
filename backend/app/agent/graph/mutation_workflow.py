@@ -20,6 +20,7 @@ from app.agent.graph import dbtools
 from app.agent.graph.checkpointer import get_async_checkpointer
 from app.agent.graph.schema_context import enrich_schema_text
 from app.agent.graph.sql_gen import generate_sql
+from app.agent.graph.stages import StageCb, stream_stages
 from app.agent.graph.state import (
     OUTPUT_ERROR,
     OUTPUT_EXECUTION,
@@ -148,13 +149,16 @@ class MutationWorkflow:
         snap = await graph.aget_state(self._cfg(session_id))
         return bool(getattr(snap, "next", None))
 
-    async def run(self, session_id: str, user_message: str, engine: str, *, resume=None) -> tuple[AgentState, bool]:
+    async def run(
+        self, session_id: str, user_message: str, engine: str, *, resume=None,
+        on_stage: StageCb | None = None,
+    ) -> tuple[AgentState, bool]:
         graph = await self._compiled()
         cfg = self._cfg(session_id)
-        if resume is None:
-            await graph.ainvoke(create_initial_state(user_message, engine), cfg)
-        else:
-            await graph.ainvoke(Command(resume=resume), cfg)
+        graph_input = create_initial_state(user_message, engine) if resume is None else Command(resume=resume)
+        # astream emits a stage per node as it runs (stops at the APPROVAL interrupt); the
+        # snapshot below still provides the pending/next flag from the checkpoint.
+        await stream_stages(graph, graph_input, on_stage, cfg)
         snap = await graph.aget_state(cfg)
         state = cast(AgentState, dict(snap.values) if snap and snap.values else {})
         pending = bool(getattr(snap, "next", None))  # a node is waiting (interrupt) → needs approval

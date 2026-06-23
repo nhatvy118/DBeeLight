@@ -18,6 +18,18 @@ class StageType(str, Enum):
     DONE = "DONE"
 
 
+# User-facing progress label per graph node, streamed to the client as an SSE 'stage'
+# while that node runs. Nodes without a label (APPROVAL = interrupt waiting on the user,
+# DONE = terminal no-op) are intentionally absent → no stage emitted.
+STAGE_LABELS: dict[str, str] = {
+    StageType.SCHEMA_DISCOVERY.value: "Reading the database schema",
+    StageType.SCHEMA_PREVIEW.value: "Designing the table schema",
+    StageType.QUERY_EXECUTION.value: "Building and running the query",
+    StageType.SQL_PREVIEW.value: "Preparing the SQL statement",
+    StageType.EXECUTION.value: "Executing the SQL",
+}
+
+
 # Output type for the frontend
 OUTPUT_SQL_STATEMENT = "sql_statement"
 OUTPUT_SCHEMA_PREVIEW = "schema_preview"

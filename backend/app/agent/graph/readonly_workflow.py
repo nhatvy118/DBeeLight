@@ -15,6 +15,7 @@ from langgraph.graph import END, StateGraph
 from app.agent.graph import dbtools
 from app.agent.graph.schema_context import enrich_schema_text
 from app.agent.graph.sql_gen import generate_sql
+from app.agent.graph.stages import StageCb, stream_stages
 from app.agent.graph.state import (
     OUTPUT_ERROR,
     OUTPUT_QUERY_RESULT,
@@ -66,8 +67,11 @@ class ReadOnlyWorkflow:
             self._graph = g.compile()  # no checkpointer needed (no interrupt)
         return self._graph
 
-    async def run(self, session_id: str, user_message: str, engine: str) -> AgentState:
+    async def run(
+        self, session_id: str, user_message: str, engine: str, on_stage: StageCb | None = None
+    ) -> AgentState:
         # session_id keeps the uniform workflow.run() signature; readonly has no checkpoint to key.
         graph = self._compiled()
-        result = await graph.ainvoke(create_initial_state(user_message, engine))
-        return cast(AgentState, dict(result))
+        # astream emits a stage per node; the last 'values' chunk is the final state (no checkpointer).
+        result = await stream_stages(graph, create_initial_state(user_message, engine), on_stage)
+        return cast(AgentState, dict(result or {}))

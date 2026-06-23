@@ -11,6 +11,7 @@ Supports:
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from app.agent import titling
@@ -32,6 +33,16 @@ logger = logging.getLogger("chat")
 
 class ChatError(Exception):
     pass
+
+
+# Async callback used to stream progress stages to the client (SSE). Default is a no-op so
+# non-streaming callers (e.g. tests) can ignore it. Stages themselves originate from the
+# graph nodes (see app.agent.graph.stages); this layer only forwards the callback.
+StageCb = Callable[[str], Awaitable[None]]
+
+
+async def _noop_stage(_message: str) -> None:
+    return None
 
 
 @dataclass
@@ -148,12 +159,17 @@ async def _dispose_ctx(ctx: RequestContext) -> None:
 
 
 async def handle(
-    user_id: str, session_id: str, message: str, active_file_ids: list[str] | None = None
+    user_id: str,
+    session_id: str,
+    message: str,
+    active_file_ids: list[str] | None = None,
+    on_stage: StageCb | None = None,
 ) -> ChatResult:
     logger.info("→ handle(user_id=%r session_id=%r message=%r)", user_id, session_id, message)
+    emit = on_stage or _noop_stage
     access = await _authorize(user_id, session_id)
     history = await sess_repo.get_history(session_id)
-    is_first_message = not history  
+    is_first_message = not history
     orch = get_orchestrator()
 
     # Normalize the turn once (resolve references + English) → one standalone query used
@@ -184,7 +200,9 @@ async def handle(
         ctx = await _build_ctx(user_id, session_id, access, active_file_ids)
         token = set_ctx(ctx)
         try:
-            result = await orch.process_query(normalized, intent=intent, history=history)
+            result = await orch.process_query(
+                normalized, intent=intent, history=history, on_stage=emit
+            )
         finally:
             reset_ctx(token)
             await _dispose_ctx(ctx)
