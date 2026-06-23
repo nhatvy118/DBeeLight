@@ -3,10 +3,19 @@ import logging
 
 import json
 import uuid
+from datetime import datetime
 
 from app.db import get_pool
 
 logger = logging.getLogger("features.sessions.repository")
+
+
+def _parse_ts(value: str | datetime | None) -> datetime | None:
+    """Cursor `before` arrives as an ISO string from the query param, but asyncpg needs a real
+    datetime for a timestamptz bind. Parse it (tolerating a trailing 'Z'); None stays None."""
+    if value is None or isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 async def create_session(user_id: str, project_id: str | None, title: str) -> dict:
@@ -159,7 +168,7 @@ async def get_messages(session_id: str, limit: int = 30, before: str | None = No
         "SELECT id, role, content, tool_events, created_at FROM messages "
         "WHERE session_id=$1 AND ($2::timestamptz IS NULL OR created_at < $2::timestamptz) "
         "ORDER BY created_at DESC LIMIT $3",
-        session_id, before, limit + 1,  # fetch one extra to detect older pages
+        session_id, _parse_ts(before), limit + 1,  # fetch one extra to detect older pages
     )
     has_more = len(rows) > limit
     rows = rows[:limit]

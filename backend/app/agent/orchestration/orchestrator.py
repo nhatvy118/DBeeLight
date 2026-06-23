@@ -15,7 +15,6 @@ from app.agent.graph.create_table_workflow import CreateTableWorkflow
 from app.agent.graph.mutation_workflow import MutationWorkflow
 from app.agent.graph.readonly_workflow import ReadOnlyWorkflow
 from app.agent.loop import run_tool_loop
-from app.agent import summarization
 from app.agent.orchestration import intent as intent_mod
 from app.agent.orchestration import normalize as normalize_mod
 from app.agent.tools.backends import ExcelHttpBackend, InProcessBackend
@@ -24,6 +23,10 @@ from app.agent.tools.db_tools import DB_TOOL_NAMES
 from app.config import get_settings
 
 logger = logging.getLogger("agent.orchestrator")
+
+# Tool-loop routes keep only the most recent turns (sliding window) instead of summarizing —
+# context windows are large and normalize() already folds earlier references into the query.
+_MAX_HISTORY_TURNS = 10
 
 # Async progress callback (streamed to the client as SSE stages). Default no-op.
 StageCb = Callable[[str], Awaitable[None]]
@@ -198,33 +201,25 @@ class Orchestrator:
             out = state.get("output") or {}
             return ChatResult(response=str(out.get("message") or ""), route=route,
                               tool_events=_events_from_output(out))
-
-        # Only the agentic tool-loop routes below use conversation memory → summarize LAZILY
-        # here (the summary LLM call only fires for long convos AND only when actually needed;
-        # SQL workflows above never pay it). No stage is emitted for summary/history — stages
-        # come from graph nodes only (the tool-loop routes have no graph).
-        summary, recent = await summarization.summarize(history)
-
-        def _sp(base: str) -> str:
-            return f"[Previous conversation summary]\n{summary}\n\n{base}" if summary else base
-
-        history = recent
+        
+        # Sliding window: keep only the most recent turns (no summarization).
+        history = history[-_MAX_HISTORY_TURNS:]
         if route == "excel":
             if not self.excel_backend.list_tools_openai():
                 await self.excel_backend.refresh()
             res = await run_tool_loop(
-                system_prompt=_sp(prompts.excel_system_prompt()),
+                system_prompt=prompts.excel_system_prompt(),
                 history=history, user_message=user_message, backends=[self.excel_backend],
             )
         elif route == "chart":
             res = await run_tool_loop(
-                system_prompt=_sp(prompts.chart_system_prompt(engine)),
+                system_prompt=prompts.chart_system_prompt(engine),
                 history=history, user_message=user_message,
                 backends=[self.chart_backend, self.db_backend],
             )
         else:  # db_general (tool loop chung)
             res = await run_tool_loop(
-                system_prompt=_sp(prompts.db_system_prompt(engine)),
+                system_prompt=prompts.db_system_prompt(engine),
                 history=history, user_message=user_message, backends=[self.db_backend],
             )
 
