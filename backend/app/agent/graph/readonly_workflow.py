@@ -1,6 +1,6 @@
 """ReadOnly workflow (LangGraph) — controlled SELECT.
 
-No interrupt (read-only is safe) → runs straight through. Enforces require_dql_only: even if
+No interrupt (read-only is safe) → runs straight through. Enforces is_read_only: even if
 the LLM accidentally emits a write, it is rejected (safer than a free tool loop).
 
 Flow: SCHEMA_DISCOVERY → QUERY_EXECUTION → DONE

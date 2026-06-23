@@ -72,8 +72,10 @@ def _events_from_output(out: dict) -> list[dict]:
         return [{
             "tool": "execute_query",
             "type": "sql_preview",
+            # `preview` = structured {columns, rows, rowcount} of the rows an UPDATE/DELETE would
+            # affect (or None) — shipped as DATA for the FE to render, not a server-formatted table.
             "payload": {"sql": out["sql"], "type_sql": out.get("sql_kind") or "DML",
-                        "actionId": out.get("action_id")},
+                        "actionId": out.get("action_id"), "preview": out.get("preview")},
         }]
     # Statement that actually ran → 'sql_execution' (green "Query executed").
     if t == "execution_complete" and out.get("sql"):

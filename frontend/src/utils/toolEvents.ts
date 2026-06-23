@@ -22,9 +22,24 @@ export type SqlPreviewData = {
   type_sql?: string;
   mutationPreviewMarkdown?: string | null;
   actionId?: string;
+  /** Structured {columns, rows} of the rows an UPDATE/DELETE would affect (or null) — the server
+   *  ships data, the FE renders the table (same as a query_result). */
+  preview?: QueryResultData | null;
 };
 
 export type SessionFileAttachment = { name: string; fileId?: string };
+
+/** Coerce a backend {columns, rows} payload into a render-ready table (null cells → ''). */
+function coerceTable(p: Record<string, unknown> | null | undefined): QueryResultData | null {
+  if (!p || typeof p !== 'object') return null;
+  const columns = Array.isArray(p.columns) ? (p.columns as unknown[]).map((c) => String(c ?? '')) : [];
+  const rows = Array.isArray(p.rows)
+    ? (p.rows as unknown[]).map((r) =>
+        Array.isArray(r) ? (r as unknown[]).map((v) => (v == null ? '' : String(v))) : [])
+    : [];
+  if (columns.length === 0 && rows.length === 0) return null;
+  return { columns, rows };
+}
 
 const payloadOf = (e?: ToolEvent): Record<string, unknown> | undefined =>
   (e?.payload as Record<string, unknown> | undefined) ?? undefined;
@@ -63,7 +78,8 @@ export function readSqlPreview(events?: ToolEvent[]): SqlPreviewData | null {
   const mutationPreviewMarkdown =
     firstStr(p, 'mutation_preview_markdown', 'mutationPreviewMarkdown') ?? null;
   const actionId = firstStr(p, 'actionId', 'action_id');
-  return { sql, explain, type_sql, mutationPreviewMarkdown, actionId };
+  const preview = coerceTable(p.preview as Record<string, unknown> | null | undefined);
+  return { sql, explain, type_sql, mutationPreviewMarkdown, actionId, preview };
 }
 
 // ------------------------------------------------------------- schema preview
@@ -127,15 +143,7 @@ export type QueryResultData = { columns: string[]; rows: string[][] };
 export function readQueryResult(events?: ToolEvent[]): QueryResultData | null {
   if (!Array.isArray(events)) return null;
   const e = events.find((ev) => ev?.type === 'query_result' && ev?.payload);
-  const p = payloadOf(e);
-  if (!p) return null;
-  const columns = Array.isArray(p.columns) ? (p.columns as unknown[]).map((c) => String(c ?? '')) : [];
-  const rows = Array.isArray(p.rows)
-    ? (p.rows as unknown[]).map((r) =>
-        Array.isArray(r) ? (r as unknown[]).map((v) => (v == null ? '' : String(v))) : [])
-    : [];
-  if (columns.length === 0 && rows.length === 0) return null;
-  return { columns, rows };
+  return coerceTable(payloadOf(e));
 }
 
 // --------------------------------------------------------------------- charts
