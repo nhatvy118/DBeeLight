@@ -26,9 +26,7 @@ from app.features.chat.router import router as chat_router
 from app.features.db.router import router as db_router
 from app.features.files.router import router as files_router
 from app.features.projects.router import router as projects_router
-from app.features.query.router import router as query_router
 from app.features.sessions.router import router as sessions_router
-from app.features.share.router import router as share_router
 from app.logging_config import setup_logging
 
 logger = logging.getLogger("app")
@@ -80,11 +78,9 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)       # /api/auth/* (cookie session)
     app.include_router(projects_router)   # /api/projects/*
     app.include_router(db_router)         # /api/db/* (per-user connection)
-    app.include_router(query_router)      # /api/sql/execute, /api/export
     app.include_router(charts_router)     # /api/projects/{id}/charts, /dashboard/render
     app.include_router(sessions_router)   # /api/sessions/*
     app.include_router(files_router)      # /api/files/*
-    app.include_router(share_router)      # /api/shares/*, /api/sessions/{id}/share
     app.include_router(admin_router)      # /api/admin/*
     app.include_router(chat_router)       # /api/chat, /api/chat/approve
 

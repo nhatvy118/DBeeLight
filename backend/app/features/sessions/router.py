@@ -49,7 +49,6 @@ async def get_one(session_id: str, user_id: str = Depends(get_current_user_id)):
             "sql_action_states": await repo.get_sql_actions(session_id),
             **await service.db_descriptor(user_id, s),
         },
-        "share_info": None,
     }
 
 

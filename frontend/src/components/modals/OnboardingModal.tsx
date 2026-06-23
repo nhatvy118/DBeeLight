@@ -225,32 +225,6 @@ const STEPS: Step[] = [
     body: <>Ask the bee to <strong>analyze</strong> your data and <strong>draw a chart</strong> — bar, line or pie. You get the picture <em>and</em> a short written takeaway, and can download either to Excel.</>,
   },
 
-  /* 6 — share */
-  {
-    art: (
-      <div style={{ width: '100%', maxWidth: 330, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {[
-          { icon: I.Eye, n: 'View only', d: 'Can read the chat', fg: 'var(--text-muted)', bg: 'var(--surface-2)' },
-          { icon: I.Refresh, n: 'Read data', d: 'Can re-run questions', fg: 'var(--info)', bg: 'var(--info-soft)' },
-          { icon: I.Pencil, n: 'Can edit', d: 'Full access', fg: 'var(--accent-ink)', bg: 'var(--accent-soft)' },
-        ].map((p, i) => {
-          const Icon = p.icon;
-          return (
-            <div key={i} className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px' }}>
-              <span style={{ width: 32, height: 32, borderRadius: 9, display: 'grid', placeItems: 'center', background: p.bg, color: p.fg, flexShrink: 0 }}><Icon size={16} /></span>
-              <span style={{ flex: 1 }}>
-                <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700 }}>{p.n}</span>
-                <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>{p.d}</span>
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    ),
-    eyebrow: 'Same for both · Step 4',
-    title: 'Share with your team',
-    body: <>Found something useful? <strong>Share any chat</strong> and choose what teammates can do — just view, re-run the questions, or fully edit. They'll find it under "Shared with me."</>,
-  },
 ];
 
 type OnboardingModalProps = {

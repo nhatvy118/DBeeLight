@@ -10,7 +10,6 @@ import {
   sendMessageWithStream,
   getSessions,
   deleteChatSession,
-  executeSql,
   resumeWorkflow,
   createSession,
   listUserFilesInventory,
@@ -19,7 +18,6 @@ import {
   downloadStoredSessionFile,
   saveChart,
   type SessionInfo,
-  type SessionShareInfo,
   type SessionFileMeta,
   type ImportMode,
   type ToolEvent,
@@ -81,7 +79,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   // Don't init from propSessionId: so on reload with URL like /chat/projectId/sessionId,
   // the "load session" effect sees propSessionId set but sessionId null and fetches messages.
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [shareInfo, setShareInfo] = useState<SessionShareInfo | null>(null);
   const [selectedProject, setSelectedProject] = useState<{ id: string; name: string; description?: string } | null>(null);
   const [projectSessions, setProjectSessions] = useState<SessionInfo[]>([]);
   const [inputKey, setInputKey] = useState(0);
@@ -328,13 +325,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const isStopVisible = isSending || isAssistantTyping;
 
-  const isViewOnlyShare = shareInfo?.permission === 'view_only' || shareInfo?.revoked === true;
-
   const canSend = useMemo(() => {
     const hasText = query.trim().length > 0;
-    if (isViewOnlyShare) return false;
     return !isStopVisible && !isUploadingFile && !pendingStorageChoice && hasText;
-  }, [isStopVisible, isUploadingFile, pendingStorageChoice, query, isViewOnlyShare]);
+  }, [isStopVisible, isUploadingFile, pendingStorageChoice, query]);
 
   const handleRemoveStagedFile = (localId: string) => {
     setStagedFiles((prev) => prev.filter((f) => f.localId !== localId));
@@ -477,7 +471,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           setHasMoreMessages(page.has_more);
           setStagedFiles([]);
           setSessionId(sid);
-          setShareInfo(info.share_info ?? null);
           onSessionIdChange?.(sid);
           saveLastSession(sid, selectedProject?.id ?? null);
         }
@@ -503,7 +496,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       setMessages([]);
       setStagedFiles([]);
       setSessionId(null);
-      setShareInfo(null);
       onSessionIdChange?.(null);
       saveLastSession(null, null);
     }
@@ -1115,6 +1107,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const handleExecuteSql = async (aiIndex: number) => {
     const msg = messages[aiIndex];
     if (!msg || !msg.sqlToExecute || isSending || msg.sqlActionState === 'running' || msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled') return;
+    if (!sessionId) {
+      setMessages((prev) => [...prev, { text: 'Error: No session — cannot execute SQL.', isUser: false }]);
+      return;
+    }
 
     // Show a loading state while the query runs (reference SqlPreview "running").
     setMessages((prev) => {
@@ -1128,7 +1124,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     setIsSending(true);
     try {
-      const res = await executeSql(msg.sqlToExecute, msg.sqlActionId ?? null, sessionId, selectedProject?.id || null, false, null);
+      // Approve the gated mutation: the SQL lives in the server-side checkpoint; we just
+      // resume the workflow with `approved=true` (no SQL sent from the client → no injection).
+      const res = await resumeWorkflow(sessionId, true, selectedProject?.id || null, null);
       if (res.success) {
         const resText = res.response ?? '';
         const cleanedRaw = (resText ?? '').trim();
@@ -1226,13 +1224,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const handleCancelSql = (aiIndex: number) => {
     const msg = messages[aiIndex];
     if (!msg || !msg.sqlToExecute) return;
-    // Simply clear the sqlToExecute flag so the Execute button disappears.
+    // Optimistically flip the card to cancelled so the Execute button disappears.
     setMessages((prev) => {
       const updated = [...prev];
       updated[aiIndex] = { ...msg, sqlActionState: 'cancelled' };
       return updated;
     });
-    void executeSql(msg.sqlToExecute, msg.sqlActionId ?? null, sessionId, selectedProject?.id || null, true, 'cancelled');
+    // Resume the workflow with `approved=false` so the server-side checkpoint is closed
+    // and the 'cancelled' state is persisted (survives a history reload).
+    if (sessionId) void resumeWorkflow(sessionId, false, selectedProject?.id || null, null);
   };
 
   // When switching to a *different* project: save current session for the project we're leaving, then clear UI.
@@ -1243,7 +1243,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (prevProjectIdRef.current !== undefined && prevProjectIdRef.current !== currentId) {
       saveLastSession(sessionId, prevProjectIdRef.current ?? null);
       setSessionId(null);
-      setShareInfo(null);
       setMessages([]);
       setStagedFiles([]);
       onSessionIdChange?.(null);
@@ -1317,7 +1316,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           setHasMoreMessages(page.has_more);
           setStagedFiles([]);
           setSessionId(sid);
-          setShareInfo(info.share_info ?? null);
           onSessionIdChange?.(sid);
         }
       } catch {
@@ -1365,28 +1363,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   // - No project and no chat
   // - New session created but no messages sent yet
   const isEmptyState = messages.length === 0 && !showProjectLanding;
-
-  const shareBanner = shareInfo ? (
-    <div
-      style={{
-        padding: '10px 24px', fontSize: 13.5, borderBottom: '1px solid var(--border)',
-        background: shareInfo.revoked
-          ? 'oklch(0.95 0.05 25)'
-          : shareInfo.permission === 'view_only'
-            ? 'var(--accent-soft)'
-            : 'var(--info-soft)',
-        color: shareInfo.revoked ? 'oklch(0.5 0.18 25)' : 'var(--text)',
-      }}
-    >
-      {shareInfo.revoked
-        ? 'This shared chat has been revoked by the owner. You can no longer continue it.'
-        : shareInfo.permission === 'view_only'
-          ? 'This chat was shared with you in view-only mode — you cannot send messages.'
-          : shareInfo.permission === 'read_data'
-            ? 'This chat was shared with you in read-data mode — only SELECT queries are allowed.'
-            : 'This chat was shared with you with full access to read and modify data.'}
-    </div>
-  ) : null;
 
   const greetHour = new Date().getHours();
   const greeting = greetHour < 12 ? 'Good morning' : greetHour < 18 ? 'Good afternoon' : 'Good evening';
@@ -1438,7 +1414,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               <span style={{ fontSize: 13, fontWeight: 600, maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename}</span>
               <button
                 type="button"
-                disabled={isViewOnlyShare || pendingStorageChoice}
+                disabled={pendingStorageChoice}
                 onClick={() => handleRemoveStagedFile(f.localId)}
                 className="focusable"
                 aria-label={`Remove ${f.filename}`}
@@ -1455,7 +1431,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         key={inputKey}
         ref={textareaRef}
         value={query}
-        disabled={isViewOnlyShare || isUploadingFile}
+        disabled={isUploadingFile}
         onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setQuery(e.target.value)}
         onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
           if (e.key === 'Enter' && !e.shiftKey) {
@@ -1465,11 +1441,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           }
         }}
         placeholder={
-          isViewOnlyShare
-            ? 'Read-only shared chat — sending disabled'
-            : selectedProject
-              ? `New chat in ${selectedProject.name}`
-              : 'Ask anything about your data…'
+          selectedProject
+            ? `New chat in ${selectedProject.name}`
+            : 'Ask anything about your data…'
         }
         rows={1}
         autoComplete="off"
@@ -1487,7 +1461,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <AttachMenu
             onUploadDevice={() => fileInputRef.current?.click()}
-            disabled={isViewOnlyShare || isUploadingFile}
+            disabled={isUploadingFile}
           />
           {/* Data source selector — files only; empty selection = ask the database. */}
           {(() => {
@@ -1571,8 +1545,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--bg)' }}>
-      {shareBanner}
-
       {/* Conversation */}
       {messages.length > 0 && (
         <div ref={scrollContainerRef} onScroll={handleMessagesScroll} style={{ flex: 1, overflowY: 'auto' }}>

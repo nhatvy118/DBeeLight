@@ -1,12 +1,10 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import AcceptShare from '../pages/AcceptShare';
 import Account from '../pages/Account';
 import AdminDashboard from '../pages/AdminDashboard';
 import Chat from '../pages/Chat';
 import Dashboard from '../pages/Dashboard';
 import Login from '../pages/Login';
-import PrintChat from '../pages/PrintChat';
 import NotFound from '../pages/NotFound';
 
 type AppRoutesProps = {
@@ -45,8 +43,7 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
   useLayoutEffect(() => {
     if (isLoading || user) return;
     const pathname = window.location.pathname;
-    const isPublic =
-      pathname === '/' || pathname === '/login' || pathname.startsWith('/share/');
+    const isPublic = pathname === '/' || pathname === '/login';
     if (!isPublic) {
       window.history.replaceState({}, '', '/login');
       setPath('/login');
@@ -90,10 +87,6 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
 
   // Public routes — render regardless of auth state.
   if (path === '/login' || pathname === '/login') return <Login />;
-  if (path.startsWith('/share/accept/')) {
-    const token = path.slice('/share/accept/'.length);
-    return <AcceptShare token={decodeURIComponent(token)} />;
-  }
 
   // Auth gate for everything below. On marketing/login paths, keep showing
   // <Login> while /api/auth/me loads so production (/) never looks blank if
@@ -106,21 +99,12 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
   }
   if (!user) {
     // Đồng bộ URL trước khi paint (phòng deploy cũ / race sau logout).
-    if (pathname !== '/login' && !pathname.startsWith('/share/')) {
+    if (pathname !== '/login') {
       window.history.replaceState({}, '', '/login');
     }
     return <Login />;
   }
 
-  // Print-friendly view of a chat session: ``/chat/.../print``. Used as the
-  // PDF export path — the page auto-triggers ``window.print()`` and the user
-  // saves to PDF via the browser dialog.
-  if (path.startsWith('/chat/') && path.endsWith('/print')) {
-    const inner = path.slice('/chat/'.length, -'/print'.length);
-    const parts = inner.split('/').filter(Boolean);
-    const sessionId = parts[parts.length - 1];
-    if (sessionId) return <PrintChat sessionId={sessionId} />;
-  }
   if (path.startsWith('/dashboard/')) {
     const pid = path.slice('/dashboard/'.length).split('/').filter(Boolean)[0];
     if (pid) return <Dashboard projectId={pid} />;

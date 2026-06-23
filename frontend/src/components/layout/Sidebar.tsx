@@ -8,12 +8,10 @@ import {
   createProject,
   getProjects,
   deleteProject,
-  listReceivedShares,
   connectExternalDb,
   disconnectExternalDb,
   getDbConnectionStatus,
   url,
-  type ReceivedShare,
   type SessionInfo,
 } from '../../services/api';
 import ProjectModal from '../modals/ProjectModal';
@@ -216,7 +214,6 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
   const { user } = useAuth();
   const onboarding = useOnboarding();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [receivedShares, setReceivedShares] = useState<ReceivedShare[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
@@ -343,24 +340,6 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
   useEffect(() => {
     void fetchSessions();
   }, []);
-
-  // Load shares received by the current user.
-  useEffect(() => {
-    if (!user) {
-      setReceivedShares([]);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const list = await listReceivedShares();
-        if (!cancelled) setReceivedShares(list);
-      } catch (e) {
-        console.error('Failed to load received shares:', e);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [user]);
 
   // Listen for changes in projectSessions to update the display
   useEffect(() => {
@@ -563,11 +542,6 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
     window.location.replace('/login');
   };
 
-  const PERM: Record<string, { label: string; color: string }> = {
-    view_only: { label: 'View', color: 'var(--text-muted)' },
-    read_data: { label: 'Read', color: 'var(--info)' },
-    edit_data: { label: 'Edit', color: 'var(--green-ink)' },
-  };
   const unassigned = getUnassignedSessions();
 
   return (
@@ -640,7 +614,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
           </div>
         )}
 
-        {/* scroll area: projects + shared + history */}
+        {/* scroll area: projects + history */}
         <div style={{ flex: 1, overflowY: 'auto', padding: isCollapsed ? '12px 0' : '14px 14px', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {!isCollapsed && (
             <div>
@@ -701,35 +675,6 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
                         <Icons.Trash size={15} />
                       </button>
                     </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {!isCollapsed && receivedShares.length > 0 && (
-            <div>
-              <SectionLabel>Shared with me</SectionLabel>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {receivedShares.map((s) => {
-                  const isAccepted = !!s.accepted_at && !!s.forked_session_id;
-                  const target = isAccepted
-                    ? `/chat/${s.project_id}/${s.forked_session_id}`
-                    : `/share/accept/${encodeURIComponent(s.accept_token)}`;
-                  const ownerName = s.owner_name || s.owner_email || 'Unknown';
-                  const perm = PERM[s.permission] ?? PERM.view_only;
-                  return (
-                    <button key={s.recipient_id} onClick={() => navigate(target)} type="button" className="focusable"
-                      style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 12px', borderRadius: 'var(--r-sm)', textAlign: 'left', color: 'var(--text-soft)', background: 'transparent', border: 'none' }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
-                      <span style={{ width: 26, height: 26, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'var(--surface-3)', color: 'var(--text-soft)', fontSize: 11, fontWeight: 800 }}>{ownerName[0]}</span>
-                      <span style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.session_name || 'Shared chat'}</span>
-                        <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{isAccepted ? `from ${ownerName}` : `pending — ${ownerName}`}</span>
-                      </span>
-                      <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.03em', color: perm.color, flexShrink: 0 }}>{perm.label}</span>
-                    </button>
                   );
                 })}
               </div>

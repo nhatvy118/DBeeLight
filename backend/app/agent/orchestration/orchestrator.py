@@ -55,7 +55,7 @@ def _action_state_from_output(out: dict) -> str | None:
     if t == "schema_preview":
         return "cancelled" if out.get("cancelled") else "pending"
     if t == "sql_statement":
-        return "pending"
+        return "cancelled" if out.get("cancelled") else "pending"
     if t == "execution_complete":
         return "executed"
     if t == "error" and out.get("sql"):
@@ -68,7 +68,7 @@ def _events_from_output(out: dict) -> list[dict]:
     t = out.get("type")
     # Pending mutation preview → a 'sql_preview' event carrying the SQL + its kind so the FE
     # shows an Execute button (NOT executed). type_sql lets the FE auto-run DQL but gate DML/DDL.
-    if t == "sql_statement" and out.get("sql"):
+    if t == "sql_statement" and out.get("sql") and not out.get("cancelled"):
         return [{
             "tool": "execute_query",
             "type": "sql_preview",

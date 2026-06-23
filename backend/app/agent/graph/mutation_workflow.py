@@ -130,6 +130,12 @@ def _route_after_preview(state: AgentState) -> str:
     return StageType.APPROVAL.value
 
 
+def _route_after_approval(state: AgentState) -> str:
+    # approved → run the SQL; cancelled → straight to DONE so the cancelled output
+    # (set by _approval) survives instead of being overwritten in EXECUTION.
+    return StageType.EXECUTION.value if state.get("approved") else StageType.DONE.value
+
+
 class MutationWorkflow:
     def __init__(self):
         self._graph = None
@@ -149,7 +155,9 @@ class MutationWorkflow:
             g.add_conditional_edges(StageType.SQL_PREVIEW.value, _route_after_preview,
                                     {StageType.APPROVAL.value: StageType.APPROVAL.value,
                                      StageType.DONE.value: StageType.DONE.value})
-            g.add_edge(StageType.APPROVAL.value, StageType.EXECUTION.value)
+            g.add_conditional_edges(StageType.APPROVAL.value, _route_after_approval,
+                                    {StageType.EXECUTION.value: StageType.EXECUTION.value,
+                                     StageType.DONE.value: StageType.DONE.value})
             g.add_edge(StageType.EXECUTION.value, StageType.DONE.value)
             g.add_edge(StageType.DONE.value, END)
             self._graph = g.compile(checkpointer=await get_async_checkpointer())

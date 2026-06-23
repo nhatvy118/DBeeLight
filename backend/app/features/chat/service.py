@@ -22,11 +22,8 @@ from app.agent.adapters import make_adapter
 from app.agent.pool import get_connection_pool, user_pool_key
 from app.features.auth import repository as auth_repo
 from app.features.files import service as files_service
-from app.features.projects import repository as proj_repo
 from app.features.projects import service as proj_service
 from app.features.sessions import repository as sess_repo
-from app.features.share import repository as share_repo
-from app.features.share import service as share_service
 
 logger = logging.getLogger("chat")
 
@@ -49,11 +46,10 @@ async def _noop_stage(_message: str) -> None:
 class _Access:
     project_id: str
     db_url: str | None  # None when no primary DB is configured (file-only chat is still allowed)
-    permission: str  # 'edit_data' if owner; if recipient = the granted permission
 
 
 async def _authorize(user_id: str, session_id: str) -> _Access:
-    """Determine project + db_url + permission. A forked (shared) session is gated by permission.
+    """Determine project + db_url for an owned session.
 
     db_url may be None: a session with no primary DB is still allowed (the user can query
     uploaded files only). The "nothing to query" case is enforced in _build_ctx, which knows
@@ -65,31 +61,16 @@ async def _authorize(user_id: str, session_id: str) -> _Access:
         raise ChatError("Session does not exist or you do not have access.")
     project_id = row["project_id"]
 
-    # Forked session (share recipient): permission from the share, db_url from the source project.
-    if row["share_recipient_id"]:
-        perm = await share_repo.permission_for_forked_session(session_id)
-        if not perm or perm["revoked"]:
-            raise ChatError("The shared chat has been revoked or is invalid.")
-        db_url = await _project_db_url_any(project_id)  # may be None
-        return _Access(project_id=project_id, db_url=db_url, permission=perm["permission"])
-
     # Project-bound session: DB from the project (may be None if not configured yet).
     if project_id:
         db_url = await proj_service.resolve_db_url(project_id, user_id)
-        return _Access(project_id=project_id, db_url=db_url, permission="edit_data")
+        return _Access(project_id=project_id, db_url=db_url)
 
     # Global session (no project): DB from the user's active connection (may be None).
     db_url = await auth_repo.get_active_db_url(user_id)
     db_url = db_url if (db_url and proj_service.is_configured(db_url)) else None
     # Pool key per user so global sessions of different users don't collide.
-    return _Access(project_id=user_pool_key(user_id), db_url=db_url, permission="edit_data")
-
-
-async def _project_db_url_any(project_id: str) -> str | None:
-    """Project db_url regardless of owner (used for shared forked sessions)."""
-    logger.info("→ _project_db_url_any(project_id=%r)", project_id)  # autolog
-    db_url = await proj_repo.get_db_url_any(project_id)
-    return db_url if (db_url and proj_service.is_configured(db_url)) else None
+    return _Access(project_id=user_pool_key(user_id), db_url=db_url)
 
 
 # Sentinel the frontend sends in active_file_ids to mean "the project / primary DB".
@@ -178,15 +159,8 @@ async def handle(
     # tool-loop routes that actually need conversation memory.
     normalized = await orch.normalize(message, history)
 
-    # Gating: for share recipients (not owner-edit), check the route access_level.
     intent = await orch.classify(normalized)
-    if access.permission != "edit_data":
-        if not share_service.allows(access.permission, intent.access_level):
-            raise ChatError(
-                f"You only have '{access.permission}' permission, not enough for this operation "
-                f"(needs '{intent.access_level}')."
-            )
-    # if off-topic, return result that Chat system does not support 
+    # if off-topic, return result that Chat system does not support
     if intent.route == "off_topic":
         return ChatResult(response="Sorry, I can only help with database-related questions. Please ask a database-related question.", route=intent.route)
 
@@ -227,8 +201,6 @@ async def approve(
 ) -> ChatResult:
     logger.info("→ approve(user_id=%r session_id=%r approved=%r)", user_id, session_id, approved)  # autolog
     access = await _authorize(user_id, session_id)
-    if access.permission != "edit_data":
-        raise ChatError("You do not have permission to execute mutations on this session.")
     ctx = await _build_ctx(user_id, session_id, access)
     token = set_ctx(ctx)
     try:

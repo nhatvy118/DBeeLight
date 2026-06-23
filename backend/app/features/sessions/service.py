@@ -41,12 +41,6 @@ async def db_descriptor(user_id: str, session: dict) -> dict:
     """
     project_id = session.get("project_id")
 
-    # Forked (shared) session → DB comes from the source project (no owner filter).
-    if session.get("share_recipient_id"):
-        db_url = await proj_repo.get_db_url_any(project_id) if project_id else None
-        has_db = _configured(db_url)
-        return {"has_db": has_db, "db_kind": "project" if has_db else None, "db_label": None}
-
     # Project-bound session → the project's own DB.
     if project_id:
         proj = await proj_repo.get_project(project_id, user_id)

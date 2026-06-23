@@ -68,7 +68,7 @@ async def get_session(session_id: str, user_id: str) -> dict | None:
     logger.info("→ get_session(session_id=%r user_id=%r)", session_id, user_id)  # autolog
     pool = get_pool()
     row = await pool.fetchrow(
-        "SELECT id, user_id, project_id, title, share_recipient_id, created_at "
+        "SELECT id, user_id, project_id, title, created_at "
         "FROM sessions WHERE id=$1 AND user_id=$2",
         session_id, user_id,
     )
