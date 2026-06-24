@@ -78,6 +78,16 @@ type ChatProps = {
   viewer?: boolean;
 };
 
+/** Deterministic, non-LLM confirmation line shown after a "Save to database" import (that path
+ *  doesn't call the AI, so this is the only feedback the user gets). */
+function importConfirmation(fileNames: string[], createdTables: string[], appendedTo: string | null): string {
+  const files = fileNames.length ? fileNames.join(', ') : 'the file';
+  if (appendedTo) return `✓ Appended ${files} into the existing table \`${appendedTo}\`.`;
+  if (createdTables.length === 1) return `✓ Imported ${files} into a new table \`${createdTables[0]}\`. Ask me anything about it.`;
+  if (createdTables.length > 1) return `✓ Imported ${files} into new tables: ${createdTables.map((t) => `\`${t}\``).join(', ')}.`;
+  return `✓ Imported ${files} into the project database.`;
+}
+
 export default function Chat({ projectId: propProjectId, sessionId: propSessionId, onSessionIdChange, viewer = false }: ChatProps) {
   const [query, setQuery] = useState<string>('');
   const [messages, setMessages] = useState<UiMessage[]>([]);
@@ -115,6 +125,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const [describeQueue, setDescribeQueue] = useState<{ name: string; columns: string[] }[]>([]);
   /** Message payload waiting to be sent after storage choice is made. */
   const pendingSendPayloadRef = useRef<string | null>(null);
+  /** Summary of the most recent import, captured in uploadStagedFiles and read right after by
+   *  handleStorageChoice to build the deterministic confirmation line. */
+  const lastImportRef = useRef<{ mode: ImportMode; fileNames: string[]; createdTables: string[]; appendedTo: string | null } | null>(null);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [typingStopSignal, setTypingStopSignal] = useState(0);
   // Live progress label streamed from the backend (e.g. "Đang sinh SQL...").
@@ -443,6 +456,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           toast.error(e instanceof Error ? e.message : `Failed to upload ${staged.filename}`);
         }
       }
+
+      // Stash a summary so handleStorageChoice can show a deterministic import confirmation.
+      lastImportRef.current = {
+        mode: importMode,
+        fileNames: uploaded.map((u) => u.filename),
+        createdTables: createdTables.map((t) => t.name),
+        appendedTo: targetTable,
+      };
 
       // New project tables → queue the "describe this table" step (data dictionary).
       if (importMode === 'project_db' && !targetTable && createdTables.length > 0) {
@@ -812,8 +833,18 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       return;
     }
 
-    // Uploaded files are bound to the session server-side; send the user text as-is.
-    void uploaded;
+    // "Save to database" is a pure storage action: keep the user's text as history (already
+    // rendered) and show a deterministic confirmation — do NOT send it to the AI. The other
+    // destinations (Q&A, Excel) forward the text as a real prompt.
+    if (mode === 'project_db') {
+      const imp = lastImportRef.current;
+      lastImportRef.current = null;
+      if (imp) {
+        setMessages((prev) => [...prev, { text: importConfirmation(imp.fileNames, imp.createdTables, imp.appendedTo), isUser: false }]);
+      }
+      return;
+    }
+    lastImportRef.current = null;
     await doSend(displayText);
   };
 
