@@ -13,6 +13,7 @@ from typing import cast
 from langgraph.graph import END, StateGraph
 
 from app.agent.graph import dbtools
+from app.agent.graph.nl_answer import answer_from_result
 from app.agent.graph.schema_context import enrich_schema_text
 from app.agent.graph.sql_gen import generate_sql
 from app.agent.graph.stages import StageCb, stream_stages
@@ -46,10 +47,14 @@ async def _query_execution(state: AgentState) -> AgentState:
         return {**state, "output": {"type": OUTPUT_ERROR,
                 "message": f"The query couldn’t run: {dbtools.clean_db_error(str(e))}."}}
     # Structured result: the server does NOT render the table — it ships {columns, rows} and the
-    # frontend renders it. The message carries only the SQL fence (shown as the on-theme SQL card).
+    # frontend renders it. The message carries a one-sentence NL answer (so "how many…?" gets a
+    # spoken "There are …", not just a table) followed by the SQL fence (the on-theme SQL card).
+    result = res.to_dict()
+    answer = await answer_from_result(state.get("user_message", ""), result)
+    message = f"{answer}\n\n```sql\n{sql}\n```" if answer else f"```sql\n{sql}\n```"
     return {**state, "sql": sql,
             "output": {"type": OUTPUT_QUERY_RESULT, "sql": sql,
-                       "message": f"```sql\n{sql}\n```", "result": res.to_dict()}}
+                       "message": message, "result": result}}
 
 
 class ReadOnlyWorkflow:
