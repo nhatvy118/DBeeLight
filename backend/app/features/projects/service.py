@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
-from typing import TypeGuard
+from typing import Any, TypeGuard, cast
 from urllib.parse import quote, unquote, urlparse, parse_qs
 
+from app.agent.llm import get_llm
 from app.agent.pool import get_connection_pool
 from app.config import get_settings
 from app.features.metadata import repository as metadata_repo
@@ -166,6 +168,89 @@ async def list_tables(project_id: str, user_id: str) -> list[dict]:
     adapter = await get_connection_pool().adapter_for(project_id, db_url)
     schema = await adapter.get_schema()
     return [{"name": t, "columns": [c.name for c in cols]} for t, cols in schema.items()]
+
+
+async def _owned_adapter(project_id: str, user_id: str):
+    """(adapter, schema) for a project the user OWNS, or raise ProjectError. Shared used by the
+    table-description endpoints (owner-only — descriptions are an authoring action)."""
+    project = await repo.get_project(project_id, user_id)
+    if not project:
+        raise ProjectError("Project not found or not yours")
+    db_url = project.get("db_url")
+    if not is_configured(db_url):
+        raise ProjectError("Project has no database connected")
+    adapter = await get_connection_pool().adapter_for(project_id, db_url)
+    return adapter, await adapter.get_schema()
+
+
+async def suggest_table_descriptions(project_id: str, user_id: str, table: str) -> dict:
+    """LLM-suggested table + per-column descriptions for an imported table, from its column names
+    and a few sample rows. Best-effort: on any failure returns empty strings (the user can still
+    type their own). Owner-only."""
+    adapter, schema = await _owned_adapter(project_id, user_id)
+    if table not in schema:
+        raise ProjectError(f"Table '{table}' doesn't exist in the database.")
+    columns = [c.name for c in schema[table]]
+    empty = {"tableDescription": "", "columns": [{"name": c, "description": ""} for c in columns]}
+    try:
+        res = await adapter.execute(f'SELECT * FROM "{table}" LIMIT 5')
+        sample = {"columns": list(res.columns), "rows": [[_cell(v) for v in r] for r in res.rows]}
+    except Exception as e:  # noqa: BLE001 — no samples is fine; suggest from names alone
+        logger.warning("describe-suggest: sample read failed for %r: %s", table, e)
+        sample = {"columns": columns, "rows": []}
+    msgs: list[dict] = [
+        {"role": "system", "content": (
+            "You write a data dictionary. Given a table name, its columns, and a few sample rows, "
+            "write a SHORT plain-language description for the TABLE and for EVERY column (what it "
+            "holds, units or codes where obvious). Be concise and factual; do not invent meaning "
+            "you cannot infer. Return JSON only: "
+            '{"tableDescription": "...", "columns": [{"name": "...", "description": "..."}]}'
+        )},
+        {"role": "user", "content": (
+            f"Table: {table}\nColumns: {', '.join(columns)}\n"
+            f"Sample:\n{json.dumps(sample, ensure_ascii=False, default=str)}"
+        )},
+    ]
+    try:
+        resp = await get_llm().chat.completions.create(
+            model=get_settings().llm_model, messages=cast(Any, msgs), temperature=0,
+            response_format={"type": "json_object"},
+        )
+        spec = json.loads(resp.choices[0].message.content or "{}")
+    except Exception as e:  # noqa: BLE001 — suggestion is optional; fall back to empty
+        logger.warning("describe-suggest: LLM failed for %r: %s", table, e)
+        return empty
+    # Align the model's output back to the real column list (ignore hallucinated/missing cols).
+    by_name = {str(c.get("name", "")).lower(): str(c.get("description") or "")
+               for c in (spec.get("columns") or []) if isinstance(c, dict)}
+    return {
+        "tableDescription": str(spec.get("tableDescription") or ""),
+        "columns": [{"name": c, "description": by_name.get(c.lower(), "")} for c in columns],
+    }
+
+
+async def save_table_descriptions(
+    project_id: str, user_id: str, table: str, table_description: str, columns: list[dict]
+) -> None:
+    """Persist user-edited table + column descriptions to the data dictionary (owner-only). Only
+    non-empty descriptions are written; the table must exist in the project DB."""
+    _, schema = await _owned_adapter(project_id, user_id)
+    if table not in schema:
+        raise ProjectError(f"Table '{table}' doesn't exist in the database.")
+    valid_cols = {c.name.lower() for c in schema[table]}
+    rows: list[dict] = []
+    if table_description.strip():
+        rows.append({"table": table, "column": None, "description": table_description.strip()})
+    for c in columns or []:
+        name = str(c.get("name") or "").strip()
+        desc = str(c.get("description") or "").strip()
+        if name and desc and name.lower() in valid_cols:
+            rows.append({"table": table, "column": name, "description": desc})
+    await metadata_repo.upsert_descriptions("project", project_id, rows)
+
+
+def _cell(v: object) -> object:
+    return v if v is None or isinstance(v, (str, int, float, bool)) else str(v)
 
 
 async def resolve_db_url(project_id: str, user_id: str) -> str | None:

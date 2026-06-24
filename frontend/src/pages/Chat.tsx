@@ -29,6 +29,7 @@ import {
   type ProjectKind,
 } from '../services/api';
 import ConnectionInfoModal from '../components/modals/ConnectionInfoModal';
+import DescribeTableModal from '../components/modals/DescribeTableModal';
 import {
   readSqlPreview,
   readSchemaPreview,
@@ -110,6 +111,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const [dbTablesPicker, setDbTablesPicker] = useState<{ loading: boolean; tables: string[] } | null>(null);
   /** Chosen append target in the db sub-step. '' = create a new table. */
   const [appendTarget, setAppendTarget] = useState<string>('');
+  /** Tables just created by an import, awaiting the optional "describe table" step (one at a time). */
+  const [describeQueue, setDescribeQueue] = useState<{ name: string; columns: string[] }[]>([]);
   /** Message payload waiting to be sent after storage choice is made. */
   const pendingSendPayloadRef = useRef<string | null>(null);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
@@ -417,6 +420,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         ),
       );
 
+      const createdTables: { name: string; columns: string[] }[] = [];
       for (let i = 0; i < results.length; i++) {
         const result = results[i];
         const staged = filesToUpload[i];
@@ -425,6 +429,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         if (result.status === 'fulfilled') {
           const up = result.value.file;
           uploaded.push({ id: up.id, filename: up.filename });
+          if (result.value.tables) createdTables.push(...result.value.tables);
           continue;
         }
 
@@ -437,6 +442,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         } else {
           toast.error(e instanceof Error ? e.message : `Failed to upload ${staged.filename}`);
         }
+      }
+
+      // New project tables → queue the "describe this table" step (data dictionary).
+      if (importMode === 'project_db' && !targetTable && createdTables.length > 0) {
+        setDescribeQueue(createdTables);
       }
 
       if (sid && uploaded.length > 0) {
@@ -1816,6 +1826,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         <ConnectionInfoModal
           project={{ id: selectedProject.id, name: selectedProject.name }}
           onClose={() => setShowConnInfo(false)}
+        />
+      )}
+
+      {describeQueue.length > 0 && (selectedProject?.id || propProjectId) && (
+        <DescribeTableModal
+          projectId={(selectedProject?.id || propProjectId)!}
+          table={describeQueue[0]}
+          onDone={() => setDescribeQueue((q) => q.slice(1))}
         />
       )}
     </div>

@@ -535,9 +535,44 @@ export async function listSessionFiles(sessionId: string): Promise<SessionFileMe
   return data.files ?? [];
 }
 
+export type ImportedTable = { name: string; columns: string[] };
+
 export type UploadSessionFileResult = {
   file: SessionFileMeta;
+  /** Present for a project_db NEW-table import: the table(s) just created, so the FE can offer
+   *  to describe them (data dictionary). Absent for append / qa / excel. */
+  tables?: ImportedTable[];
 };
+
+export type TableDescriptionSuggestion = {
+  tableDescription: string;
+  columns: { name: string; description: string }[];
+};
+
+/** LLM-suggested descriptions to pre-fill the describe-table form for an imported table. */
+export async function suggestTableDescriptions(projectId: string, table: string): Promise<TableDescriptionSuggestion> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/tables/${encodeURIComponent(table)}/describe-suggest`), {
+    method: 'POST', credentials: 'include',
+  });
+  const data = (await res.json().catch(() => ({}))) as { suggestion?: TableDescriptionSuggestion; detail?: string };
+  if (!res.ok || !data.suggestion) throw new Error(data.detail || 'Failed to suggest descriptions');
+  return data.suggestion;
+}
+
+/** Save user-edited table + column descriptions to the data dictionary (owner-only). */
+export async function saveTableDescriptions(
+  projectId: string, table: string, payload: TableDescriptionSuggestion,
+): Promise<void> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/tables/${encodeURIComponent(table)}/description`), {
+    method: 'PUT', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { detail?: string };
+    throw new Error(data.detail || 'Failed to save descriptions');
+  }
+}
 
 /** Where an uploaded file's data goes (mutually exclusive):
  *  - project_db: imported into the project's real database

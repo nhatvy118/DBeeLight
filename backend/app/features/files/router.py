@@ -93,7 +93,10 @@ async def upload(
         )
     except service.FileImportError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"file": _meta(rec)}
+    resp: dict = {"file": _meta(rec)}
+    if rec.get("tables"):  # project_db new-table import → let the FE prompt for descriptions
+        resp["tables"] = rec["tables"]
+    return resp
 
 
 @router.get("")

@@ -314,16 +314,20 @@ async def _import_to_project_db(
             f"Table already exists in the database: {', '.join(clash)}. "
             "Rename the file or drop the existing table first."
         )
+    created: list[dict] = []
     for label, df in tables.items():
         try:
             await adapter.import_dataframe(targets[label], df, if_exists="fail")
         except ValueError as e:  # raced with a concurrent import that just created the table
             raise FileImportError(f"Table '{targets[label]}' already exists.") from e
+        created.append({"name": targets[label], "columns": [str(c) for c in df.columns]})
     return {
         "id": str(uuid.uuid4()),  # synthesized: nothing persisted in `files`
         "filename": filename,
         "size_bytes": len(content),
         "created_at": None,
+        # New project tables → the FE offers a "describe this table" step (data dictionary).
+        "tables": created,
     }
 
 
