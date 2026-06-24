@@ -1615,9 +1615,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             </p>
             {storageChoice}
             {composer}
-            <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-faint)', marginTop: 11 }}>
-              LightDBee can make mistakes. It always asks before changing your data.
-            </p>
           </div>
         </div>
       ) : showProjectLanding ? null : (
@@ -1626,11 +1623,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         <div style={{ padding: '12px 24px 22px', background: 'var(--bg)' }}>
           {storageChoice}
           {composer}
-          {messages.length > 0 && (
-            <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-faint)', marginTop: 11 }}>
-              LightDBee can make mistakes. It always asks before changing your data.
-            </p>
-          )}
         </div>
       )}
 

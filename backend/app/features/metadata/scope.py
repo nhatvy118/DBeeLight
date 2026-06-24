@@ -18,11 +18,12 @@ def resolve_scope(table_name: str) -> tuple[str, str] | None:
     (file/session tables for now, or no usable primary)."""
     ctx = get_ctx()
     db = ctx.db
-    # Session tables are generated with a 't_' prefix during file ingestion → file scope (deferred).
-    if db.session is not None and str(table_name).startswith("t_"):
-        return None
+    # Scope is project-level, so it depends only on which DB the request is on, not the specific
+    # table (primary and session are mutually exclusive per request, see chat._build_ctx):
+    #   session/file turn → primary is None → no project scope (file scope deferred).
+    #   primary turn      → every table belongs to the project.
     if db.primary is None:
-        return None  # file-only session, nothing to scope to a project yet
+        return None
     if not ctx.project_id:
         return None
     return ("project", ctx.project_id)

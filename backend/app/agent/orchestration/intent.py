@@ -41,8 +41,10 @@ SQL. The SQL terms below are only anchors for what each route covers.
 
 - db_readonly     : A SIMPLE data LOOKUP that ONE SELECT answers and returns as a table —
                     "show", "list", "top N", "how many <rows>", "what's the total/average",
-                    "filter". The user wants to SEE the rows/number, not an explanation.
-                    One query, no analysis, no changes. NOT for schema/structure questions.
+                    "filter", and "export / download / save the data" (exporting DB data is
+                    just a SELECT). The user wants the rows/number
+                    (to see or download), not an explanation. One query, no analysis, no
+                    changes. NOT for schema/structure questions.
 - db_create_table : User wants to CREATE A NEW table — "create a table", "make a new
                     table", "set up a table for X". Only when creating a table is the
                     intent, not a side-effect of another op.
@@ -58,9 +60,10 @@ SQL. The SQL terms below are only anchors for what each route covers.
                     churn", trends, comparisons, root-cause. The agent inspects the schema and
                     runs SEVERAL read-only queries, then reasons toward an answer. Read-only
                     (never changes data) — distinct from db_readonly's single-result lookup.
-- excel           : The request is about operating on an Excel/CSV FILE — anything done
-                    inside a spreadsheet: format cells, formulas, sheets, in-file charts,
-                    "save as xlsx", etc. The target/artifact is a file, not the database.
+- excel           : Operating on an Excel FILE the user already uploaded — format cells,
+                    formulas, sheets, in-file charts, clean/edit the workbook. Acts on the
+                    FILE only; it does NOT query the database. (Exporting DATABASE data is a
+                    read → db_readonly, not here.)
 - chart           : The request is to VISUALIZE database data — "plot", "chart", "graph",
                     "visualize", "draw", "bar/line/pie chart". Chart inside an Excel file → excel.
 - off_topic       : NOT about data, databases, files, or charts — greetings, small talk,
@@ -73,7 +76,9 @@ SQL. The SQL terms below are only anchors for what each route covers.
    or to CHANGE data (e.g. "remove duplicates from customers", "clear out old orders"), do
    NOT default to the destructive route — clarify instead (see needs_clarification reason A).
 2. "Show top N and plot" → chart (downstream agent fetches the data).
-3. "Run query and save to Excel" → excel (final artifact is the file).
+3. "Export / download / save the data as Excel/CSV" is a READ of the database → db_readonly
+   (it returns the rows; turning them into a file is a UI action). Route to `excel` ONLY when
+   the user operates on an Excel FILE they uploaded (not when they want DB data exported).
 4. "Create table + insert sample data" → db_create_table (downstream handles the insert).
 5. LOOKUP vs ANALYSIS/MEANING (both read-only):
    - One SELECT that returns a table/number the user wants to SEE → db_readonly

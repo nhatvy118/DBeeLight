@@ -184,6 +184,7 @@ class Orchestrator:
         intent: intent_mod.Intent,
         history: list[dict] | None = None,
         on_stage: StageCb | None = None,
+        excel_file_paths: list[str] | None = None,
     ) -> ChatResult:
         """Execute the branch already chosen by `intent` (classified once by the caller).
 
@@ -223,7 +224,9 @@ class Orchestrator:
             if not self.excel_backend.list_tools_openai():
                 await self.excel_backend.refresh()
             res = await run_tool_loop(
-                system_prompt=prompts.excel_system_prompt(),
+                system_prompt=prompts.excel_system_prompt(
+                    session_dir=get_ctx().session_id or "", file_paths=excel_file_paths,
+                ),
                 history=history, user_message=user_message, backends=[self.excel_backend],
                 on_stage=emit,
             )

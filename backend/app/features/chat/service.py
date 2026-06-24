@@ -82,20 +82,23 @@ async def _build_ctx(
 ) -> RequestContext:
     """Build the per-request DB scope from the data sources picked for this turn.
 
-    active_file_ids:
-    - contains PRIMARY_DB_SENTINEL → the primary (project/external) DB is in scope.
-    - file ids → only those uploaded files' tables are in scope.
-    - None (e.g. approval/resume, which targets the primary DB) → primary DB only.
+    The source is MUTUALLY EXCLUSIVE — the primary DB is the implicit default and is never a
+    pickable item; the user only picks uploaded files:
+    - any file ids        → ask ONLY those uploaded files' tables (session temp DB).
+    - empty / None / only  → ask the primary (project/external) DB.
+      PRIMARY_DB_SENTINEL
+
+    So "no file picked = ask the database" is derived here, not signalled by a sentinel (the old
+    PRIMARY_DB_SENTINEL is still tolerated: it is not a file id, so it leaves file_ids empty).
     """
     logger.info(
         "→ _build_ctx(user_id=%r session_id=%r active_file_ids=%r)",
         user_id, session_id, active_file_ids,
     )  # autolog (access.db_url is intentionally not logged — it holds the DSN)
 
-    # No selection (resume) is treated as "the database": primary in scope, no files.
-    ids = active_file_ids if active_file_ids is not None else [PRIMARY_DB_SENTINEL]
-    want_primary = PRIMARY_DB_SENTINEL in ids
-    file_ids = [fid for fid in ids if fid != PRIMARY_DB_SENTINEL]
+    file_ids = [fid for fid in (active_file_ids or []) if fid != PRIMARY_DB_SENTINEL]
+    # Picked file(s) → the session temp DB only; nothing picked → the primary DB.
+    want_primary = not file_ids
 
     # Primary DB only when it's both wanted and actually configured (db_url may be None for
     # a file-only session that has no database connected).
@@ -173,10 +176,20 @@ async def handle(
     else:
         ctx = await _build_ctx(user_id, session_id, access, active_file_ids)
         token = set_ctx(ctx)
+        # Excel turns: tell the agent which workbooks it can open, and snapshot the folder so we
+        # can detect what it created/modified and offer an in-chat download afterwards.
+        is_excel = intent.route == "excel"
+        excel_paths = await files_service.excel_file_paths(session_id) if is_excel else None
+        excel_before = files_service.snapshot_excel_dir(session_id) if is_excel else {}
         try:
             result = await orch.process_query(
-                normalized, intent=intent, history=history, on_stage=emit
+                normalized, intent=intent, history=history, on_stage=emit,
+                excel_file_paths=excel_paths,
             )
+            if is_excel:
+                exports = await files_service.register_excel_outputs(user_id, session_id, excel_before)
+                if exports:
+                    result.tool_events = (result.tool_events or []) + exports
         finally:
             reset_ctx(token)
             await _dispose_ctx(ctx)

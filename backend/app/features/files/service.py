@@ -212,6 +212,55 @@ def _session_sqlite_path(session_id: str) -> Path:
     return get_settings().temp_dbs_dir / f"{session_id}.sqlite"
 
 
+def _session_uploads_dir(session_id: str) -> Path:
+    """Where this session's Excel workbooks live (shared with the excel-server)."""
+    return Path(get_settings().data_root) / "uploads" / session_id
+
+
+async def excel_file_paths(session_id: str) -> list[str]:
+    """Relative paths ('<session>/<file>') of workbooks the excel-server can open for this session —
+    injected into the Excel agent prompt so it opens/saves the RIGHT file under the session folder."""
+    rows = await repo.list_for_session(session_id)
+    return [f"{session_id}/{Path(r['disk_path']).name}" for r in rows if r.get("disk_path")]
+
+
+def snapshot_excel_dir(session_id: str) -> dict[str, float]:
+    """{filename: mtime} of the session's .xlsx files BEFORE an excel turn, used to detect which
+    workbook(s) the agent created or modified."""
+    d = _session_uploads_dir(session_id)
+    if not d.exists():
+        return {}
+    return {p.name: p.stat().st_mtime for p in d.glob("*.xlsx") if p.is_file()}
+
+
+async def register_excel_outputs(
+    user_id: str, session_id: str, before: dict[str, float]
+) -> list[dict]:
+    """After an excel turn: for each .xlsx the agent created or modified, ensure a `files` row
+    exists and return a `file_export` tool_event so the FE shows an inline download card."""
+    d = _session_uploads_dir(session_id)
+    if not d.exists():
+        return []
+    by_path = {r.get("disk_path"): r for r in await repo.list_for_session(session_id)}
+    out: list[dict] = []
+    for p in sorted(d.glob("*.xlsx")):
+        if not p.is_file():
+            continue
+        prev = before.get(p.name)
+        if prev is not None and p.stat().st_mtime <= prev + 1e-6:
+            continue  # untouched this turn
+        row = by_path.get(str(p))
+        if row is None:  # a NEW workbook the agent created → register it so it is listable/downloadable
+            row = await repo.insert_file(
+                user_id, session_id, p.name, str(p), None, None, p.stat().st_size
+            )
+        out.append({
+            "tool": "excel", "type": "file_export",
+            "payload": {"filename": p.name, "sessionFileId": row["id"]},
+        })
+    return out
+
+
 async def save_and_import(
     user_id: str,
     session_id: str,

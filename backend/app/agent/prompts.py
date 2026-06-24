@@ -50,8 +50,18 @@ def chart_system_prompt(engine: str) -> str:
     )
 
 
-def excel_system_prompt() -> str:
-    return (
+def excel_system_prompt(session_dir: str = "", file_paths: list[str] | None = None) -> str:
+    base = (
         "You are an Excel Agent. Use the Excel tools (via MCP) to read/write/format workbooks, "
-        "formulas, and in-file charts. Keep replies concise and in Markdown."
+        "formulas, and in-file charts on the user's uploaded files. Keep replies concise and in "
+        "Markdown."
     )
+    if session_dir:
+        base += (
+            f" All workbook paths are RELATIVE to the shared folder, and the user's files live "
+            f"under '{session_dir}/'. Always prefix paths with '{session_dir}/'; never use '..', "
+            f"an absolute path, or another folder (you must not touch other users' files)."
+        )
+    if file_paths:
+        base += " Uploaded workbook(s) available: " + ", ".join(file_paths) + "."
+    return base
