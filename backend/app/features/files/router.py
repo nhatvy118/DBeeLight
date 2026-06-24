@@ -63,6 +63,17 @@ async def upload(
         raise HTTPException(status_code=400, detail=f"Invalid import_mode (expected one of {_IMPORT_MODES})")
     content = await _read_limited(file, _QUOTA_BYTES)
 
+    # Cumulative quota: per-file size was capped above; also reject when the user's TOTAL stored
+    # bytes would exceed the limit. Only 'qa'/'excel' persist into `files` (project_db lives in the
+    # user's own DB and is not counted as our storage).
+    if import_mode in ("qa", "excel"):
+        used, _ = await repo.user_storage(user_id)
+        if used + len(content) > _QUOTA_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Storage quota exceeded (200 MB total). Delete some files first.",
+            )
+
     # project_db needs the project's resolved DSN (ownership-checked); other modes don't.
     project_db_url: str | None = None
     pid = project_id or sess.get("project_id")
@@ -116,5 +127,5 @@ async def download(file_id: str, user_id: str = Depends(get_current_user_id)):
 
 @router.delete("/{file_id}")
 async def delete(file_id: str, user_id: str = Depends(get_current_user_id)):
-    await repo.delete_file(file_id, user_id)
+    await service.delete_file(user_id, file_id)  # also drops the session table / unlinks the disk file
     return {"success": True}

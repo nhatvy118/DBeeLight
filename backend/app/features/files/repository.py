@@ -11,10 +11,12 @@ logger = logging.getLogger("features.files.repository")
 async def insert_file(
     user_id: str, session_id: str, filename: str, disk_path: str | None,
     sqlite_db_path: str | None, table_name: str | None, size_bytes: int = 0,
+    file_id: str | None = None,
 ) -> dict:
-    logger.info("→ insert_file(user_id=%r session_id=%r filename=%r disk_path=%r sqlite_db_path=%r table_name=%r size_bytes=%r)", user_id, session_id, filename, disk_path, sqlite_db_path, table_name, size_bytes)  # autolog
+    logger.info("→ insert_file(user_id=%r session_id=%r filename=%r disk_path=%r sqlite_db_path=%r table_name=%r size_bytes=%r file_id=%r)", user_id, session_id, filename, disk_path, sqlite_db_path, table_name, size_bytes, file_id)  # autolog
     pool = get_pool()
-    fid = str(uuid.uuid4())
+    # Caller may pin the id (so the table name can embed it); otherwise generate one.
+    fid = file_id or str(uuid.uuid4())
     row = await pool.fetchrow(
         """
         INSERT INTO files (id, user_id, session_id, filename, disk_path, sqlite_db_path, table_name, size_bytes)
@@ -46,6 +48,18 @@ async def list_for_user(user_id: str) -> list[dict]:
         user_id,
     )
     return [dict(r) for r in rows]
+
+
+async def get_file_full(file_id: str, user_id: str) -> dict | None:
+    """Full row needed to clean up a file's backing storage on delete (session table + disk file)."""
+    logger.info("→ get_file_full(file_id=%r user_id=%r)", file_id, user_id)  # autolog
+    pool = get_pool()
+    row = await pool.fetchrow(
+        "SELECT id, session_id, filename, disk_path, sqlite_db_path, table_name "
+        "FROM files WHERE id=$1 AND user_id=$2",
+        file_id, user_id,
+    )
+    return dict(row) if row else None
 
 
 async def get_file(file_id: str, user_id: str) -> dict | None:

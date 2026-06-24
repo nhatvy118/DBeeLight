@@ -34,14 +34,36 @@ class FileImportError(Exception):
     """Raised when an upload cannot be imported (e.g. non-tabular file into a DB)."""
 
 
-def _table_name(filename: str, sheet: str | None = None) -> str:
-    """t_<filestem>, suffixed with the sheet name for multi-sheet workbooks."""
+def _table_name(filename: str, sheet: str | None = None, file_id: str | None = None) -> str:
+    """Table name for an imported file.
+
+    Base is t_<filestem> (+ _<sheet> for multi-sheet workbooks). When `file_id` is given
+    (session / Q&A import) it is woven in as t_<fileid8>_<filestem> so two uploads that share a
+    filename stem get DISTINCT tables instead of one silently overwriting the other
+    (df.to_sql uses if_exists="replace"). Project-DB imports pass no file_id → clean names.
+    """
     stem = Path(filename).stem.lower()
     slug = re.sub(r"[^a-z0-9_]+", "_", stem).strip("_") or "data"
-    name = f"t_{slug}"
+    prefix = f"t_{file_id.replace('-', '')[:8]}_" if file_id else "t_"
+    name = f"{prefix}{slug}"
     if sheet is not None:
         ssl = re.sub(r"[^a-z0-9_]+", "_", str(sheet).lower()).strip("_") or "sheet"
         name = f"{name}_{ssl}"
+    return name[:63]
+
+
+def _project_table_name(filename: str, sheet: str | None = None) -> str:
+    """Clean, file-derived table name for a project-DB import (NO t_ prefix — that prefix is
+    reserved for session/file tables so the request router can tell the two apart). Ensures the
+    name is a valid identifier (won't start with a digit)."""
+    stem = Path(filename).stem.lower()
+    slug = re.sub(r"[^a-z0-9_]+", "_", stem).strip("_") or "data"
+    name = slug
+    if sheet is not None:
+        ssl = re.sub(r"[^a-z0-9_]+", "_", str(sheet).lower()).strip("_") or "sheet"
+        name = f"{name}_{ssl}"
+    if name[0].isdigit():
+        name = f"_{name}"
     return name[:63]
 
 
@@ -70,6 +92,19 @@ def _sanitize_columns(df):
 
 def _safe_sheet_name(name: object) -> str:
     return re.sub(r"[\[\]:*?/\\]", "_", str(name)).strip()[:31] or "Sheet1"
+
+
+def _safe_filename(filename: str, *, suffix: str = "") -> str:
+    """Make a client-supplied filename safe to use as a single path segment.
+
+    Strips any directory component (so '../../x' → 'x') and unsafe characters, so it can never
+    escape the target directory. The caller still verifies containment as a second guard."""
+    base = re.split(r"[\\/]", filename)[-1]             # last segment (handles / and \)
+    base = re.sub(r"[^A-Za-z0-9._ \-()]+", "_", base)
+    base = base.replace("..", "").strip(". ") or "upload"   # no parent refs, no leading/trailing dots
+    if suffix and not base.lower().endswith(suffix):
+        base = f"{Path(base).stem or 'upload'}{suffix}"
+    return base[:200]
 
 
 def _looks_european(sample: str) -> bool:
@@ -158,7 +193,9 @@ def _to_xlsx_bytes(ext: str, content: bytes) -> bytes:
         sheets = _read_excel_sheets(content)
 
     wb = Workbook()
-    wb.remove(wb.active)  # drop the default empty sheet
+    default_ws = wb.active  # may be None per the type stubs
+    if default_ws is not None:
+        wb.remove(default_ws)  # drop the default empty sheet
     for name, df in sheets.items():
         ws = wb.create_sheet(_safe_sheet_name(name))
         for row in dataframe_to_rows(_sanitize_columns(df), index=False, header=True):
@@ -214,8 +251,21 @@ async def _import_to_project_db(
     from app.agent.pool import get_connection_pool
 
     adapter = await get_connection_pool().adapter_for(project_id, project_db_url)
+    # Project tables keep a clean, file-derived name (no t_). Refuse to clobber an existing table —
+    # the user must rename the file or drop the table first (no silent overwrite of real data).
+    targets = {label: _project_table_name(filename, label) for label in tables}
+    existing = set((await adapter.get_schema()).keys())
+    clash = sorted({t for t in targets.values() if t in existing})
+    if clash:
+        raise FileImportError(
+            f"Table already exists in the database: {', '.join(clash)}. "
+            "Rename the file or drop the existing table first."
+        )
     for label, df in tables.items():
-        await adapter.import_dataframe(_table_name(filename, label), df)
+        try:
+            await adapter.import_dataframe(targets[label], df, if_exists="fail")
+        except ValueError as e:  # raced with a concurrent import that just created the table
+            raise FileImportError(f"Table '{targets[label]}' already exists.") from e
     return {
         "id": str(uuid.uuid4()),  # synthesized: nothing persisted in `files`
         "filename": filename,
@@ -232,6 +282,12 @@ async def _import_to_session(user_id: str, session_id: str, filename: str, conte
         raise FileImportError("Only CSV/Excel files can be queried")
     tables = _read_tables(ext, content)  # one entry per sheet (multi-sheet → multiple tables)
     spath = _session_sqlite_path(session_id)
+    # Pin a file id per table UP FRONT so the table name can embed it (t_<id8>_<stem>) — this is
+    # what makes two uploads with the same filename stem land in distinct tables.
+    named = [
+        (fid := str(uuid.uuid4()), label, df, _table_name(filename, label, fid))
+        for label, df in tables.items()
+    ]
     # write via sync sqlite3 in a threadpool to avoid blocking the event loop
     import sqlite3
 
@@ -239,8 +295,8 @@ async def _import_to_session(user_id: str, session_id: str, filename: str, conte
         logger.info("→ _write()")  # autolog
         con = sqlite3.connect(str(spath))
         try:
-            for label, df in tables.items():
-                df.to_sql(_table_name(filename, label), con, if_exists="replace", index=False)
+            for _fid, _label, df, tname in named:
+                df.to_sql(tname, con, if_exists="replace", index=False)
         finally:
             con.close()
 
@@ -248,11 +304,11 @@ async def _import_to_session(user_id: str, session_id: str, filename: str, conte
 
     # one row per table; the first carries the upload size, the rest 0 (avoid double-counting).
     first: dict | None = None
-    for i, label in enumerate(tables):
+    for i, (fid, label, _df, tname) in enumerate(named):
         display = filename if label is None else f"{filename} ({label})"
         row = await repo.insert_file(
             user_id, session_id, display, None, str(spath),
-            _table_name(filename, label), len(content) if i == 0 else 0,
+            tname, len(content) if i == 0 else 0, file_id=fid,
         )
         first = first or row
     assert first is not None  # _read_tables guarantees ≥1 table
@@ -267,17 +323,65 @@ async def _save_for_excel(user_id: str, session_id: str, filename: str, content:
     if ext not in _EXCEL_EDITABLE:
         raise FileImportError("This file type can't be opened as an Excel workbook")
     if ext == ".xlsx":
-        out_name, out_bytes = filename, content
+        out_name, out_bytes = _safe_filename(filename, suffix=".xlsx"), content
     else:
-        out_name = Path(filename).stem + ".xlsx"
+        out_name = _safe_filename(filename, suffix=".xlsx")
         out_bytes = await asyncio.to_thread(_to_xlsx_bytes, ext, content)
-    uploads = Path(get_settings().data_root) / "uploads" / session_id
+    uploads = (Path(get_settings().data_root) / "uploads" / session_id).resolve()
     uploads.mkdir(parents=True, exist_ok=True)
-    disk_path = uploads / out_name
+    disk_path = (uploads / out_name).resolve()
+    # Second guard: the resolved path MUST stay inside uploads/<session>/ (defence in depth
+    # against a crafted filename that survived sanitisation).
+    if uploads not in disk_path.parents:
+        raise FileImportError("Invalid file name")
     disk_path.write_bytes(out_bytes)
     return await repo.insert_file(
         user_id, session_id, out_name, str(disk_path), None, None, len(out_bytes)
     )
+
+
+def _drop_table(sqlite_path: str, table_name: str) -> None:
+    """DROP a session table from its SQLite file (sync; run in a threadpool)."""
+    import sqlite3
+
+    con = sqlite3.connect(sqlite_path)
+    try:
+        con.execute(f'DROP TABLE IF EXISTS "{table_name}"')  # table_name is server-generated (safe)
+        con.commit()
+    finally:
+        con.close()
+
+
+async def delete_file(user_id: str, file_id: str) -> bool:
+    """Delete a file's DB row AND its backing storage, so nothing is orphaned:
+    - qa import   → DROP the session SQLite table.
+    - excel import → unlink the workbook on disk.
+    A backing resource is only removed when no OTHER file row still references it."""
+    logger.info("→ delete_file(user_id=%r file_id=%r)", user_id, file_id)  # autolog
+    row = await repo.get_file_full(file_id, user_id)
+    if not row:
+        return False
+    await repo.delete_file(file_id, user_id)
+
+    remaining = await repo.list_for_session(row["session_id"])
+    spath, tname, dpath = row.get("sqlite_db_path"), row.get("table_name"), row.get("disk_path")
+
+    # Drop the orphan session table (unless another row still maps to the same table).
+    if spath and tname and not any(
+        r.get("sqlite_db_path") == spath and r.get("table_name") == tname for r in remaining
+    ):
+        try:
+            await asyncio.to_thread(_drop_table, spath, tname)
+        except Exception as e:  # noqa: BLE001 — cleanup is best-effort, never fail the delete
+            logger.warning("could not drop table %s in %s: %s", tname, spath, e)
+
+    # Remove the on-disk workbook (unless another row still points to the same file).
+    if dpath and not any(r.get("disk_path") == dpath for r in remaining):
+        try:
+            Path(dpath).unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning("could not unlink %s: %s", dpath, e)
+    return True
 
 
 async def session_db(
