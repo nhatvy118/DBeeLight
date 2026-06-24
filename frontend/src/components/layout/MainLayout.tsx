@@ -33,9 +33,11 @@ export default function MainLayout({ children, currentSessionId, onSessionSelect
     if (!isMobile) setDrawerOpen(false);
   }, [isMobile]);
 
+  // Admins and viewers have their OWN full-screen app — no chat chrome (sidebar/header).
+  const hideChrome = !!user?.is_admin || user?.role === 'viewer';
   // Sidebar + header chỉ khi đã đăng nhập — khách chỉ thấy trang Login, không chat/header cũ.
-  const showSidebar = path.startsWith('/chat') && user !== null && !isLoading;
-  const showHeader = user !== null;
+  const showSidebar = !hideChrome && (path.startsWith('/chat') || path.startsWith('/dashboard')) && user !== null && !isLoading;
+  const showHeader = user !== null && !hideChrome;
 
   const sidebar = (
     <Sidebar

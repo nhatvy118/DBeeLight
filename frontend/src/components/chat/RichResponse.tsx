@@ -56,12 +56,6 @@ function isNumericValue(s: string): boolean {
   return cleaned !== '' && cleaned !== '-' && Number.isFinite(Number(cleaned));
 }
 
-function parseNum(s: string): number {
-  const cleaned = s.replace(/[$,%\s]/g, '').replace(/^\((.*)\)$/, '-$1');
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : 0;
-}
-
 function columnIsNumeric(rows: string[][], ci: number): boolean {
   const vals = rows.map((r) => r[ci]).filter((v) => v != null && v !== '');
   if (!vals.length) return false;
@@ -163,84 +157,6 @@ export function CodeBlockCard({
   );
 }
 
-/* ----------------------------- bar chart ---------------------------- */
-
-function MiniBarChart({ data }: { data: TableData }) {
-  const { columns, rows } = data;
-
-  const numericCols = columns.map((_, ci) => columnIsNumeric(rows, ci));
-  const numericIdx = columns.map((_, ci) => ci).filter((ci) => numericCols[ci]);
-  const defaultValueCol = numericIdx.length ? numericIdx[numericIdx.length - 1] : -1;
-  const defaultLabelCol = (() => {
-    for (let ci = 0; ci < columns.length; ci++) if (!numericCols[ci]) return ci;
-    return 0;
-  })();
-
-  // User-selectable label/value columns (default to a sensible auto-pick).
-  const [labelCol, setLabelCol] = useState(defaultLabelCol);
-  const [valueCol, setValueCol] = useState(defaultValueCol);
-
-  if (!rows.length || defaultValueCol < 0) return null;
-
-  // Show the column pickers only when there's an actual choice to make.
-  const showPicker = columns.length > 2 || numericIdx.length > 1;
-  const selectStyle: React.CSSProperties = {
-    padding: '5px 8px', borderRadius: 8, border: '1px solid var(--border)',
-    background: 'var(--surface)', color: 'var(--text)', fontSize: 12.5, fontWeight: 600,
-    maxWidth: 200, cursor: 'pointer',
-  };
-
-  const series = rows
-    .map((r) => ({ label: r[labelCol] ?? '', raw: r[valueCol] ?? '', value: parseNum(r[valueCol] ?? '') }))
-    .slice(0, 12);
-  const max = Math.max(...series.map((d) => Math.abs(d.value)), 1);
-
-  return (
-    <div>
-      {showPicker && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 16 }}>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12.5, fontWeight: 600, color: 'var(--text-muted)' }}>
-            Label
-            <select className="focusable" style={selectStyle} value={labelCol} onChange={(e) => setLabelCol(Number(e.target.value))}>
-              {columns.map((c, ci) => <option key={ci} value={ci}>{c}</option>)}
-            </select>
-          </label>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12.5, fontWeight: 600, color: 'var(--text-muted)' }}>
-            Value
-            <select className="focusable" style={selectStyle} value={valueCol} onChange={(e) => setValueCol(Number(e.target.value))}>
-              {numericIdx.map((ci) => <option key={ci} value={ci}>{columns[ci]}</option>)}
-            </select>
-          </label>
-        </div>
-      )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '6px 2px' }}>
-      {series.map((d, i) => (
-        <div key={i} style={{ display: 'grid', gridTemplateColumns: '130px 1fr', alignItems: 'center', gap: 14 }}>
-          <span
-            title={d.label}
-            style={{ fontSize: 13, color: 'var(--text-soft)', textAlign: 'right', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-          >
-            {d.label}
-          </span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div
-              style={{
-                height: 24, width: `${(Math.abs(d.value) / max) * 100}%`, minWidth: 4,
-                background: 'linear-gradient(90deg, var(--accent-strong), var(--accent))',
-                borderRadius: 7, boxShadow: '0 1px 4px -1px hsl(var(--shadow-color)/.4)',
-              }}
-            />
-            <span className="tabular" style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap' }}>
-              {d.raw}
-            </span>
-          </div>
-        </div>
-      ))}
-      </div>
-    </div>
-  );
-}
-
 /* --------------------------- result table --------------------------- */
 
 function downloadExcel(data: TableData) {
@@ -259,70 +175,55 @@ function downloadExcel(data: TableData) {
   URL.revokeObjectURL(url);
 }
 
-export function ResultTableCard({ node }: { node: any }) {
-  const data = extractTableData(node);
-  const [tab, setTab] = useState<'table' | 'chart'>('table');
+export function ResultTableCard({ node, data: dataProp }: { node?: any; data?: TableData }) {
+  // Structured data (from a query_result event) is preferred; otherwise fall back to extracting
+  // it from a markdown-table hast node (mutation preview still renders off markdown).
+  const data = dataProp ?? extractTableData(node);
 
   if (!data.columns.length && !data.rows.length) return null;
 
   const numericCols = data.columns.map((_, ci) => columnIsNumeric(data.rows, ci));
-  const hasChart = numericCols.some(Boolean) && data.rows.length > 0;
 
   return (
     <div className="not-prose card" style={{ overflow: 'hidden', margin: '14px 0' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
-        {hasChart ? (
-          <div className="seg">
-            <button type="button" data-on={tab === 'table'} onClick={() => setTab('table')}>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icons.Table size={14} />Table</span>
-            </button>
-            <button type="button" data-on={tab === 'chart'} onClick={() => setTab('chart')}>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icons.Chart size={14} />Chart</span>
-            </button>
-          </div>
-        ) : (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: 'var(--text-soft)' }}>
-            <Icons.Table size={14} />Results
-          </span>
-        )}
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: 'var(--text-soft)' }}>
+          <Icons.Table size={14} />Results
+        </span>
         <button type="button" onClick={() => downloadExcel(data)} className="btn btn-outline" style={{ padding: '7px 14px', fontSize: 13 }}>
           <Icons.Download size={15} />Export to Excel
         </button>
       </div>
 
-      <div style={{ padding: tab === 'chart' ? '20px 18px' : 0 }}>
-        {tab === 'table' ? (
-          <div style={{ overflowX: 'auto' }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  {data.columns.map((c, ci) => (
-                    <th key={ci} className={numericCols[ci] ? 'tabular' : ''} style={numericCols[ci] ? { textAlign: 'right' } : undefined}>
-                      {c}
-                    </th>
+      <div style={{ padding: 0 }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="data-table">
+            <thead>
+              <tr>
+                {data.columns.map((c, ci) => (
+                  <th key={ci} className={numericCols[ci] ? 'tabular' : ''} style={numericCols[ci] ? { textAlign: 'right' } : undefined}>
+                    {c}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.map((r, ri) => (
+                <tr key={ri}>
+                  {r.map((cell, ci) => (
+                    <td
+                      key={ci}
+                      className={numericCols[ci] ? 'tabular' : ''}
+                      style={{ textAlign: numericCols[ci] ? 'right' : 'left', fontWeight: ci === 0 ? 600 : 400 }}
+                    >
+                      {cell}
+                    </td>
                   ))}
                 </tr>
-              </thead>
-              <tbody>
-                {data.rows.map((r, ri) => (
-                  <tr key={ri}>
-                    {r.map((cell, ci) => (
-                      <td
-                        key={ci}
-                        className={numericCols[ci] ? 'tabular' : ''}
-                        style={{ textAlign: numericCols[ci] ? 'right' : 'left', fontWeight: ci === 0 ? 600 : 400 }}
-                      >
-                        {cell}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <MiniBarChart data={data} />
-        )}
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--text-muted)' }}>

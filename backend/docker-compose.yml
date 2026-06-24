@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: dbeelight
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  excel-server:
+    build:
+      context: ./excel_server
+    environment:
+      FASTMCP_HOST: 0.0.0.0
+      FASTMCP_PORT: "8931"
+      EXCEL_FILES_PATH: /data/uploads
+    ports:
+      - "8931:8931"
+    volumes:
+      # shared volume: backend ghi file upload, excel-server đọc/ghi cùng chỗ
+      - filedata:/data
+
+  api:
+    build: .
+    depends_on:
+      - postgres
+      - excel-server
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dbeelight
+      EXCEL_MCP_URL: http://excel-server:8931/mcp
+      DATA_ROOT: /data
+      SQLITE_ALLOWED_DIRS: /data/databases:/data/temp_dbs
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-me}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      # GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET nếu dùng Google login
+    ports:
+      - "5001:5001"      # khớp Vite proxy của frontend (vite.config.ts → localhost:5001)
+    volumes:
+      - filedata:/data
+
+volumes:
+  pgdata:
+  filedata:

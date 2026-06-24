@@ -1,12 +1,12 @@
-# Backend stack — postgres, redis, api-server.
+# Backend stack — postgres, redis, backend.
 # The frontend is deployed separately (not part of this compose).
 #
 # Usage:
-#   1. cp api-server/.env.example api-server/.env  (fill OPENAI_API_KEY, GOOGLE_*, SESSION_SECRET)
+#   1. cp backend/.env.example backend/.env  (fill OPENAI_API_KEY, GOOGLE_*, SESSION_SECRET)
 #   2. docker compose up --build
 #   3. API at http://localhost:5001
 #
-# Migrations: docker compose exec api-server make migrate-up
+# Migrations: docker compose exec backend make migrate-up
 #
 # In production (EC2): DB_URL points at RDS, REDIS_URL may point at ElastiCache,
 # uploads should go to S3 — override via .env, not by editing this file.
@@ -51,15 +51,15 @@ services:
       timeout: 3s
       retries: 5
 
-  api-server:
+  backend:
     <<: *common
     image: ghcr.io/nhatvy118/dbeelight-api:${API_IMAGE_TAG:-latest}
     build:
-      context: .
-      dockerfile: api-server/Dockerfile
+      context: ./backend
+      dockerfile: Dockerfile
     container_name: dbeelight-api
     env_file:
-      - ./api-server/.env
+      - ./backend/.env
     environment:
       DB_URL: postgres://${POSTGRES_USER:-dbeelight}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dbeelight_app}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
@@ -71,9 +71,10 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - app_file_handle:/app/api-server/internal/file_handle
-      - app_temp_dbs:/app/api-server/internal/temp_dbs
-      - app_databases:/app/api-server/internal/databases
+      # WORKDIR=/app, DATA_ROOT=./_data → runtime data lives under /app/_data.
+      - app_file_handle:/app/_data/uploads
+      - app_temp_dbs:/app/_data/temp_dbs
+      - app_databases:/app/_data/databases
 
 volumes:
   postgres_data:

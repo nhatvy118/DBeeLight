@@ -4,10 +4,8 @@ import { useAuth } from '../../context/AuthContext';
 import { url } from '../../services/api';
 import { useTheme } from '../../context/ThemeContext';
 import { useIsMobile } from '../../hooks/useIsMobile';
-import ShareSessionModal from '../modals/ShareSessionModal';
 import StorageModal from '../modals/StorageModal';
 import { Icons, BeeBadge } from '../../icons';
-import { toast } from '../Toaster';
 
 type Project = {
   id: string;
@@ -26,8 +24,6 @@ export default function Header({ onMenuClick }: HeaderProps) {
   const isMobile = useIsMobile();
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
-  const [shareModalOpen, setShareModalOpen] = useState(false);
-  const [shareSessionId, setShareSessionId] = useState<string | null>(null);
   const [storageModalOpen, setStorageModalOpen] = useState(false);
   const avatarMenuRef = useRef<HTMLDivElement>(null);
 
@@ -85,80 +81,6 @@ export default function Header({ onMenuClick }: HeaderProps) {
     };
   }, []);
 
-  // Open share modal — requires being inside a specific session.
-  // Walk the URL to figure out which session is currently open. Used by
-  // the Share + Export buttons (both need a session_id to act on).
-  const currentSessionFromUrl = (): string | null => {
-    const parts = window.location.pathname.split('/').filter(Boolean);
-    if (parts.length >= 2 && parts[0] === 'chat') {
-      if (parts.length === 3) return parts[2];
-      if (parts.length === 2) {
-        const id = parts[1];
-        if (!(id.includes('-') && id.length > 20)) return id;
-      }
-    }
-    return null;
-  };
-
-  const handleShareClick = () => {
-    const sessionId = currentSessionFromUrl();
-    if (!sessionId) {
-      toast.warning('Open a chat session before sharing.');
-      return;
-    }
-    setShareSessionId(sessionId);
-    setShareModalOpen(true);
-  };
-
-  const [exportMenuOpen, setExportMenuOpen] = useState(false);
-  const exportMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!exportMenuOpen) return;
-    const onClick = (e: MouseEvent) => {
-      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
-        setExportMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', onClick);
-    return () => document.removeEventListener('mousedown', onClick);
-  }, [exportMenuOpen]);
-
-  const handleExportMarkdown = async () => {
-    const sessionId = currentSessionFromUrl();
-    if (!sessionId) {
-      toast.warning('Open a chat session before exporting.');
-      return;
-    }
-    setExportMenuOpen(false);
-    try {
-      const { downloadSessionMarkdown } = await import('../../services/api');
-      await downloadSessionMarkdown(sessionId);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to export');
-    }
-  };
-
-  const handleExportPdf = () => {
-    const sessionId = currentSessionFromUrl();
-    if (!sessionId) {
-      toast.warning('Open a chat session before exporting.');
-      return;
-    }
-    setExportMenuOpen(false);
-    // Open the print-preview route in a new tab — auto-triggers the
-    // browser print dialog where the user picks "Save as PDF".
-    const projectIdFromUrl = (() => {
-      const parts = window.location.pathname.split('/').filter(Boolean);
-      if (parts.length === 3 && parts[0] === 'chat') return parts[1];
-      return null;
-    })();
-    const target = projectIdFromUrl
-      ? `/chat/${projectIdFromUrl}/${sessionId}/print`
-      : `/chat/${sessionId}/print`;
-    window.open(target, '_blank', 'noopener');
-  };
-
   const handleLogout = async () => {
     try {
       await fetch(url('/api/auth/logout'), { method: 'POST', credentials: 'include' });
@@ -188,7 +110,6 @@ export default function Header({ onMenuClick }: HeaderProps) {
   }, []);
 
   const userInitial = (user?.name || user?.email || '?').slice(0, 1).toUpperCase();
-  const hasSession = currentSessionFromUrl() !== null;
 
   const menuItem = (icon: ReactNode, label: string, onClick: () => void, danger = false) => (
     <button
@@ -254,44 +175,6 @@ export default function Header({ onMenuClick }: HeaderProps) {
       <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 4 : 8, marginLeft: 'auto' }}>
         {user ? (
           <>
-            {/* Share — icon-only on mobile to save room */}
-            <button
-              type="button"
-              onClick={handleShareClick}
-              className="btn btn-outline"
-              style={{ padding: isMobile ? '8px 10px' : '8px 16px', fontSize: 13.5, opacity: hasSession ? 1 : 0.55 }}
-              title="Share this chat"
-            >
-              <Icons.Share size={16} />
-              {!isMobile && 'Share'}
-            </button>
-
-            {/* Export + dropdown */}
-            <div style={{ position: 'relative' }} ref={exportMenuRef}>
-              <button
-                type="button"
-                onClick={() => setExportMenuOpen((o) => !o)}
-                className="btn btn-ghost"
-                style={{ fontSize: 13.5, padding: isMobile ? '8px 10px' : undefined }}
-                title="Export this chat"
-                aria-haspopup="true"
-                aria-expanded={exportMenuOpen}
-              >
-                <Icons.Export size={16} />
-                {!isMobile && 'Export'}
-              </button>
-              {exportMenuOpen && (
-                <div
-                  className="card pop-shadow scale-in"
-                  style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', width: 232, borderRadius: 'var(--r)', padding: 7, zIndex: 50, transformOrigin: 'top right' }}
-                  role="menu"
-                >
-                  {menuItem(<Icons.Download size={18} />, 'Download Markdown', handleExportMarkdown)}
-                  {menuItem(<Icons.Export size={18} />, 'Save as PDF', handleExportPdf)}
-                </div>
-              )}
-            </div>
-
             {/* Theme toggle */}
             <button
               onClick={toggleTheme}
@@ -353,14 +236,6 @@ export default function Header({ onMenuClick }: HeaderProps) {
         ) : null}
       </div>
 
-      {/* Share Modal */}
-      {shareModalOpen && shareSessionId && (
-        <ShareSessionModal
-          sessionId={shareSessionId}
-          open={shareModalOpen}
-          onClose={() => setShareModalOpen(false)}
-        />
-      )}
       <StorageModal open={storageModalOpen} onClose={() => setStorageModalOpen(false)} />
     </header>
   );

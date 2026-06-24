@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import Modal from './Modal';
 import { Icons, type IconComponent } from '../../icons';
-import { getSessions, listSentShares } from '../../services/api';
+import { getSessions } from '../../services/api';
 
 const DANGER = 'var(--danger)';
 const DANGER_INK = 'var(--danger-ink)';
@@ -31,7 +31,6 @@ function Line({ icon: Icon, children }: { icon: IconComponent; children: ReactNo
 
 export default function DeleteProjectModal({ projectId, projectName, isDeleting, onClose, onConfirm }: Props) {
   const [sessionCount, setSessionCount] = useState<number | null>(null);
-  const [collaboratorCount, setCollaboratorCount] = useState<number | null>(null);
   const [confirmText, setConfirmText] = useState('');
 
   useEffect(() => {
@@ -40,18 +39,6 @@ export default function DeleteProjectModal({ projectId, projectName, isDeleting,
       try {
         const res = await getSessions(projectId);
         if (!cancelled && res.success) setSessionCount((res.sessions || []).length);
-      } catch { /* best-effort */ }
-      try {
-        const shares = await listSentShares();
-        if (cancelled) return;
-        const emails = new Set<string>();
-        for (const s of shares) {
-          if (s.project_id !== projectId || s.revoked_at) continue;
-          for (const r of s.recipients) {
-            if (!r.revoked_at) emails.add(r.email.toLowerCase());
-          }
-        }
-        setCollaboratorCount(emails.size);
       } catch { /* best-effort */ }
     })();
     return () => { cancelled = true; };
@@ -82,9 +69,6 @@ export default function DeleteProjectModal({ projectId, projectName, isDeleting,
         <Line icon={Icons.Pencil}>{sessionLine}</Line>
         <Line icon={Icons.File}>Uploaded files and generated exports</Line>
         <Line icon={Icons.Database}>The project database</Line>
-        {collaboratorCount !== null && collaboratorCount > 0 && (
-          <Line icon={Icons.Share}>{collaboratorCount} collaborator{collaboratorCount === 1 ? '' : 's'} will lose access</Line>
-        )}
       </div>
 
       {/* Type-to-confirm */}

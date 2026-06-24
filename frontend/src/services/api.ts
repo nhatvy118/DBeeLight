@@ -34,20 +34,31 @@ export type CreateSessionResponse =
   | { success: true; session_id: string | null; session_info: unknown }
   | { success: false; error: string };
 
-export type SessionShareInfo = {
-  permission: 'view_only' | 'read_data' | 'edit_data';
-  revoked: boolean;
-  share_id: string;
+/** A single message row from GET /api/sessions/{id}/messages. */
+export type SessionMessage = {
+  id?: string;
+  role: string;
+  content?: string;
+  tool_events?: ToolEvent[];
+  created_at?: string;
+  pending_workflow_resume?: boolean;
 };
 
+/** Session metadata only — messages are loaded separately via getMessages(). */
 export type GetSessionResponse =
   | {
       success: true;
       session_info: unknown;
-      messages: unknown[];
-      share_info: SessionShareInfo | null;
     }
   | { success: false; error: string };
+
+/** One cursor page of messages (oldest→newest). Pass `next_cursor` back as `before` for older. */
+export type MessagesPage = {
+  success: true;
+  messages: SessionMessage[];
+  has_more: boolean;
+  next_cursor: string | null;
+};
 
 export type HealthResponse = { status: 'ok'; agent_initialized: boolean };
 
@@ -80,7 +91,7 @@ export async function sendMessageStream(
   handlers: StreamHandlers,
   activeFileIds?: string[] | null,
 ): Promise<void> {
-  const response = await fetch(url('/api/chat/stream'), {
+  const response = await fetch(url('/api/chat'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
@@ -171,10 +182,10 @@ export async function resumeWorkflow(
   sessionId: string,
   approved: boolean,
   projectId: string | null = null,
-  userVisibleMessage: string | null = null,
+  editedSchema: unknown = null,
   signal?: AbortSignal
 ): Promise<ChatResponse> {
-  const response = await fetch(url('/api/chat/workflow-resume'), {
+  const response = await fetch(url('/api/chat/resume'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
@@ -182,7 +193,9 @@ export async function resumeWorkflow(
       session_id: sessionId,
       approved,
       project_id: projectId,
-      user_visible_message: userVisibleMessage,
+      // create_table: the user-edited schema (columns/types/constraints/table name); the
+      // server rebuilds + re-verifies the CREATE SQL from it. null for other workflows.
+      edited_schema: editedSchema,
     }),
     signal,
   });
@@ -208,12 +221,12 @@ export async function getSessions(projectId: string | null = null, unassignedOnl
   return (await response.json()) as SessionsResponse;
 }
 
-export async function createSession(name: string | null = null, projectId: string | null = null): Promise<CreateSessionResponse> {
-  const response = await fetch(url('/api/sessions/new'), {
+export async function createSession(projectId: string | null = null): Promise<CreateSessionResponse> {
+  const response = await fetch(url('/api/sessions'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, project_id: projectId }),
+    body: JSON.stringify({ project_id: projectId }),
   });
   if (!response.ok) throw new Error('Failed to create session');
   return (await response.json()) as CreateSessionResponse;
@@ -230,33 +243,23 @@ export async function getSession(sessionId: string): Promise<GetSessionResponse>
 }
 
 /**
- * Download the session as a Markdown file. Triggers a browser save dialog
- * via a synthesized link click — no API client state, just file pipe.
+ * Cursor-paginated messages for a session (returned oldest→newest).
+ * Omit `before` for the latest page; pass a previous page's `next_cursor` to load older.
  */
-export async function downloadSessionMarkdown(sessionId: string): Promise<void> {
+export async function getMessages(
+  sessionId: string,
+  before?: string | null,
+  limit = 30,
+): Promise<MessagesPage> {
+  const params = new URLSearchParams();
+  if (before) params.append('before', before);
+  params.append('limit', String(limit));
   const response = await fetch(
-    url(`/api/sessions/${encodeURIComponent(sessionId)}/export.md`),
-    { credentials: 'include' },
+    url(`/api/sessions/${encodeURIComponent(sessionId)}/messages?${params.toString()}`),
+    { method: 'GET', credentials: 'include', headers: { 'Content-Type': 'application/json' } },
   );
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error((data as any).detail || 'Failed to export session');
-  }
-
-  // Filename hint: prefer Content-Disposition; fall back to ``chat.md``.
-  const disposition = response.headers.get('Content-Disposition') || '';
-  const match = disposition.match(/filename="?([^"]+)"?/);
-  const filename = match ? match[1] : 'chat.md';
-
-  const blob = await response.blob();
-  const objectUrl = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = objectUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  window.URL.revokeObjectURL(objectUrl);
-  a.remove();
+  if (!response.ok) throw new Error('Failed to load messages');
+  return (await response.json()) as MessagesPage;
 }
 
 export async function healthCheck(): Promise<HealthResponse> {
@@ -265,11 +268,14 @@ export async function healthCheck(): Promise<HealthResponse> {
   return (await response.json()) as HealthResponse;
 }
 
+export type ProjectKind = 'internal' | 'external';
+
 export type ProjectItem = {
   id: string;
   name: string;
   description?: string;
   created_at?: string;
+  kind?: ProjectKind;
 };
 
 export type GetProjectsResponse =
@@ -296,15 +302,16 @@ export type CreateProjectRequest = {
 };
 
 export type CreateProjectResponse =
-  | { success: true; project: { id: string; name: string; description?: string; created_at?: string } }
+  | { success: true; project: { id: string; name: string; description?: string; created_at?: string; kind?: ProjectKind } }
   | { success: false; error: string };
 
-export async function createProject(name: string, description?: string, db_url: string = ''): Promise<CreateProjectResponse> {
+export async function createProject(name: string, description?: string): Promise<CreateProjectResponse> {
   const response = await fetch(url('/api/projects'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, db_url }),
+    // db_url cố tình bỏ: backend tự sinh SQLite khi tạo project
+    body: JSON.stringify({ name, description }),
   });
   if (!response.ok) {
     const data = (await response.json()) as { error?: string };
@@ -331,302 +338,179 @@ export async function deleteProject(id: string): Promise<DeleteProjectResponse> 
   return (await response.json()) as DeleteProjectResponse;
 }
 
-// ----- Admin dashboard -----
+/** Fetch a single project (owner OR shared-with). Used when it isn't in the local cache,
+ * e.g. a viewer opening a project shared with them. */
+export async function getProject(id: string): Promise<{ id: string; name: string; description: string }> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(id)}`), { credentials: 'include' });
+  if (!res.ok) throw new Error('Project not found');
+  return (await res.json()) as { id: string; name: string; description: string };
+}
+
+// ----- Project sharing (viewer access) -----
+
+export type SharedProject = {
+  id: string;
+  name: string;
+  description: string;
+  owner_name: string | null;
+  owner_email: string | null;
+  shared_at: string | null;
+};
+
+export type SharePermission = 'view' | 'edit';
+
+export type ProjectShare = {
+  user_id: string;
+  name: string | null;
+  email: string | null;
+  role: AdminRole;
+  permission: SharePermission;
+  shared_at: string | null;
+};
+
+/** Projects shared WITH the current user (the viewer home). */
+export async function listSharedProjects(): Promise<SharedProject[]> {
+  const res = await fetch(url('/api/projects/shared/with-me'), { credentials: 'include' });
+  const data = await _adminJson<{ projects: SharedProject[] }>(res, 'Failed to load shared projects');
+  return data.projects ?? [];
+}
+
+export type ShareableUser = { user_id: string; name: string | null; email: string | null; role: AdminRole };
+
+/** Users this project can still be shared with (pick-list, excludes owner + already-shared). */
+export async function listShareableUsers(projectId: string): Promise<ShareableUser[]> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/shareable`), { credentials: 'include' });
+  const data = await _adminJson<{ users: ShareableUser[] }>(res, 'Failed to load users');
+  return data.users ?? [];
+}
+
+/** People a project is shared with (owner view). */
+export async function listProjectShares(projectId: string): Promise<ProjectShare[]> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/shares`), { credentials: 'include' });
+  const data = await _adminJson<{ shares: ProjectShare[] }>(res, 'Failed to load shares');
+  return data.shares ?? [];
+}
+
+export async function shareProject(projectId: string, email: string, permission: SharePermission = 'view'): Promise<ProjectShare> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/shares`), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, permission }),
+  });
+  return (await _adminJson<{ share: ProjectShare }>(res, 'Failed to share project')).share;
+}
+
+/** Change a person's access on a project. Returns the EFFECTIVE permission (viewers stay 'view'). */
+export async function setSharePermission(projectId: string, viewerId: string, permission: SharePermission): Promise<SharePermission> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/shares/${encodeURIComponent(viewerId)}/permission`), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ permission }),
+  });
+  return (await _adminJson<{ permission: SharePermission }>(res, 'Failed to update access')).permission;
+}
+
+export async function unshareProject(projectId: string, viewerId: string): Promise<void> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/shares/${encodeURIComponent(viewerId)}`), {
+    method: 'DELETE', credentials: 'include',
+  });
+  await _adminJson<unknown>(res, 'Failed to remove access');
+}
+
+// ----- Admin: people & roles -----
+
+export type AdminRole = 'admin' | 'technical' | 'viewer';
 
 export type AdminUser = {
   id: number;
   name: string | null;
   email: string | null;
+  role: AdminRole;
+  status: 'active' | 'disabled';
   created_at: string | null;
-  is_admin: boolean;
-  disabled: boolean;
-  disabled_at: string | null;
   project_count: number;
   session_count: number;
   storage_bytes: number;
+  is_self: boolean;
+};
+
+export type AdminInvite = {
+  id: number;
+  email: string;
+  role: AdminRole;
+  status: 'pending';
+  created_at: string | null;
 };
 
 export type AdminStats = {
   total_users: number;
   disabled_users: number;
   admin_users: number;
+  technical_users: number;
+  viewer_users: number;
+  pending_invites: number;
   total_projects: number;
   total_sessions: number;
   total_storage_bytes: number;
 };
 
-export async function getAdminUsers(): Promise<AdminUser[]> {
-  const response = await fetch(url('/api/admin/users'), { credentials: 'include' });
-  if (!response.ok) throw new Error('Failed to load users');
-  const data = (await response.json()) as { success: boolean; users?: AdminUser[] };
-  return data.users ?? [];
+export type AdminOverview = { stats: AdminStats; users: AdminUser[]; invites: AdminInvite[] };
+
+async function _adminJson<T>(res: Response, fallback: string): Promise<T> {
+  if (!res.ok) {
+    const d = (await res.json().catch(() => ({}))) as { detail?: string; error?: string };
+    throw new Error(d.detail || d.error || fallback);
+  }
+  return (await res.json()) as T;
 }
 
-export async function getAdminStats(): Promise<AdminStats> {
-  const response = await fetch(url('/api/admin/stats'), { credentials: 'include' });
-  if (!response.ok) throw new Error('Failed to load stats');
-  const data = (await response.json()) as { success: boolean; stats: AdminStats };
-  return data.stats;
+export async function getAdminOverview(): Promise<AdminOverview> {
+  const res = await fetch(url('/api/admin/overview'), { credentials: 'include' });
+  const data = await _adminJson<{ stats: AdminStats; users: AdminUser[]; invites: AdminInvite[] }>(res, 'Failed to load admin data');
+  return { stats: data.stats, users: data.users ?? [], invites: data.invites ?? [] };
+}
+
+export async function adminInvite(email: string, role: AdminRole): Promise<AdminInvite> {
+  const res = await fetch(url('/api/admin/invite'), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, role }),
+  });
+  return (await _adminJson<{ invite: AdminInvite }>(res, 'Failed to send invite')).invite;
+}
+
+export async function adminRevokeInvite(inviteId: number): Promise<void> {
+  const res = await fetch(url(`/api/admin/invite/${inviteId}`), { method: 'DELETE', credentials: 'include' });
+  await _adminJson<unknown>(res, 'Failed to revoke invite');
+}
+
+export async function adminSetInviteRole(inviteId: number, role: AdminRole): Promise<void> {
+  const res = await fetch(url(`/api/admin/invite/${inviteId}/role`), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role }),
+  });
+  await _adminJson<unknown>(res, 'Failed to update invite');
+}
+
+export async function adminSetUserRole(userId: number, role: AdminRole): Promise<void> {
+  const res = await fetch(url(`/api/admin/users/${userId}/role`), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role }),
+  });
+  await _adminJson<unknown>(res, 'Failed to change role');
 }
 
 /** Disable (lock out) or re-enable a user account. Returns the new disabled state. */
 export async function setUserDisabled(userId: number, disabled: boolean): Promise<boolean> {
   const action = disabled ? 'disable' : 'enable';
-  const response = await fetch(url(`/api/admin/users/${userId}/${action}`), {
-    method: 'POST',
-    credentials: 'include',
+  const res = await fetch(url(`/api/admin/users/${userId}/${action}`), {
+    method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
   });
-  if (!response.ok) {
-    const data = (await response.json().catch(() => ({}))) as { detail?: string; error?: string };
-    throw new Error(data.detail || data.error || 'Failed to update user');
-  }
-  const data = (await response.json()) as { disabled: boolean };
-  return data.disabled;
+  return (await _adminJson<{ disabled: boolean }>(res, 'Failed to update user')).disabled;
 }
-
-// ----- Chat session sharing -----
-
-export type SharePermission = 'view_only' | 'read_data' | 'edit_data';
-
-export type ShareRecipientInput = {
-  email: string;
-  permission: SharePermission;
-};
-
-export type ShareRecipientCreated = {
-  id: string;
-  email: string;
-  permission: SharePermission;
-  accept_token: string;
-  accept_url: string;
-};
-
-export type CreateShareResponse = {
-  success: true;
-  share_id: string;
-  session_id: string;
-  project_id: string;
-  recipients: ShareRecipientCreated[];
-};
-
-export async function createShare(
-  sessionId: string,
-  recipients: ShareRecipientInput[],
-  options: { notifyViaEmail?: boolean } = {},
-): Promise<CreateShareResponse> {
-  const notify = options.notifyViaEmail ?? true;
-  const response = await fetch(url(`/api/sessions/${encodeURIComponent(sessionId)}/share`), {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, recipients, notify_via_email: notify }),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error((data as any).detail || (data as any).error || 'Failed to create share');
-  }
-  return data as CreateShareResponse;
-}
-
-export async function resendShareEmail(recipientId: string): Promise<void> {
-  const response = await fetch(
-    url(`/api/shares/recipients/${encodeURIComponent(recipientId)}/resend-email`),
-    { method: 'POST', credentials: 'include' },
-  );
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error((data as any).detail || 'Failed to resend email');
-  }
-}
-
-export type SentShareRecipient = {
-  id: string;
-  email: string;
-  permission: SharePermission;
-  accept_token: string;
-  accepted_at: string | null;
-  revoked_at: string | null;
-  forked_session_id: string | null;
-  email_sent_at: string | null;
-  email_error: string | null;
-};
-
-export type SentShare = {
-  share_id: string;
-  session_id: string;
-  project_id: string;
-  session_name: string | null;
-  created_at: string;
-  revoked_at: string | null;
-  recipients: SentShareRecipient[];
-};
-
-export async function listSentShares(): Promise<SentShare[]> {
-  const response = await fetch(url('/api/shares/sent'), { credentials: 'include' });
-  if (!response.ok) throw new Error('Failed to list sent shares');
-  const data = await response.json();
-  return (data.shares || []) as SentShare[];
-}
-
-export type ReceivedShare = {
-  recipient_id: string;
-  share_id: string;
-  permission: SharePermission;
-  accept_token: string;
-  accepted_at: string | null;
-  forked_session_id: string | null;
-  session_id: string;
-  project_id: string;
-  session_name: string | null;
-  shared_at: string;
-  owner_name: string | null;
-  owner_email: string | null;
-};
-
-export async function listReceivedShares(): Promise<ReceivedShare[]> {
-  const response = await fetch(url('/api/shares/received'), { credentials: 'include' });
-  if (!response.ok) throw new Error('Failed to list received shares');
-  const data = await response.json();
-  return (data.shares || []) as ReceivedShare[];
-}
-
-export type SharePreview = {
-  recipient_email: string;
-  permission: SharePermission;
-  session_name: string | null;
-  accepted_at: string | null;
-  forked_session_id: string | null;
-  project_id: string;
-  logged_in: boolean;
-  email_match: boolean;
-};
-
-export async function previewShare(acceptToken: string): Promise<SharePreview> {
-  const response = await fetch(url(`/api/shares/by-token/${encodeURIComponent(acceptToken)}`), {
-    credentials: 'include',
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error((data as any).detail || 'Failed to load share');
-  }
-  return data.share as SharePreview;
-}
-
-export type AcceptShareResponse = {
-  success: true;
-  session_id: string;
-  project_id: string;
-  permission: SharePermission;
-  already_accepted: boolean;
-};
-
-export async function acceptShare(acceptToken: string): Promise<AcceptShareResponse> {
-  const response = await fetch(url(`/api/shares/${encodeURIComponent(acceptToken)}/accept`), {
-    method: 'POST',
-    credentials: 'include',
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error((data as any).detail || 'Failed to accept share');
-  }
-  return data as AcceptShareResponse;
-}
-
-export async function revokeShare(shareId: string): Promise<void> {
-  const response = await fetch(url(`/api/shares/${encodeURIComponent(shareId)}`), {
-    method: 'DELETE',
-    credentials: 'include',
-  });
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error((data as any).detail || 'Failed to revoke share');
-  }
-}
-
-export async function revokeShareRecipient(recipientId: string): Promise<void> {
-  const response = await fetch(url(`/api/shares/recipients/${encodeURIComponent(recipientId)}`), {
-    method: 'DELETE',
-    credentials: 'include',
-  });
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error((data as any).detail || 'Failed to revoke recipient');
-  }
-}
-
-export type ExecuteSqlResponse = ChatResponse;
-
-export async function executeSql(
-  sql: string,
-  actionId: string | null,
-  sessionId: string | null = null,
-  projectId: string | null = null,
-  lockOnly: boolean = false,
-  lockState: 'executed' | 'cancelled' | null = null,
-): Promise<ExecuteSqlResponse> {
-  const response = await fetch(url('/api/sql/execute'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sql, action_id: actionId, session_id: sessionId, project_id: projectId, lock_only: lockOnly, lock_state: lockState }),
-  });
-
-  const data = (await response.json()) as ExecuteSqlResponse & { error?: string };
-  if (!response.ok) {
-    throw new Error((data as any).error || 'Failed to execute SQL');
-  }
-  return data;
-}
-
-export async function exportData(
-  tableName: string,
-  columns: string = '*',
-  whereClause: string | null = null,
-  format: 'csv' | 'excel' = 'csv',
-  sessionId: string | null = null,
-  projectId: string | null = null
-): Promise<void> {
-  const params = new URLSearchParams();
-  params.append('table_name', tableName);
-  params.append('columns', columns);
-  if (whereClause) params.append('where_clause', whereClause);
-  params.append('format', format);
-  if (sessionId) params.append('session_id', sessionId);
-  if (projectId) params.append('project_id', projectId);
-
-  const response = await fetch(url(`/api/export?${params.toString()}`), {
-    method: 'POST',
-    credentials: 'include',
-  });
-
-  if (!response.ok) {
-    const data = await response.json();
-    throw new Error((data as { detail?: string }).detail || 'Failed to export data');
-  }
-
-  // Get filename from Content-Disposition header or generate one
-  const contentDisposition = response.headers.get('Content-Disposition');
-  let filename = `${tableName}.${format}`;
-  if (contentDisposition) {
-    const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-    if (match) {
-      filename = match[1].replace(/['"]/g, '');
-    }
-  }
-
-  // Download file
-  const blob = await response.blob();
-  const blobUrl = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = blobUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  window.URL.revokeObjectURL(blobUrl);
-  a.remove();
-}
-
 
 // ----- Session file memory (RAG) -----
 
@@ -635,8 +519,6 @@ export type SessionFileMeta = {
   filename: string;
   mime_type: string;
   size_bytes: number;
-  summary?: string | null;
-  sqlite_table_name?: string | null;
   uploaded_at?: string | null;
 };
 
@@ -656,6 +538,12 @@ export async function listSessionFiles(sessionId: string): Promise<SessionFileMe
 export type UploadSessionFileResult = {
   file: SessionFileMeta;
 };
+
+/** Where an uploaded file's data goes (mutually exclusive):
+ *  - project_db: imported into the project's real database
+ *  - qa:         imported into the session sandbox for SQL Q&A (not persisted to the real DB)
+ *  - excel:      kept as a workbook for the Excel tools to read/edit (no SQL import) */
+export type ImportMode = 'project_db' | 'qa' | 'excel';
 
 function uploadErrorMessage(data: unknown): string {
   if (typeof data !== 'object' || data === null) return 'Failed to upload file';
@@ -724,14 +612,14 @@ export async function listExportFilesInventory(): Promise<ExportFileInventoryRow
 export async function uploadSessionFile(
   sessionId: string,
   file: File,
+  importMode: ImportMode,
   projectId: string | null = null,
-  useProjectDb?: boolean,
 ): Promise<UploadSessionFileResult> {
   const form = new FormData();
   form.append('file', file);
   form.append('session_id', sessionId);
+  form.append('import_mode', importMode);
   if (projectId) form.append('project_id', projectId);
-  if (useProjectDb !== undefined) form.append('use_project_db', String(useProjectDb));
   const response = await fetch(url('/api/files/upload'), {
     method: 'POST',
     credentials: 'include',
@@ -811,33 +699,136 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
 
 export type DbConnectResult = { success: boolean; message: string };
 
-export async function connectExternalDb(data: {
+/** Connection form for an external Postgres database (project-bound). */
+export type ExternalConnectionInput = {
   host: string;
   port: number;
   database: string;
   username: string;
   password: string;
-}): Promise<DbConnectResult> {
-  const response = await fetch(url('/api/db/connect'), {
+};
+
+/** Probe a connection without creating anything (the "Test connection" button). */
+export async function testExternalConnection(conn: ExternalConnectionInput): Promise<DbConnectResult> {
+  const response = await fetch(url('/api/projects/external/test'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify(data),
+    body: JSON.stringify(conn),
   });
   return response.json() as Promise<DbConnectResult>;
 }
 
-export async function disconnectExternalDb(): Promise<DbConnectResult> {
-  const response = await fetch(url('/api/db/disconnect'), {
+/** Create a project bound to the user's own external Postgres database. */
+export async function createExternalProject(
+  name: string, conn: ExternalConnectionInput, description?: string,
+): Promise<CreateProjectResponse> {
+  const response = await fetch(url('/api/projects/external'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ name, description, ...conn }),
+  });
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as { detail?: string; error?: string };
+    throw new Error(data.detail || data.error || 'Failed to create external project');
+  }
+  return (await response.json()) as CreateProjectResponse;
+}
+
+/** Re-point an external project at a new DSN (Edit connection). Owner-only. */
+export async function updateProjectConnection(id: string, conn: ExternalConnectionInput): Promise<DbConnectResult> {
+  const response = await fetch(url(`/api/projects/${encodeURIComponent(id)}/connection`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(conn),
+  });
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as { detail?: string };
+    return { success: false, message: data.detail || 'Failed to update connection' };
+  }
+  return (await response.json()) as DbConnectResult;
+}
+
+// ---------------------------------------------------------------- saved charts / dashboard
+
+export type ChartRecipe = {
+  title?: string;
+  sql: string;
+  mark: string;
+  encoding: unknown;
+  transform?: unknown;
+  layout?: string | null;
+};
+
+/** A chart re-rendered live by the dashboard. `spec` is a Vega-Lite JSON string; on SQL
+ *  failure (e.g. the schema changed) `error` is set instead. */
+export type DashboardChart = {
+  id: string;
+  title: string;
+  layout?: string | null;
+  sql?: string;
+  spec?: string;
+  error?: string;
+};
+
+/** Save a chart into a project's dashboard (the SQL must be a read-only SELECT). */
+export async function saveChart(
+  projectId: string,
+  recipe: ChartRecipe,
+): Promise<{ success: boolean; chart?: unknown; detail?: string }> {
+  const response = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/charts`), {
     method: 'POST',
     credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(recipe),
   });
-  return response.json() as Promise<DbConnectResult>;
+  return response.json();
 }
 
-export async function getDbConnectionStatus(): Promise<DbConnectResult> {
-  const response = await fetch(url('/api/db/status'), {
+/** Re-run every saved chart in the project → fresh Vega-Lite specs (live data). */
+export async function renderDashboard(
+  projectId: string,
+): Promise<{ success: boolean; charts: DashboardChart[] }> {
+  const response = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/dashboard/render`), {
     credentials: 'include',
   });
-  return response.json() as Promise<DbConnectResult>;
+  return response.json();
+}
+
+export async function deleteSavedChart(chartId: string): Promise<{ success: boolean }> {
+  const response = await fetch(url(`/api/charts/${encodeURIComponent(chartId)}`), {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  return response.json();
+}
+
+/** Edit a saved chart's title / SQL / layout (SQL re-verified read-only server-side). */
+export async function updateChart(
+  chartId: string,
+  body: { title?: string; sql?: string; layout?: string | null },
+): Promise<{ success: boolean; detail?: string }> {
+  const response = await fetch(url(`/api/charts/${encodeURIComponent(chartId)}`), {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return response.json();
+}
+
+/** Persist a new chart order for a project's dashboard. */
+export async function reorderDashboard(
+  projectId: string,
+  chartIds: string[],
+): Promise<{ success: boolean }> {
+  const response = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/dashboard/reorder`), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chart_ids: chartIds }),
+  });
+  return response.json();
 }

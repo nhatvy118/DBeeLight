@@ -15,7 +15,7 @@ RUN npm ci
 
 COPY . .
 
-# Empty default = same-origin (nginx proxies /api → api-server).
+# Empty default = same-origin (nginx proxies /api → backend).
 ARG VITE_API_URL=""
 ENV VITE_API_URL=$VITE_API_URL
 

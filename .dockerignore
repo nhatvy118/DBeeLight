@@ -31,11 +31,7 @@ Thumbs.db
 *.swp
 
 # User-uploaded data (mounted as volume in dev; lives in S3 in prod)
-api-server/file_handle
-api-server/temp_dbs
-api-server/databases
-api-server/internal/temp_dbs
-api-server/internal/databases
+backend/_data
 
 # CI / test scratch
 test_file
@@ -53,7 +49,7 @@ test_file
 # hatchling fails the editable install with "Readme file does not exist".
 **/README.md
 **/*.md
-!api-server/README.md
+!backend/README.md
 !mcp-client/README.md
 !mcp-client/servers/*/README.md
 

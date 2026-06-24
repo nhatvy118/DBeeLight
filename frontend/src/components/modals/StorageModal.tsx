@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   deleteSessionFile,
-  downloadStoredSessionFile,
   getFilesQuota,
   listExportFilesInventory,
   listUserFilesInventory,
@@ -45,7 +44,6 @@ export default function StorageModal({ open, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deletingExportId, setDeletingExportId] = useState<string | null>(null);
-  const [downloadingExportId, setDownloadingExportId] = useState<string | null>(null);
 
   async function refreshAll() {
     const [q, inv, exp] = await Promise.all([
@@ -109,19 +107,6 @@ export default function StorageModal({ open, onClose }: Props) {
       setError(e instanceof Error ? e.message : 'Failed to delete file');
     } finally {
       setDeletingId(null);
-    }
-  }
-
-  async function handleDownloadExport(row: ExportFileInventoryRow) {
-    if (downloadingExportId) return;
-    setDownloadingExportId(row.id);
-    setError(null);
-    try {
-      await downloadStoredSessionFile(row.id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Download failed');
-    } finally {
-      setDownloadingExportId(null);
     }
   }
 
@@ -206,11 +191,9 @@ export default function StorageModal({ open, onClose }: Props) {
           {!loading && !error && quota && (
             <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
               <p className="text-xs text-gray-500 dark:text-gray-400 mb-2 shrink-0">
-                Import and Export (under{' '}
-                <code className="text-[10px]">file_handle/…/import|export</code>) share a{' '}
-                <span className="font-medium text-gray-700 dark:text-gray-300">5 GB</span> limit.
-                Excel MCP staging uses{' '}
-                <code className="text-[10px]">file_handle/…/excel_mcp</code> and is not counted here.
+                Files you upload and files exported from chats share a{' '}
+                <span className="font-medium text-gray-700 dark:text-gray-300">5 GB</span> storage
+                limit. Delete files you no longer need to free up space.
               </p>
               <div className="mb-1 flex justify-between text-sm shrink-0">
                 <span className="text-gray-700 dark:text-gray-200 font-medium">
@@ -237,10 +220,10 @@ export default function StorageModal({ open, onClose }: Props) {
                   <>
                     <div className="shrink-0 mb-2 flex min-h-[4.5rem] flex-col gap-2">
                       <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                        Indexed session files ({files.length})
+                        Uploaded files ({files.length})
                       </h4>
                       <p className="text-xs text-gray-500 dark:text-gray-400">
-                        Files attached in chat (RAG / SQLite).
+                        Files you uploaded to query or edit in chat.
                       </p>
                     </div>
                     <div className="flex-1 min-h-0 overflow-y-auto pr-1">
@@ -296,8 +279,8 @@ export default function StorageModal({ open, onClose }: Props) {
                         Chat exports ({exportFiles.length})
                       </h4>
                       <p className="text-xs text-gray-500 dark:text-gray-400">
-                        Excel files the assistant produced in chat (download chips). Deleting removes the
-                        file and its search index for that session.
+                        Excel files the assistant created in chat. Deleting removes the file from that
+                        session.
                       </p>
                     </div>
                     <div className="flex-1 min-h-0 overflow-y-auto pr-1">
@@ -327,29 +310,12 @@ export default function StorageModal({ open, onClose }: Props) {
                               </div>
                               <button
                                 type="button"
-                                onClick={() => void handleDownloadExport(f)}
-                                disabled={
-                                  downloadingExportId === f.id ||
-                                  deletingExportId === f.id ||
-                                  Boolean(downloadingExportId && downloadingExportId !== f.id)
-                                }
-                                className="focusable"
-                                aria-label={`Download ${f.filename}`}
-                                title="Download"
-                                style={{ width: 32, height: 32, borderRadius: 8, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none', flexShrink: 0, opacity: (downloadingExportId === f.id || deletingExportId === f.id || Boolean(downloadingExportId && downloadingExportId !== f.id)) ? 0.4 : 1 }}
-                                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; e.currentTarget.style.color = 'var(--accent-ink)'; }}
-                                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
-                              >
-                                {downloadingExportId === f.id ? <span style={{ fontSize: 12, fontWeight: 600 }}>…</span> : <Icons.Download size={16} />}
-                              </button>
-                              <button
-                                type="button"
                                 onClick={() => void handleDeleteExport(f)}
-                                disabled={deletingExportId === f.id || Boolean(downloadingExportId)}
+                                disabled={deletingExportId === f.id}
                                 className="focusable"
                                 aria-label={`Delete ${f.filename}`}
                                 title="Remove export from storage"
-                                style={{ width: 32, height: 32, borderRadius: 8, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none', flexShrink: 0, opacity: (deletingExportId === f.id || Boolean(downloadingExportId)) ? 0.4 : 1 }}
+                                style={{ width: 32, height: 32, borderRadius: 8, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none', flexShrink: 0, opacity: deletingExportId === f.id ? 0.4 : 1 }}
                                 onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; e.currentTarget.style.color = 'oklch(0.6 0.18 25)'; }}
                                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
                               >

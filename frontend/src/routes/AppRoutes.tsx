@@ -1,12 +1,12 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import AcceptShare from '../pages/AcceptShare';
 import Account from '../pages/Account';
 import AdminDashboard from '../pages/AdminDashboard';
 import Chat from '../pages/Chat';
+import Dashboard from '../pages/Dashboard';
 import Login from '../pages/Login';
-import PrintChat from '../pages/PrintChat';
 import NotFound from '../pages/NotFound';
+import ViewerApp from '../pages/ViewerApp';
 
 type AppRoutesProps = {
   sessionId: string | null;
@@ -44,18 +44,18 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
   useLayoutEffect(() => {
     if (isLoading || user) return;
     const pathname = window.location.pathname;
-    const isPublic =
-      pathname === '/' || pathname === '/login' || pathname.startsWith('/share/');
+    const isPublic = pathname === '/' || pathname === '/login';
     if (!isPublic) {
       window.history.replaceState({}, '', '/login');
       setPath('/login');
     }
   }, [path, user, isLoading]);
 
-  // Đã đăng nhập vào "/" hoặc "/login" -> chuyển /chat
+  // Đã đăng nhập vào "/" hoặc "/login" -> admin về /admin, còn lại về /chat
   useEffect(() => {
     if (!isLoading && user && (path === '/' || path === '/login')) {
-      window.history.pushState({}, '', '/chat');
+      const dest = user.is_admin ? '/admin' : '/chat';
+      window.history.pushState({}, '', dest);
       window.dispatchEvent(new PopStateEvent('popstate'));
     }
   }, [path, user, isLoading]);
@@ -89,10 +89,6 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
 
   // Public routes — render regardless of auth state.
   if (path === '/login' || pathname === '/login') return <Login />;
-  if (path.startsWith('/share/accept/')) {
-    const token = path.slice('/share/accept/'.length);
-    return <AcceptShare token={decodeURIComponent(token)} />;
-  }
 
   // Auth gate for everything below. On marketing/login paths, keep showing
   // <Login> while /api/auth/me loads so production (/) never looks blank if
@@ -105,20 +101,25 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
   }
   if (!user) {
     // Đồng bộ URL trước khi paint (phòng deploy cũ / race sau logout).
-    if (pathname !== '/login' && !pathname.startsWith('/share/')) {
+    if (pathname !== '/login') {
       window.history.replaceState({}, '', '/login');
     }
     return <Login />;
   }
 
-  // Print-friendly view of a chat session: ``/chat/.../print``. Used as the
-  // PDF export path — the page auto-triggers ``window.print()`` and the user
-  // saves to PDF via the browser dialog.
-  if (path.startsWith('/chat/') && path.endsWith('/print')) {
-    const inner = path.slice('/chat/'.length, -'/print'.length);
-    const parts = inner.split('/').filter(Boolean);
-    const sessionId = parts[parts.length - 1];
-    if (sessionId) return <PrintChat sessionId={sessionId} />;
+  // Viewers (non-technical) get their own dedicated app — shared projects + read-only chat.
+  if (user.role === 'viewer') return <ViewerApp />;
+
+  // Admins manage the workspace only — they have NO chat. Keep them on the dashboard
+  // (render it directly + sync the URL, so there's no flash of the chat shell).
+  if (user.is_admin && path !== '/admin' && path !== '/account') {
+    if (pathname !== '/admin') window.history.replaceState({}, '', '/admin');
+    return <AdminDashboard />;
+  }
+
+  if (path.startsWith('/dashboard/')) {
+    const pid = path.slice('/dashboard/'.length).split('/').filter(Boolean)[0];
+    if (pid) return <Dashboard projectId={pid} />;
   }
   if (path.startsWith('/chat')) {
     const { projectId, sessionId } = parseChatRoute(path);

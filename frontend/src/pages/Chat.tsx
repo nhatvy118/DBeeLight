@@ -1,38 +1,41 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import MessageList, { type UiMessage, type SchemaPreviewData } from '../components/chat/MessageList';
+import MessageList, { type UiMessage } from '../components/chat/MessageList';
 import DataSourceBar, { buildDataSources, getActiveFileIds, type DataSource } from '../components/chat/DataSourceBar';
 import AttachMenu from '../components/chat/AttachMenu';
 import { toast } from '../components/Toaster';
 import { confirm } from '../components/ConfirmDialog';
 import {
   getSession,
+  getMessages,
   sendMessageWithStream,
   getSessions,
+  getProject,
   deleteChatSession,
-  executeSql,
   resumeWorkflow,
   createSession,
   listUserFilesInventory,
   listSessionFiles,
   uploadSessionFile,
-  deleteSessionFile,
   downloadStoredSessionFile,
+  saveChart,
   type SessionInfo,
-  type SessionShareInfo,
   type SessionFileMeta,
+  type ImportMode,
   type ToolEvent,
   type GetSessionResponse,
+  type SessionMessage,
+  type ChartRecipe,
 } from '../services/api';
 import {
-  buildChatMessageWithSessionFiles,
-  extractSessionFileAttachments,
-  stripSessionFileMarkers,
-} from '../utils/sessionFileMarkers';
-import {
-  extractExportData,
-  stripExcelMarkersFromText,
+  readSqlPreview,
+  readSchemaPreview,
+  readFileExport,
+  readSessionFiles,
+  readCharts,
+  readQueryResult,
   triggerExcelDownload,
-} from '../utils/excelExportMarkers';
+  type SqlPreviewData,
+} from '../utils/toolEvents';
 import { Icons, BeeBadge } from '../icons';
 import { FileTypeBadge } from '../utils/fileType';
 
@@ -67,9 +70,11 @@ type ChatProps = {
   projectId?: string | null;
   sessionId?: string | null;
   onSessionIdChange?: (sessionId: string | null) => void;
+  /** Viewer (read-only) mode: hide write affordances (file upload). Mutations are refused by the backend. */
+  viewer?: boolean;
 };
 
-export default function Chat({ projectId: propProjectId, sessionId: propSessionId, onSessionIdChange }: ChatProps) {
+export default function Chat({ projectId: propProjectId, sessionId: propSessionId, onSessionIdChange, viewer = false }: ChatProps) {
   const [query, setQuery] = useState<string>('');
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [isSending, setIsSending] = useState<boolean>(false);
@@ -77,21 +82,23 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   // Don't init from propSessionId: so on reload with URL like /chat/projectId/sessionId,
   // the "load session" effect sees propSessionId set but sessionId null and fetches messages.
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [shareInfo, setShareInfo] = useState<SessionShareInfo | null>(null);
   const [selectedProject, setSelectedProject] = useState<{ id: string; name: string; description?: string } | null>(null);
   const [projectSessions, setProjectSessions] = useState<SessionInfo[]>([]);
-  const [sessionPreviews, setSessionPreviews] = useState<Record<string, string>>({});
   const [inputKey, setInputKey] = useState(0);
   const previousProjectIdRef = useRef<string | null>(null);
   const hasRestoredSessionRef = useRef(false);
   const previousPropSessionIdRef = useRef<string | null | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [isUploadingExcel, setIsUploadingExcel] = useState(false);
-  /** Session files already uploaded to server (have a server ID). */
-  const [inputAttachedFiles, setInputAttachedFiles] = useState<{ id: string; filename: string }[]>([]);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
   /** Files selected locally but not yet uploaded — staged until Enter is pressed. */
   const [stagedFiles, setStagedFiles] = useState<{ localId: string; file: File; filename: string }[]>([]);
+  /** Progress while uploading staged files after Send (null when idle). */
+  const [fileUploadProgress, setFileUploadProgress] = useState<{
+    done: number;
+    total: number;
+    filename: string;
+  } | null>(null);
   /** Whether to show the "Save data / Q&A only" question above the input. */
   const [pendingStorageChoice, setPendingStorageChoice] = useState(false);
   /** Message payload waiting to be sent after storage choice is made. */
@@ -106,164 +113,84 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   // Data source selector (multi-select: DB is exclusive with files, multiple files allowed)
   const [sessionFiles, setSessionFiles] = useState<SessionFileMeta[]>([]);
   const [activeDataSources, setActiveDataSources] = useState<DataSource[]>([]);
+  // Primary-DB info for the current session, from the backend (single source of truth:
+  // project_id → project DB, else user's active external DB). null = not loaded yet.
+  const [sessionDb, setSessionDb] = useState<
+    { has_db: boolean; db_kind: 'project' | 'external' | null; db_label: string | null } | null
+  >(null);
+
+  // Scope ids for a chat turn: the picked files, or the primary-DB sentinel when none are
+  // picked ("no file selected = ask the database"). The backend reads '__primary_db__'.
+  const scopedFileIds = (fileIds: string[]): string[] => (fileIds.length ? fileIds : ['__primary_db__']);
 
   const handleToggleDataSource = (src: DataSource) => {
     setActiveDataSources((prev) => {
-      const isAlreadySelected =
-        src.type === 'primary_db'
-          ? prev.some((s) => s.type === 'primary_db')
-          : prev.some((s) => s.type === 'file' && s.id === src.id);
-
-      if (isAlreadySelected) {
-        if (src.type === 'primary_db') return prev.filter((s) => s.type !== 'primary_db');
-        return prev.filter((s) => !(s.type === 'file' && s.id === src.id));
-      }
-
-      return [...prev, src];
+      const selected = prev.some((s) => s.id === src.id);
+      return selected ? prev.filter((s) => s.id !== src.id) : [...prev, src];
     });
   };
 
-  // Read connected DB label from localStorage (written by Sidebar)
-  const connectedDbLabel = (() => {
-    try {
-      const raw = localStorage.getItem('connectedDb');
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as { server?: string; databaseName?: string };
-      if (parsed?.databaseName) return `${parsed.databaseName}@${parsed.server ?? 'localhost'}`;
-    } catch { /* ignore */ }
-    return null;
-  })();
+  // Primary DB shown in the data-source selector. The backend is the source of truth
+  // (sessionDb, from getSession): project DB vs external DB vs none. Before it loads we
+  // briefly fall back to the selected project so a project chat shows its DB without a flash.
+  const primaryDbLabel = sessionDb
+    ? (sessionDb.has_db ? (sessionDb.db_label || 'Database') : null)
+    : (selectedProject ? (selectedProject.name || 'Database') : null);
 
-  // Load selected project from URL (propProjectId) - URL is source of truth
+  // Load the selected project. Fast path: the user's own cached projects. Otherwise (e.g. a
+  // viewer opening a project SHARED with them — not in their own list) fetch it from the API.
   useEffect(() => {
-    if (propProjectId) {
-      // Load project from URL
-      const projects = JSON.parse(localStorage.getItem('projects') || '[]');
-      const project = projects.find((p: { id: string }) => p.id === propProjectId);
-      if (project) {
-        setSelectedProject({ id: project.id, name: project.name, description: project.description });
-        previousProjectIdRef.current = project.id;
-      } else {
-        // Project not found, clear selection
+    if (!propProjectId) {
+      setSelectedProject(null);
+      previousProjectIdRef.current = null;
+      return;
+    }
+    const cached = JSON.parse(localStorage.getItem('projects') || '[]');
+    const hit = cached.find((p: { id: string }) => p.id === propProjectId);
+    if (hit) {
+      setSelectedProject({ id: hit.id, name: hit.name, description: hit.description });
+      previousProjectIdRef.current = hit.id;
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const p = await getProject(propProjectId);
+        if (cancelled) return;
+        setSelectedProject({ id: p.id, name: p.name, description: p.description });
+        previousProjectIdRef.current = p.id;
+      } catch {
+        if (cancelled) return;
         setSelectedProject(null);
         previousProjectIdRef.current = null;
       }
-    } else {
-      // No project in URL, clear selection
-      setSelectedProject(null);
-      previousProjectIdRef.current = null;
-    }
+    })();
+    return () => { cancelled = true; };
   }, [propProjectId]);
 
   // No longer listen to localStorage - URL is source of truth
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-
-  const hashString = (input: string): string => {
-    let hash = 0;
-    for (let i = 0; i < input.length; i += 1) {
-      hash = ((hash << 5) - hash + input.charCodeAt(i)) | 0;
-    }
-    return Math.abs(hash).toString(36);
-  };
-
-  const buildSqlActionId = (
-    sid: string | null,
-    messageContent: string,
-    sqlText: string,
-    sqlOrdinal: number,
-  ): string => {
-    const base = `${sid ?? 'nosession'}|${sqlOrdinal}|${messageContent}|${sqlText}`;
-    return `sqlact_${hashString(base)}`;
-  };
-
-  const extractSchemaPreviewFromToolEvents = (events?: ToolEvent[]): SchemaPreviewData | null => {
-    if (!events || !Array.isArray(events)) return null;
-
-    const schemaEvent = events.find(
-      (e) => e?.tool === 'show_create_table_schema' && e?.type === 'schema_preview' && e?.payload
-    );
-    if (!schemaEvent?.payload) return null;
-
-    const payload = schemaEvent.payload as Record<string, any>;
-    const tableName = payload.tableName || payload.table_name;
-    const primaryKey = payload.primaryKey ?? payload.primary_key ?? null;
-    const columnsRaw = Array.isArray(payload.columns) ? payload.columns : [];
-    const columns = columnsRaw
-      .map((c: any) => ({ variable: c?.variable, type: c?.type }))
-      .filter((c: any) => c.variable && c.type);
-
-    if (!tableName || columns.length === 0) return null;
-    return { tableName, primaryKey, columns };
-  };
-
-  type SqlPreviewData = {
-    sql: string;
-    explain?: string;
-    type_sql?: string;
-    mutationPreviewMarkdown?: string | null;
-  };
-
-  type SqlPreviewPayload = {
-    sql: string;
-    explain?: string;
-    type_sql?: string;
-    mutation_preview_markdown?: string | null;
-    mutationPreviewMarkdown?: string | null;
-  };
-
-  const parseSqlPreviewPayload = (payload: SqlPreviewPayload | undefined): SqlPreviewData | null => {
-    if (!payload) return null;
-    const sql = typeof payload.sql === 'string' ? payload.sql.trim() : '';
-    if (!sql) return null;
-    const explain =
-      typeof payload.explain === 'string'
-        ? payload.explain.trim()
-        : typeof (payload as Record<string, unknown>).explain_summary === 'string'
-          ? String((payload as Record<string, unknown>).explain_summary).trim()
-          : '';
-    const type_sql =
-      typeof payload.type_sql === 'string' ? payload.type_sql.trim() : '';
-    const mutationPreviewMarkdown =
-      typeof payload.mutation_preview_markdown === 'string'
-        ? payload.mutation_preview_markdown.trim()
-        : typeof payload.mutationPreviewMarkdown === 'string'
-          ? payload.mutationPreviewMarkdown.trim()
-          : null;
-    return { sql, explain, type_sql, mutationPreviewMarkdown };
-  };
+  // Cursor pagination for message history (scroll up to load older).
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const [oldestCursor, setOldestCursor] = useState<string | null>(null);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const isLoadingOlderRef = useRef(false);
+  const skipAutoScrollRef = useRef(false);  // set when prepending older msgs, so we don't jump to bottom
 
   const isDqlStatement = (typeSql?: string) => (typeSql ?? '').trim().toUpperCase() === 'DQL';
 
   const pendingWorkflowResumeFromMessage = (msg: { pending_workflow_resume?: boolean }) =>
     Boolean(msg?.pending_workflow_resume);
 
-  /** Structured SQL from ``tool_events`` (type ``sql_statement``; payload: sql, explain, type_sql). */
-  const extractSqlPayloadFromToolEvents = (events?: ToolEvent[]): SqlPreviewData | null => {
-    if (!events || !Array.isArray(events)) return null;
-    const sqlPayloadEvents = events.filter((e) => {
-      if (e?.type === 'sql_execution') return false;
-      if (e?.tool && e.tool !== 'execute_query') return false;
-      const p = e?.payload as Record<string, unknown> | undefined;
-      return p && typeof p.sql === 'string' && p.sql.trim().length > 0;
-    });
-    const withTypeSql = sqlPayloadEvents.find((e) => {
-      const ts = (e?.payload as Record<string, unknown> | undefined)?.type_sql;
-      return typeof ts === 'string' && ts.trim().length > 0;
-    });
-    const chosen = withTypeSql ?? sqlPayloadEvents[0];
-    return parseSqlPreviewPayload(chosen?.payload as SqlPreviewPayload | undefined);
-  };
-
   const resolveSqlExecuteAction = (
     events: ToolEvent[] | undefined,
-    pendingWorkflowResume: boolean,
+    _pendingWorkflowResume: boolean,
   ): { sqlToExecute: string | null; sqlActionState: 'pending' | 'executed' | undefined } => {
-    if (events?.some((e) => e?.type === 'sql_execution')) {
-      return { sqlToExecute: null, sqlActionState: 'executed' };
-    }
-    const payload = extractSqlPayloadFromToolEvents(events);
+    // 'executed'/'cancelled' come ONLY from the sql_actions state map (single source of truth),
+    // applied over this base in convertMessages — not re-derived from a tool_event here.
+    const payload = readSqlPreview(events);
     if (!payload?.sql) {
       return { sqlToExecute: null, sqlActionState: undefined };
     }
@@ -274,10 +201,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (isDqlStatement(typeSql)) {
       return { sqlToExecute: null, sqlActionState: 'executed' };
     }
-    if (pendingWorkflowResume) {
-      return { sqlToExecute: payload.sql, sqlActionState: 'pending' };
-    }
-    return { sqlToExecute: null, sqlActionState: undefined };
+    // A DML/DDL preview that hasn't run yet → pending → show the Execute button. The
+    // sql_preview event itself signals "awaiting approval" (it's persisted), so we don't
+    // depend on the live-only pending_workflow_resume flag — survives a history reload.
+    return { sqlToExecute: payload.sql, sqlActionState: 'pending' };
   };
 
   const buildAssistantTextFromSqlPreview = (
@@ -298,92 +225,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return parts.join('\n\n').trim();
   };
 
-  const extractSchemaPreview = (text: string): SchemaPreviewData | null => {
-    // Preferred path: structured JSON payload from show_create_table_schema tool output.
-    const jsonMatch = text.match(/\[CREATE_TABLE_SCHEMA_JSON_START\]([\s\S]*?)\[CREATE_TABLE_SCHEMA_JSON_END\]/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[1].trim()) as SchemaPreviewData;
-        if (!parsed?.tableName && (parsed as any).table_name) {
-          return {
-            tableName: (parsed as any).table_name,
-            primaryKey: (parsed as any).primary_key ?? null,
-            columns: Array.isArray((parsed as any).columns) ? (parsed as any).columns : [],
-          };
-        }
-        return parsed;
-      } catch {
-        // continue to marker-based fallback
-      }
-    }
-
-    // Fallback for cases where agent called the tool but did not preserve JSON payload.
-    // Accept markdown Variable|Type table when message looks like create-table schema review.
-    const looksLikeSchemaReview =
-      text.includes('[CREATE_TABLE_SCHEMA_PREVIEW]') ||
-      /schema\s+đề\s+xuất\s+cho\s+bảng/i.test(text) ||
-      /proposed\s+schema\s+for\s+table/i.test(text) ||
-      /\bcreate_table\b/i.test(text) ||
-      /\bcreate table\b/i.test(text);
-
-    if (!looksLikeSchemaReview) return null;
-
-    const lines = text.split('\n').map((l) => l.trim());
-    const tableStart = lines.findIndex((l) => /^\|\s*Variable\s*\|\s*Type\s*\|$/i.test(l));
-    if (tableStart === -1) return null;
-
-    const columns: Array<{ variable: string; type: string }> = [];
-    for (let i = tableStart + 1; i < lines.length; i += 1) {
-      const line = lines[i];
-      if (!line.startsWith('|')) break;
-      if (/^\|\s*-+\s*\|\s*-+\s*\|$/.test(line.replace(/:/g, ''))) continue;
-
-      const cells = line
-        .split('|')
-        .map((c) => c.trim())
-        .filter((_, idx, arr) => !(idx === 0 || idx === arr.length - 1));
-
-      if (cells.length < 2) continue;
-      const variable = cells[0].replace(/^`|`$/g, '');
-      const type = cells[1].replace(/^`|`$/g, '');
-      if (variable && type) columns.push({ variable, type });
-    }
-
-    if (columns.length === 0) return null;
-
-    const tableNameMatch =
-      text.match(/Proposed table:\s*`([^`]+)`/i) ||
-      text.match(/table\s+`([^`]+)`/i) ||
-      text.match(/bảng\s+`([^`]+)`/i);
-    const tableName = tableNameMatch?.[1] || 'new_table';
-
-    return {
-      tableName,
-      primaryKey: null,
-      columns,
-    };
-  };
-
-  const SCHEMA_CONFIRM_USER_RE = /^Confirm schema table /i;
-
-  /** Locked only after the user explicitly confirmed schema in chat history. */
-  const deriveSchemaLockedFromHistory = (
-    rawMessages: Array<{ role: string; content?: string }>,
-    assistantIndex: number,
-  ): boolean => {
-    for (let i = assistantIndex + 1; i < rawMessages.length; i += 1) {
-      const m = rawMessages[i];
-      if (m.role === 'user' && SCHEMA_CONFIRM_USER_RE.test((m.content || '').trim())) {
-        return true;
-      }
-      if (m.role === 'assistant') {
-        const text = m.content || '';
-        if (/```\s*sql[\s\S]*CREATE\s+TABLE/i.test(text)) {
-          return true;
-        }
-      }
-    }
-    return false;
+  const getDbInfoFromSessionResponse = (
+    res: GetSessionResponse,
+  ): { has_db: boolean; db_kind: 'project' | 'external' | null; db_label: string | null } | null => {
+    if (!res.success) return null;
+    const info = res.session_info as any;
+    if (!info || typeof info.has_db !== 'boolean') return null;
+    const kind = info.db_kind === 'project' || info.db_kind === 'external' ? info.db_kind : null;
+    return { has_db: info.has_db, db_kind: kind, db_label: info.db_label ?? null };
   };
 
   const getSqlActionStatesFromSessionResponse = (res: GetSessionResponse): Record<string, 'pending' | 'running' | 'executed' | 'failed' | 'cancelled'> => {
@@ -400,108 +249,136 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     return out;
   };
 
-  const extractSqlActionId = (text: string): string | undefined => {
-    const m = text.match(/\[SQL_ACTION_ID_START\]([\s\S]*?)\[SQL_ACTION_ID_END\]/);
-    const id = m?.[1]?.trim();
-    return id || undefined;
+  // Convert raw message rows (oldest→newest) into UI messages. Shared by initial load and scroll-up.
+  const convertMessages = (
+    raw: SessionMessage[],
+    sid: string,
+    sqlActionStates: Record<string, 'pending' | 'running' | 'executed' | 'failed' | 'cancelled'>,
+  ): UiMessage[] => {
+    const filteredMessages = raw.filter((msg) => msg.role === 'user' || msg.role === 'assistant');
+    return filteredMessages
+      .map((msg, msgIndex) => {
+        const cleanedText = (msg.content || '').trim();
+        const sqlPreview =
+          msg.role === 'assistant' ? readSqlPreview(msg.tool_events) : null;
+        const schemaPreview =
+          msg.role === 'assistant'
+            ? readSchemaPreview(msg.tool_events)
+            : null;
+        const sqlAction =
+          msg.role === 'assistant'
+            ? resolveSqlExecuteAction(msg.tool_events, pendingWorkflowResumeFromMessage(msg))
+            : { sqlToExecute: null, sqlActionState: undefined };
+        const sqlToExecute = sqlAction.sqlToExecute;
+        // Single source of truth: the action id comes from the server (in the sql_preview event),
+        // never re-derived on the client. State is read from sql_actions by that id.
+        const sqlActionId = sqlPreview?.actionId;
+        const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
+        const schemaActionState = schemaPreview?.actionId ? sqlActionStates[schemaPreview.actionId] : undefined;
+        return {
+          text: msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
+          isUser: msg.role === 'user',
+          attachments: msg.role === 'user' ? readSessionFiles(msg.tool_events) : undefined,
+          sqlToExecute,
+          sqlActionId,
+          sqlActionState: sqlToExecute
+            ? (persistedSqlState ?? sqlAction.sqlActionState ?? ('pending' as const))
+            : sqlAction.sqlActionState,
+          exportToExcel: msg.role === 'assistant' ? readFileExport(msg.tool_events) : null,
+          charts: msg.role === 'assistant' ? readCharts(msg.tool_events) : undefined,
+          queryResult: msg.role === 'assistant' ? readQueryResult(msg.tool_events) : null,
+          mutationPreview: msg.role === 'assistant' ? (sqlPreview?.preview ?? null) : null,
+          schemaPreview,
+          // Single source of truth: the schema editor locks once its action state (in sql_actions,
+          // keyed by the server action_id) reaches a TERMINAL state — executed or cancelled.
+          schemaLocked:
+            msg.role === 'assistant' && schemaPreview?.actionId
+              ? schemaActionState === 'executed' || schemaActionState === 'cancelled'
+              : undefined,
+          schemaCancelled:
+            msg.role === 'assistant' && schemaActionState === 'cancelled',
+        };
+      })
+      .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.charts && m.charts.length > 0) || (m.attachments && m.attachments.length > 0));
   };
 
-  const extractUploadAttachments = extractSessionFileAttachments;
-
-  const stripInternalPayloads = (text: string): string => {
-    let cleaned = stripSessionFileMarkers(
-      text
-        .replace(/\n?\[CREATE_TABLE_SCHEMA_JSON_START\][\s\S]*?\[CREATE_TABLE_SCHEMA_JSON_END\]\n?/g, '\n')
-        .replace(/\n?\[SCHEMA_CONFIRM_INTERNAL_START\][\s\S]*?\[SCHEMA_CONFIRM_INTERNAL_END\]\n?/g, '\n')
-        // Legacy Superset chart-embed markers — Superset has been removed but old
-        // assistant messages still carry them; strip so they don't render as raw text.
-        .replace(/\n?\[CHART_EMBED_URL_START\][\s\S]*?\[CHART_EMBED_URL_END\]\n?/g, '\n')
-        .replace(/\n?\[CHART_EMBED_META_START\][\s\S]*?\[CHART_EMBED_META_END\]\n?/g, '\n')
-        // File path markers for the agent; name/id handled in stripSessionFileMarkers
-        .replace(/\n?\[UPLOADED_EXCEL_PATH_START\][\s\S]*?\[UPLOADED_EXCEL_PATH_END\]\n?/g, '\n'),
-    );
-
-    // Strip the read-only-share system note that older builds accidentally
-    // persisted into the user's message history.
-    cleaned = cleaned.replace(
-      /^\[SHARED SESSION\s*[—-]\s*READ-ONLY MODE\][\s\S]*?\n\s*User message:\s*/i,
-      '',
-    );
-
-    // Hide backend internal execution prompts from history display
-    if (/^User has confirmed schema\./i.test(cleaned.trim()) && /User request:/i.test(cleaned)) {
-      const reqMatch = cleaned.match(/User request:\s*(.+)$/im);
-      if (reqMatch?.[1]) {
-        return reqMatch[1].trim();
+  // Load the previous (older) page when the user scrolls to the top of the conversation.
+  const loadOlderMessages = async () => {
+    if (!sessionId || !oldestCursor || isLoadingOlderRef.current || !hasMoreMessages) return;
+    isLoadingOlderRef.current = true;
+    const el = scrollContainerRef.current;
+    const prevHeight = el?.scrollHeight ?? 0;
+    try {
+      const page = await getMessages(sessionId, oldestCursor);
+      // sql_action_states only ride on session_info (initial load); older pages have none.
+      const older = convertMessages(page.messages, sessionId, {});
+      if (older.length) {
+        skipAutoScrollRef.current = true;  // prepend must not yank the view to the bottom
+        setMessages((prev) => [...older, ...prev]);
+        // Keep the viewport anchored on the same message after the taller list renders.
+        requestAnimationFrame(() => {
+          const el2 = scrollContainerRef.current;
+          if (el2) el2.scrollTop = el2.scrollHeight - prevHeight;
+        });
       }
+      setOldestCursor(page.next_cursor);
+      setHasMoreMessages(page.has_more);
+    } catch (err) {
+      console.error('Failed to load older messages:', err);
+    } finally {
+      isLoadingOlderRef.current = false;
     }
+  };
 
-    // Hide internal schema-discovery prompt generated by workflow
-    if (/^Show me the schema for tables:/i.test(cleaned.trim()) && /Use list_tables and describe_table tools\.?$/i.test(cleaned.trim())) {
-      return '';
+  const handleMessagesScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (e.currentTarget.scrollTop < 80 && hasMoreMessages && !isLoadingOlderRef.current) {
+      void loadOlderMessages();
     }
-
-    // Hide legacy wrapper text like "Generate SQL for: ... Show the SQL but do NOT execute it."
-    cleaned = cleaned.replace(/^Generate SQL for:\s*/i, '');
-    cleaned = cleaned.replace(/\.?\s*Show the SQL but do NOT execute it\.?\s*$/i, '');
-
-    // Hide internal schema-tool forcing prompt if it leaks to UI.
-    if (/^You MUST call tool `show_create_table_schema`/i.test(cleaned.trim())) {
-      const reqMatch = cleaned.match(/User request:\s*(.+)$/im);
-      if (reqMatch?.[1]) {
-        return reqMatch[1].trim();
-      }
-      return '';
-    }
-
-    cleaned = cleaned.replace(/^\[CREATE_TABLE_SCHEMA_PREVIEW\]\s*/i, '');
-    cleaned = cleaned.replace(/\n?\[SQL_ACTION_ID_START\][\s\S]*?\[SQL_ACTION_ID_END\]\n?/g, '\n');
-    cleaned = stripExcelMarkersFromText(cleaned);
-
-    return cleaned.trim();
   };
 
   const isStopVisible = isSending || isAssistantTyping;
 
-  const isViewOnlyShare = shareInfo?.permission === 'view_only' || shareInfo?.revoked === true;
-
   const canSend = useMemo(() => {
     const hasText = query.trim().length > 0;
-    if (isViewOnlyShare) return false;
-    return !isStopVisible && !isUploadingExcel && !pendingStorageChoice && hasText;
-  }, [isStopVisible, isUploadingExcel, pendingStorageChoice, query, isViewOnlyShare]);
+    return !isStopVisible && !isUploadingFile && !pendingStorageChoice && hasText;
+  }, [isStopVisible, isUploadingFile, pendingStorageChoice, query]);
 
-  const handleRemoveInputAttachment = async (fileId: string) => {
-    // Staged files (not yet uploaded) — just remove locally
-    if (fileId.startsWith('staged-')) {
-      setStagedFiles((prev) => prev.filter((f) => f.localId !== fileId));
-      return;
-    }
-    // Uploaded files — delete from server
+  const handleRemoveStagedFile = (localId: string) => {
+    setStagedFiles((prev) => prev.filter((f) => f.localId !== localId));
+  };
+
+  const showStorageQuotaToast = async () => {
     try {
-      await deleteSessionFile(fileId);
-      setInputAttachedFiles((prev) => prev.filter((f) => f.id !== fileId));
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Remove failed');
+      const inv = await listUserFilesInventory();
+      const lines = inv.slice(0, 12).map(
+        (r) => `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — session ${r.session_id.slice(0, 8)}…`,
+      );
+      toast.error(
+        'Storage limit reached (5 GB). Delete some files and try again.\n\n' +
+          (lines.length ? `Recent files:\n${lines.join('\n')}` : ''),
+      );
+    } catch {
+      toast.error('Storage limit reached (5 GB). Delete some files and try again.');
     }
   };
 
-  /** Upload all staged files to server with the chosen storage destination. */
+  /** Upload staged files to server. Returns uploaded metadata only — does not mutate composer state. */
   const uploadStagedFiles = async (
-    useProjectDb: boolean,
-    filesToUpload?: { localId: string; file: File; filename: string }[],
+    importMode: ImportMode,
+    filesToUpload: { localId: string; file: File; filename: string }[],
   ): Promise<{ id: string; filename: string }[]> => {
-    const toUpload = filesToUpload ?? [...stagedFiles];
-    if (toUpload.length === 0) return [];
-    setIsUploadingExcel(true);
-    const uploaded: { id: string; filename: string }[] = [];
+    if (filesToUpload.length === 0) return [];
+
+    setIsUploadingFile(true);
+    setFileUploadProgress({ done: 0, total: filesToUpload.length, filename: filesToUpload[0].filename });
+
     try {
       let sid = sessionId;
       if (!sid) {
-        const cr = await createSession(null, selectedProject?.id || propProjectId || null);
+        const cr = await createSession(selectedProject?.id || propProjectId || null);
         if (!cr.success || !cr.session_id) {
           toast.error('Could not create a chat session for this upload');
-          return [];
+          throw new Error('session_create_failed');
         }
         sid = cr.session_id;
         setSessionId(sid);
@@ -514,49 +391,70 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         }
         window.dispatchEvent(new PopStateEvent('popstate'));
       }
-      for (const staged of toUpload) {
-        try {
-          const { file: up } = await uploadSessionFile(
+
+      const uploaded: { id: string; filename: string }[] = [];
+      let quotaToastShown = false;
+
+      const results = await Promise.allSettled(
+        filesToUpload.map((staged) =>
+          uploadSessionFile(
             sid!,
             staged.file,
+            importMode,
             selectedProject?.id || propProjectId || null,
-            useProjectDb,
-          );
+          ),
+        ),
+      );
+
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        const staged = filesToUpload[i];
+        setFileUploadProgress({ done: i + 1, total: filesToUpload.length, filename: staged.filename });
+
+        if (result.status === 'fulfilled') {
+          const up = result.value.file;
           uploaded.push({ id: up.id, filename: up.filename });
-        } catch (err) {
-          const e = err as Error & { code?: string };
-          if (e.code === 'storage_quota_exceeded' || /5\s*GB|storage limit/i.test(e.message || '')) {
-            try {
-              const inv = await listUserFilesInventory();
-              const lines = inv.slice(0, 12).map(
-                (r) => `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — session ${r.session_id.slice(0, 8)}…`,
-              );
-              toast.error(
-                'Storage limit reached (5 GB). Delete some files and try again.\n\n' +
-                  (lines.length ? `Recent files:\n${lines.join('\n')}` : ''),
-              );
-            } catch {
-              toast.error('Storage limit reached (5 GB). Delete some files and try again.');
-            }
-          } else {
-            toast.error(e instanceof Error ? e.message : 'Failed to upload file');
+          continue;
+        }
+
+        const e = result.reason as Error & { code?: string };
+        if (e.code === 'storage_quota_exceeded' || /5\s*GB|storage limit/i.test(e.message || '')) {
+          if (!quotaToastShown) {
+            quotaToastShown = true;
+            await showStorageQuotaToast();
           }
+        } else {
+          toast.error(e instanceof Error ? e.message : `Failed to upload ${staged.filename}`);
         }
       }
-      setStagedFiles([]);
-      setInputAttachedFiles((prev) => [...prev, ...uploaded]);
-      // Refresh session files list for DataSource selector
-      if (sessionId && uploaded.length > 0) {
-        listSessionFiles(sessionId).then(setSessionFiles).catch(() => {});
+
+      if (sid && uploaded.length > 0) {
+        const uploadedIds = new Set(uploaded.map((u) => u.id));
+        listSessionFiles(sid)
+          .then((files) => {
+            setSessionFiles(files);
+            // Auto-scope this turn to the files just uploaded (intent: ask about them).
+            // Only the new files — don't re-add ones the user deliberately unticked.
+            const justUploaded: DataSource[] = files
+              .filter((f) => uploadedIds.has(f.id))
+              .map((f) => ({ type: 'file', id: f.id, filename: f.filename, mime_type: f.mime_type, uploaded_at: f.uploaded_at ?? null }));
+            setActiveDataSources((prev) => {
+              const have = new Set(prev.map((s) => s.id));
+              return [...prev, ...justUploaded.filter((s) => !have.has(s.id))];
+            });
+          })
+          .catch(() => {});
       }
+
       return uploaded;
     } finally {
-      setIsUploadingExcel(false);
+      setIsUploadingFile(false);
+      setFileUploadProgress(null);
     }
   };
 
-  /** Stage file locally — actual upload happens on Enter. */
-  const handleExcelFileSelected = (file: File) => {
+  /** Stage file locally — upload on Send sends the original file (Excel kept for formatting + SQL import on BE). */
+  const stageFileForUpload = (file: File) => {
     const localId = `staged-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setStagedFiles((prev) => [...prev, { localId, file, filename: file.name }]);
   };
@@ -566,7 +464,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     // allow re-selecting same file
     e.target.value = '';
     if (!file) return;
-    void handleExcelFileSelected(file);
+    stageFileForUpload(file);
   };
 
   // Load session when sessionId from URL (propSessionId) is set. Must run when URL has
@@ -577,58 +475,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const loadSession = async (sid: string) => {
       try {
         setIsSessionLoading(true);
-        const res = await getSession(sid);
-        if (res.success && res.messages) {
-          const sqlActionStates = getSqlActionStatesFromSessionResponse(res);
-          let sqlOrdinal = 0;
-          const filteredMessages = res.messages.filter(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (msg: any) => msg.role === 'user' || msg.role === 'assistant',
-          );
-          const convertedMessages: UiMessage[] = filteredMessages
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map((msg: any, msgIndex: number) => {
-              const rawContent = msg.content || '';
-              const cleanedText = stripInternalPayloads(rawContent);
-              const sqlPreview =
-                msg.role === 'assistant' ? extractSqlPayloadFromToolEvents((msg as any).tool_events) : null;
-              const schemaPreview =
-                msg.role === 'assistant'
-                  ? extractSchemaPreviewFromToolEvents((msg as any).tool_events) || extractSchemaPreview(rawContent)
-                  : null;
-              const sqlAction =
-                msg.role === 'assistant'
-                  ? resolveSqlExecuteAction(
-                      (msg as any).tool_events,
-                      pendingWorkflowResumeFromMessage(msg as { pending_workflow_resume?: boolean }),
-                    )
-                  : { sqlToExecute: null, sqlActionState: undefined };
-              const sqlToExecute = sqlAction.sqlToExecute;
-              const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
-              const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
-              const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
-              return {
-                text: msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
-                isUser: msg.role === 'user',
-                attachments: msg.role === 'user' ? extractUploadAttachments(rawContent) : undefined,
-                sqlToExecute,
-                sqlActionId,
-                sqlActionState: sqlToExecute
-                  ? (persistedSqlState ?? sqlAction.sqlActionState ?? ('pending' as const))
-                  : sqlAction.sqlActionState,
-                exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
-                schemaPreview,
-                schemaLocked:
-                  msg.role === 'assistant' && schemaPreview
-                    ? deriveSchemaLockedFromHistory(filteredMessages, msgIndex)
-                    : undefined,
-              };
-            })
-            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
-          setMessages(convertedMessages);
-          setInputAttachedFiles([]);
+        const [info, page] = await Promise.all([getSession(sid), getMessages(sid)]);
+        if (info.success) {
+          setSessionDb(getDbInfoFromSessionResponse(info));
+          const sqlActionStates = getSqlActionStatesFromSessionResponse(info);
+          setMessages(convertMessages(page.messages, sid, sqlActionStates));
+          setOldestCursor(page.next_cursor);
+          setHasMoreMessages(page.has_more);
+          setStagedFiles([]);
           setSessionId(sid);
-          setShareInfo(res.share_info ?? null);
           onSessionIdChange?.(sid);
           saveLastSession(sid, selectedProject?.id ?? null);
         }
@@ -652,9 +507,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (sessionWasExplicitlyRemoved && sessionId) {
       // URL no longer has a session (e.g. navigated to /chat) — clear local state
       setMessages([]);
-      setInputAttachedFiles([]);
+      setStagedFiles([]);
       setSessionId(null);
-      setShareInfo(null);
       onSessionIdChange?.(null);
       saveLastSession(null, null);
     }
@@ -666,6 +520,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   };
 
   useEffect(() => {
+    // Prepending older messages (scroll-up) must not yank the view to the bottom.
+    if (skipAutoScrollRef.current) {
+      skipAutoScrollRef.current = false;
+      return;
+    }
     scrollToBottom();
   }, [messages]);
 
@@ -674,26 +533,16 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (!sessionId) {
       setSessionFiles([]);
       setActiveDataSources([]);
+      setSessionDb(null);
       return;
     }
     listSessionFiles(sessionId)
       .then((files) => {
         setSessionFiles(files);
-        // Auto-select only when user hasn't made a choice yet
-        setActiveDataSources((prev) => {
-          if (prev.length > 0) return prev;
-          const hasPrimaryDb = !!connectedDbLabel;
-          // Only DB and no files → auto-select DB
-          if (hasPrimaryDb && files.length === 0) {
-            return [{ type: 'primary_db', label: 'Database', detail: connectedDbLabel! }];
-          }
-          // Only 1 file and no DB → auto-select that file
-          if (!hasPrimaryDb && files.length === 1) {
-            const f = files[0];
-            return [{ type: 'file', id: f.id, filename: f.filename, mime_type: f.mime_type, uploaded_at: f.uploaded_at ?? null }];
-          }
-          return [];
-        });
+        const fileIdSet = new Set(files.map((f) => f.id));
+        // Default scope is the database (empty selection). Only carry over file picks that
+        // still exist in this session; file ids are session-scoped.
+        setActiveDataSources((prev) => prev.filter((s) => fileIdSet.has(s.id)));
       })
       .catch(() => setSessionFiles([]));
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -722,21 +571,21 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       const finalRes = await sendMessageWithStream(text, sessionId, selectedProject?.id || null, {
         onStage: (m) => setStreamingStage(m),
         signal: controller.signal,
-        activeFileIds: getActiveFileIds(activeDataSources),
+        activeFileIds: scopedFileIds(getActiveFileIds(activeDataSources)),
       });
       setStreamingStage(null);
       // ChatResponse is a discriminated union; downstream code reads optional
       // tool_events / pending_workflow_resume that only exist on success. Keep
       // the original behaviour of treating the payload as a loose object.
       const res = finalRes as any;
-      if (res.response && res.response.trim().length > 0) {
+      if ((res.response && res.response.trim().length > 0) || readCharts(res.tool_events).length > 0) {
         setIsAssistantTyping(true);
         setMessages((prev) => [
           ...prev,
           {
             text: buildAssistantTextFromSqlPreview(
-              stripInternalPayloads(res.response),
-              extractSqlPayloadFromToolEvents((res as any).tool_events),
+              (res.response ?? '').trim(),
+              readSqlPreview((res as any).tool_events),
             ),
             isUser: false,
             ...(() => {
@@ -748,13 +597,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 workflowResumePending: pendingResume,
               };
             })(),
-            sqlActionId: extractSqlActionId(res.response),
-            exportToExcel: extractExportData(res.response),
-            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(res.response),
+            exportToExcel: readFileExport((res as any).tool_events),
+            charts: readCharts((res as any).tool_events),
+            queryResult: readQueryResult((res as any).tool_events),
+            mutationPreview: readSqlPreview((res as any).tool_events)?.preview ?? null,
+            schemaPreview: readSchemaPreview((res as any).tool_events),
             schemaLocked: false,
           },
         ]);
-        
+
         if (res.session_id) {
           const newSessionId = res.session_id;
           const isNewSession = sessionId !== newSessionId;
@@ -811,84 +662,118 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     setStreamingStage(null);
   };
 
+  /** The three mutually-exclusive destinations for an uploaded file's data, and how each
+   *  is presented in the storage-choice prompt. */
+  const IMPORT_MODE_META: Record<
+    ImportMode,
+    { icon: React.ReactNode; bg: string; color: string; title: string; desc: string }
+  > = {
+    project_db: { icon: <Icons.Database size={17} />, bg: 'var(--green-soft)', color: 'var(--green-ink)', title: 'Save to database', desc: "Store this file's data in your project database so you can query it anytime." },
+    qa: { icon: <Icons.Question size={17} />, bg: 'var(--surface-3)', color: 'var(--text-soft)', title: 'Q&A only', desc: "Ask about this file now — don't store it in the database." },
+    excel: { icon: <Icons.Pencil size={17} />, bg: 'var(--accent-soft)', color: 'var(--accent-ink)', title: 'Edit in Excel', desc: 'Let the assistant open and edit this workbook with the Excel tools.' },
+  };
+
+  /** Which destinations make sense for the staged batch. All tabular formats (CSV/TSV/XLS/XLSX)
+   *  support every mode — non-xlsx is converted to .xlsx for the Excel tools server-side.
+   *  project_db is offered only inside a real project. */
+  const availableImportModes = (
+    files: { filename: string }[],
+    canUseProjectDb: boolean,
+  ): ImportMode[] => {
+    const anyTabular = files.some((f) => /\.(csv|tsv|txt|xlsx|xlsm|xls|xlsb|ods|xltx|xltm)$/i.test(f.filename));
+    if (!anyTabular) return [];
+    const modes: ImportMode[] = [];
+    if (canUseProjectDb) modes.push('project_db');
+    modes.push('qa', 'excel');
+    return modes;
+  };
+
+  /** Render the user's turn immediately (optimistic) with file chips from local
+   *  staged state, then clear the composer. Called before any network round-trip. */
+  const showUserTurn = (text: string) => {
+    const attachments = stagedFiles.map((f) => ({ name: f.filename }));
+    setMessages((prev) => [
+      ...prev,
+      { text, isUser: true, ...(attachments.length > 0 ? { attachments } : {}) },
+    ]);
+    setQuery('');
+    setInputKey((k) => k + 1);
+  };
+
   const handleSend = async () => {
-    if (isStopVisible || isUploadingExcel) return;
-    const hasText = query.trim().length > 0;
-    if (!hasText) return;
-
+    if (isStopVisible || isUploadingFile) return;
     const displayText = query.trim();
-    const activeProjectId = selectedProject?.id || propProjectId;
+    if (!displayText) return;
 
-    // Ask "save data vs Q&A only" when there are staged files AND there's a
-    // place to import into: inside a project always, or in a regular chat only
-    // while a database is connected. With no project and no DB connection there's
-    // nowhere to save, so skip the question and just do Q&A.
-    if (stagedFiles.length > 0 && (activeProjectId || connectedDbLabel)) {
-      const attachmentsForUi = [
-        ...inputAttachedFiles.map((f) => ({ name: f.filename, fileId: f.id })),
-        ...stagedFiles.map((f) => ({ name: f.filename })),
-      ];
-      setMessages((prev) => [
-        ...prev,
-        {
-          text: displayText,
-          isUser: true,
-          ...(attachmentsForUi.length > 0 ? { attachments: attachmentsForUi } : {}),
-        },
-      ]);
-      setQuery('');
-      setInputKey((k) => k + 1);
+    // project_db needs a real project (the session sandbox / Excel modes don't).
+    const canUseProjectDb = !!(selectedProject?.id || propProjectId);
+    const modes = stagedFiles.length > 0 ? availableImportModes(stagedFiles, canUseProjectDb) : [];
+
+    // Staged a file we can't import (not CSV/Excel) → refuse before rendering the turn.
+    if (stagedFiles.length > 0 && modes.length === 0) {
+      toast.error('Unsupported file type. Import supports CSV and Excel files.');
+      return;
+    }
+
+    showUserTurn(displayText);
+
+    // More than one possible destination → ask which one first; the upload+send resumes
+    // in handleStorageChoice() once the user picks.
+    if (modes.length > 1) {
       pendingSendPayloadRef.current = displayText;
       setPendingStorageChoice(true);
       return;
     }
 
-    // Show message in chat immediately, then upload and send
-    const attachmentsForUi = [
-      ...inputAttachedFiles.map((f) => ({ name: f.filename, fileId: f.id })),
-      ...stagedFiles.map((f) => ({ name: f.filename })),
-    ];
-    setMessages((prev) => [
-      ...prev,
-      {
-        text: displayText,
-        isUser: true,
-        ...(attachmentsForUi.length > 0 ? { attachments: attachmentsForUi } : {}),
-      },
-    ]);
-    setQuery('');
-    setInputKey((k) => k + 1);
+    // Exactly one possible destination → no need to ask; upload with it then send.
+    if (modes.length === 1) {
+      const captured = [...stagedFiles];
+      let uploaded: { id: string; filename: string }[];
+      try {
+        uploaded = await uploadStagedFiles(modes[0], captured);
+      } catch (err) {
+        if (err instanceof Error && err.message === 'session_create_failed') return;
+        throw err;
+      }
+      if (uploaded.length === 0) return; // upload failed → don't send a dangling turn
+      setStagedFiles([]);
+      // Files are bound to the session server-side; the user text is sent as-is.
+    }
 
-    // Capture and clear staged files immediately
-    const captured = [...stagedFiles];
-    setStagedFiles([]);
-    const prevUploaded = [...inputAttachedFiles];
-    setInputAttachedFiles([]);
-
-    // Upload staged files (if any) then send
-    const newUploaded = captured.length > 0 ? await uploadStagedFiles(false, captured) : [];
-    setInputAttachedFiles([]); // uploadStagedFiles adds to inputAttachedFiles internally — clear again
-    const allAttached = [...prevUploaded, ...newUploaded];
-    const sendPayload = buildChatMessageWithSessionFiles(displayText, allAttached);
-    await doSend(sendPayload);
+    await doSend(displayText);
   };
 
-  /** Called after user picks storage destination — upload staged files then send. */
-  const handleStorageChoice = async (useProjectDb: boolean) => {
-    // Capture and clear staged files immediately so chips don't flash back
+  /** Called after user picks an import destination — upload staged files then send. */
+  const handleStorageChoice = async (mode: ImportMode) => {
     const captured = [...stagedFiles];
     setStagedFiles([]);
     setPendingStorageChoice(false);
     const displayText = pendingSendPayloadRef.current ?? '';
     pendingSendPayloadRef.current = null;
 
-    const prevUploaded = [...inputAttachedFiles];
-    const newUploaded = await uploadStagedFiles(useProjectDb, captured);
-    setInputAttachedFiles([]); // uploadStagedFiles adds internally — clear again
-    const allAttached = [...prevUploaded, ...newUploaded];
+    let uploaded: { id: string; filename: string }[] = [];
+    try {
+      uploaded = await uploadStagedFiles(mode, captured);
+    } catch (err) {
+      if (err instanceof Error && err.message === 'session_create_failed') {
+        setStagedFiles(captured);
+        setPendingStorageChoice(true);
+        pendingSendPayloadRef.current = displayText;
+        return;
+      }
+      throw err;
+    }
 
-    const sendPayload = buildChatMessageWithSessionFiles(displayText, allAttached);
-    await doSend(sendPayload);
+    if (captured.length > 0 && uploaded.length === 0) {
+      setStagedFiles(captured);
+      setPendingStorageChoice(true);
+      pendingSendPayloadRef.current = displayText;
+      return;
+    }
+
+    // Uploaded files are bound to the session server-side; send the user text as-is.
+    void uploaded;
+    await doSend(displayText);
   };
 
   /** Start a fresh chat inside the current project (from the project view). */
@@ -896,7 +781,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const pid = selectedProject?.id || propProjectId;
     if (!pid) return;
     try {
-      const cr = await createSession(null, pid);
+      const cr = await createSession(pid);
       if (cr.success && cr.session_id) {
         saveLastSession(cr.session_id, pid);
         window.history.pushState({}, '', `/chat/${pid}/${cr.session_id}`);
@@ -918,21 +803,22 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     setIsSending(true);
     try {
-      const sendPayload = buildChatMessageWithSessionFiles(
-        userMsg.text,
-        (userMsg.attachments || [])
-          .filter((a): a is typeof a & { fileId: string } => !!a.fileId)
-          .map((a) => ({ id: a.fileId, filename: a.name })),
-      );
-      const res = await sendMessageWithStream(sendPayload, sessionId, selectedProject?.id || null, { activeFileIds: getActiveFileIds(activeDataSources) });
+      // Files are bound to the session server-side; pass their ids via active_file_ids
+      // (no marker text embedded in the message anymore).
+      const refreshFileIds = (userMsg.attachments || [])
+        .map((a) => a.fileId)
+        .filter((id): id is string => !!id);
+      const res = await sendMessageWithStream(userMsg.text, sessionId, selectedProject?.id || null, {
+        activeFileIds: scopedFileIds(refreshFileIds.length ? refreshFileIds : getActiveFileIds(activeDataSources)),
+      });
       const resText = res.response;
-      if (resText && resText.trim().length > 0) {
+      if ((resText && resText.trim().length > 0) || readCharts((res as any).tool_events).length > 0) {
         setMessages((prev) => {
           const updated = [...prev];
           updated[aiIndex] = {
             text: buildAssistantTextFromSqlPreview(
-              stripInternalPayloads(resText),
-              extractSqlPayloadFromToolEvents((res as any).tool_events),
+              (resText ?? '').trim(),
+              readSqlPreview((res as any).tool_events),
             ),
             isUser: false,
             ...(() => {
@@ -944,9 +830,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 workflowResumePending: pendingResume,
               };
             })(),
-            sqlActionId: extractSqlActionId(resText),
-            exportToExcel: extractExportData(resText),
-            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
+            exportToExcel: readFileExport((res as any).tool_events),
+            charts: readCharts((res as any).tool_events),
+            queryResult: readQueryResult((res as any).tool_events),
+            mutationPreview: readSqlPreview((res as any).tool_events)?.preview ?? null,
+            schemaPreview: readSchemaPreview((res as any).tool_events),
           };
           return updated;
         });
@@ -961,7 +849,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
   };
 
-  const handleSchemaTypeChange = (aiIndex: number, variable: string, nextType: string) => {
+  const handleSchemaTypeChange = (aiIndex: number, colIdx: number, nextType: string) => {
     setMessages((prev) => {
       const updated = [...prev];
       const msg = updated[aiIndex];
@@ -971,8 +859,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         ...msg,
         schemaPreview: {
           ...msg.schemaPreview,
-          columns: msg.schemaPreview.columns.map((c) =>
-            c.variable === variable ? { ...c, type: nextType } : c
+          columns: msg.schemaPreview.columns.map((c, i) =>
+            i === colIdx ? { ...c, type: nextType } : c
           ),
         },
       };
@@ -980,7 +868,130 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     });
   };
 
-  const handleToggleSchemaOptions = (aiIndex: number, variable: string) => {
+  const handleSchemaVariableChange = (aiIndex: number, colIdx: number, name: string) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: msg.schemaPreview.columns.map((c, i) =>
+            i === colIdx ? { ...c, variable: name } : c
+          ),
+        },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaAddColumn = (aiIndex: number) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      const cols = msg.schemaPreview.columns;
+      const names = new Set(cols.map((c) => c.variable));
+      let n = cols.length + 1;
+      let name = `column_${n}`;
+      while (names.has(name)) name = `column_${++n}`;
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: [
+            ...cols,
+            { variable: name, type: 'text', primaryKey: false, notNull: false, unique: false },
+          ],
+        },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaRemoveColumn = (aiIndex: number, colIdx: number) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      const cols = msg.schemaPreview.columns;
+      if (cols.length <= 1) return prev; // keep at least one column
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: cols.filter((_, i) => i !== colIdx),
+        },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaTableNameChange = (aiIndex: number, name: string) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: { ...msg.schemaPreview, tableName: name },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaTableDescChange = (aiIndex: number, value: string) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: { ...msg.schemaPreview, tableDescription: value },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaColumnDescChange = (aiIndex: number, colIdx: number, value: string) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: msg.schemaPreview.columns.map((c, i) =>
+            i === colIdx ? { ...c, description: value } : c
+          ),
+        },
+      };
+      return updated;
+    });
+  };
+
+  const handleSchemaColumnEnumChange = (aiIndex: number, colIdx: number, value: string) => {
+    const values = value.split(',').map((v) => v.trim()).filter(Boolean);
+    setMessages((prev) => {
+      const updated = [...prev];
+      const msg = updated[aiIndex];
+      if (!msg?.schemaPreview) return prev;
+      updated[aiIndex] = {
+        ...msg,
+        schemaPreview: {
+          ...msg.schemaPreview,
+          columns: msg.schemaPreview.columns.map((c, i) =>
+            i === colIdx ? { ...c, enumValues: values.length ? values : undefined } : c
+          ),
+        },
+      };
+      return updated;
+    });
+  };
+
+  const handleToggleSchemaOptions = (aiIndex: number, colIdx: number) => {
     setMessages((prev) => {
       const updated = [...prev];
       const msg = updated[aiIndex];
@@ -990,8 +1001,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         ...msg,
         schemaPreview: {
           ...msg.schemaPreview,
-          columns: msg.schemaPreview.columns.map((c) =>
-            c.variable === variable ? { ...c, showOptions: !c.showOptions } : c
+          columns: msg.schemaPreview.columns.map((c, i) =>
+            i === colIdx ? { ...c, showOptions: !c.showOptions } : c
           ),
         },
       };
@@ -1001,7 +1012,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const handleSchemaOptionChange = (
     aiIndex: number,
-    variable: string,
+    colIdx: number,
     option: 'notNull' | 'unique' | 'primaryKey' | 'defaultValue',
     value: boolean | string,
   ) => {
@@ -1014,8 +1025,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         ...msg,
         schemaPreview: {
           ...msg.schemaPreview,
-          columns: msg.schemaPreview.columns.map((c) => {
-            if (c.variable !== variable) return c;
+          columns: msg.schemaPreview.columns.map((c, i) => {
+            // Primary key is single-choice: selecting it on one column clears it on all
+            // others (the backend allows exactly one primary key).
+            if (option === 'primaryKey' && value === true) {
+              return { ...c, primaryKey: i === colIdx };
+            }
+            if (i !== colIdx) return c;
             return {
               ...c,
               [option]: value,
@@ -1047,18 +1063,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       return;
     }
 
-    setMessages((prev) => [
-      ...prev,
-      { text: `Confirm schema table ${schema.tableName}`, isUser: true },
-    ]);
-
     setIsSending(true);
     try {
       const res = await resumeWorkflow(
         sessionId,
         true,
         selectedProject?.id || null,
-        `Confirm schema table ${schema.tableName}`,
+        schema,  // user-edited columns/types/constraints/table name → server rebuilds the SQL
       );
       if (res.success) {
         const resText = res.response ?? '';
@@ -1066,8 +1077,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           ...prev,
           {
             text: buildAssistantTextFromSqlPreview(
-              stripInternalPayloads(resText),
-              extractSqlPayloadFromToolEvents((res as any).tool_events),
+              (resText ?? '').trim(),
+              readSqlPreview((res as any).tool_events),
             ),
             isUser: false,
             ...(() => {
@@ -1079,9 +1090,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 workflowResumePending: pendingResume,
               };
             })(),
-            sqlActionId: extractSqlActionId(resText),
-            exportToExcel: extractExportData(resText),
-            schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
+            exportToExcel: readFileExport((res as any).tool_events),
+            schemaPreview: readSchemaPreview((res as any).tool_events),
           },
         ]);
 
@@ -1110,6 +1120,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const handleExecuteSql = async (aiIndex: number) => {
     const msg = messages[aiIndex];
     if (!msg || !msg.sqlToExecute || isSending || msg.sqlActionState === 'running' || msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled') return;
+    if (!sessionId) {
+      setMessages((prev) => [...prev, { text: 'Error: No session — cannot execute SQL.', isUser: false }]);
+      return;
+    }
 
     // Show a loading state while the query runs (reference SqlPreview "running").
     setMessages((prev) => {
@@ -1123,17 +1137,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
     setIsSending(true);
     try {
-      const fallbackActionId =
-        msg.sqlActionId || buildSqlActionId(
-          sessionId,
-          msg.text,
-          msg.sqlToExecute,
-          Math.max(0, messages.slice(0, aiIndex + 1).filter((m) => !!m.sqlToExecute).length - 1),
-        );
-      const res = await executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, false, null);
+      // Approve the gated mutation: the SQL lives in the server-side checkpoint; we just
+      // resume the workflow with `approved=true` (no SQL sent from the client → no injection).
+      const res = await resumeWorkflow(sessionId, true, selectedProject?.id || null, null);
       if (res.success) {
         const resText = res.response ?? '';
-        const cleanedRaw = stripInternalPayloads(resText);
+        const cleanedRaw = (resText ?? '').trim();
         // A bare "Successfully executed the SQL." carries no info beyond the
         // success itself — the green "Executed" chip already says that, so
         // don't append it as a separate text bubble. Keep any real follow-up
@@ -1155,7 +1164,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             {
               text: buildAssistantTextFromSqlPreview(
                 cleanedRaw,
-                extractSqlPayloadFromToolEvents((res as any).tool_events),
+                readSqlPreview((res as any).tool_events),
               ),
               isUser: false,
               ...(() => {
@@ -1167,9 +1176,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                   workflowResumePending: pendingResume,
                 };
               })(),
-              sqlActionId: extractSqlActionId(resText),
-              exportToExcel: extractExportData(resText),
-              schemaPreview: extractSchemaPreviewFromToolEvents((res as any).tool_events) || extractSchemaPreview(resText),
+              exportToExcel: readFileExport((res as any).tool_events),
+              schemaPreview: readSchemaPreview((res as any).tool_events),
             },
           ];
         });
@@ -1229,20 +1237,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const handleCancelSql = (aiIndex: number) => {
     const msg = messages[aiIndex];
     if (!msg || !msg.sqlToExecute) return;
-    // Simply clear the sqlToExecute flag so the Execute button disappears.
+    // Optimistically flip the card to cancelled so the Execute button disappears.
     setMessages((prev) => {
       const updated = [...prev];
       updated[aiIndex] = { ...msg, sqlActionState: 'cancelled' };
       return updated;
     });
-    const fallbackActionId =
-      msg.sqlActionId || buildSqlActionId(
-        sessionId,
-        msg.text,
-        msg.sqlToExecute,
-        Math.max(0, messages.slice(0, aiIndex + 1).filter((m) => !!m.sqlToExecute).length - 1),
-      );
-    void executeSql(msg.sqlToExecute, fallbackActionId, sessionId, selectedProject?.id || null, true, 'cancelled');
+    // Resume the workflow with `approved=false` so the server-side checkpoint is closed
+    // and the 'cancelled' state is persisted (survives a history reload).
+    if (sessionId) void resumeWorkflow(sessionId, false, selectedProject?.id || null, null);
   };
 
   // When switching to a *different* project: save current session for the project we're leaving, then clear UI.
@@ -1253,9 +1256,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (prevProjectIdRef.current !== undefined && prevProjectIdRef.current !== currentId) {
       saveLastSession(sessionId, prevProjectIdRef.current ?? null);
       setSessionId(null);
-      setShareInfo(null);
       setMessages([]);
-      setInputAttachedFiles([]);
+      setStagedFiles([]);
       onSessionIdChange?.(null);
     }
     prevProjectIdRef.current = currentId;
@@ -1266,7 +1268,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const loadProjectSessions = async () => {
     if (!selectedProject) {
       setProjectSessions([]);
-      setSessionPreviews({});
       return;
     }
 
@@ -1283,23 +1284,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           return true;
         });
         setProjectSessions(unique);
-
-        // Load preview for each session (first user message)
-        const previews: Record<string, string> = {};
-        for (const session of unique) {
-          try {
-            const sessionRes = await getSession(session.session_id);
-            if (sessionRes.success && sessionRes.messages) {
-              const firstUserMessage = sessionRes.messages.find((msg: any) => msg.role === 'user') as { content?: string } | undefined;
-              if (firstUserMessage && firstUserMessage.content) {
-                previews[session.session_id] = firstUserMessage.content;
-              }
-            }
-          } catch (err) {
-            console.error(`Failed to load preview for session ${session.session_id}:`, err);
-          }
-        }
-        setSessionPreviews(previews);
       }
     } catch (err) {
       console.error('Failed to load project sessions:', err);
@@ -1336,59 +1320,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const loadSession = async (sid: string) => {
       try {
         setIsSessionLoading(true);
-        const res = await getSession(sid);
-        if (res.success && res.messages) {
-          const sqlActionStates = getSqlActionStatesFromSessionResponse(res);
-          let sqlOrdinal = 0;
-          const filteredMessages = res.messages.filter(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (msg: any) => msg.role === 'user' || msg.role === 'assistant',
-          );
-          const convertedMessages: UiMessage[] = filteredMessages
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map((msg: any, msgIndex: number) => {
-              const rawContent = msg.content || '';
-              const cleanedText = stripInternalPayloads(rawContent);
-              const sqlPreview =
-                msg.role === 'assistant' ? extractSqlPayloadFromToolEvents((msg as any).tool_events) : null;
-              const schemaPreview =
-                msg.role === 'assistant'
-                  ? extractSchemaPreviewFromToolEvents((msg as any).tool_events) || extractSchemaPreview(rawContent)
-                  : null;
-              const sqlAction =
-                msg.role === 'assistant'
-                  ? resolveSqlExecuteAction(
-                      (msg as any).tool_events,
-                      pendingWorkflowResumeFromMessage(msg as { pending_workflow_resume?: boolean }),
-                    )
-                  : { sqlToExecute: null, sqlActionState: undefined };
-              const sqlToExecute = sqlAction.sqlToExecute;
-              const markerActionId = msg.role === 'assistant' ? extractSqlActionId(rawContent) : undefined;
-              const sqlActionId = sqlToExecute ? (markerActionId || buildSqlActionId(sid, cleanedText, sqlToExecute, sqlOrdinal++)) : undefined;
-              const persistedSqlState = sqlActionId ? sqlActionStates[sqlActionId] : undefined;
-              return {
-                text:
-                  msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
-                isUser: msg.role === 'user',
-                attachments: msg.role === 'user' ? extractUploadAttachments(rawContent) : undefined,
-                sqlToExecute,
-                sqlActionId,
-                sqlActionState: sqlToExecute
-                  ? (persistedSqlState ?? sqlAction.sqlActionState ?? ('pending' as const))
-                  : sqlAction.sqlActionState,
-                exportToExcel: msg.role === 'assistant' ? extractExportData(rawContent) : null,
-                schemaPreview,
-                schemaLocked:
-                  msg.role === 'assistant' && schemaPreview
-                    ? deriveSchemaLockedFromHistory(filteredMessages, msgIndex)
-                    : undefined,
-              };
-            })
-            .filter((m) => m.text.trim().length > 0 || !!m.schemaPreview || !!m.sqlToExecute || !!m.exportToExcel || (m.attachments && m.attachments.length > 0));
-          setMessages(convertedMessages);
-          setInputAttachedFiles([]);
+        const [info, page] = await Promise.all([getSession(sid), getMessages(sid)]);
+        if (info.success) {
+          setSessionDb(getDbInfoFromSessionResponse(info));
+          const sqlActionStates = getSqlActionStatesFromSessionResponse(info);
+          setMessages(convertMessages(page.messages, sid, sqlActionStates));
+          setOldestCursor(page.next_cursor);
+          setHasMoreMessages(page.has_more);
+          setStagedFiles([]);
           setSessionId(sid);
-          setShareInfo(res.share_info ?? null);
           onSessionIdChange?.(sid);
         }
       } catch {
@@ -1401,11 +1341,16 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProject?.id, propSessionId]);
 
-  // Load project sessions only when project *id* changes (not on every selectedProject object reference change, e.g. from 500ms poll)
+  // Reload project sessions when the project id changes (not on every selectedProject object
+  // reference change, e.g. from 500ms poll) AND when we return to the project landing
+  // (propSessionId -> null). Without the latter, backing out of a chat keeps the stale list,
+  // so a session created during that chat wouldn't appear until a full page reload.
   useEffect(() => {
+    if (!selectedProject) return;
+    if (propSessionId != null) return; // only refresh on the landing view
     void loadProjectSessions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedProject?.id]);
+  }, [selectedProject?.id, propSessionId]);
 
   // Format session name
   const formatSessionName = (session: SessionInfo): string => {
@@ -1426,41 +1371,20 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
   };
 
-  // Check if project has chat history
-  const projectHasHistory = selectedProject && projectSessions.length > 0 && !sessionId && messages.length === 0;
+  // Show the project landing view (header + "New chat in this project" + chats list)
+  // whenever a project is open with no active session — even if it has 0 chats yet.
+  const showProjectLanding = selectedProject && !sessionId && messages.length === 0;
 
   // Check if we're in "empty" state: no messages (regardless of project or sessionId)
   // This includes: 
   // - Project selected but no chat history yet (show empty state with project in header)
   // - No project and no chat
   // - New session created but no messages sent yet
-  const isEmptyState = messages.length === 0 && !projectHasHistory;
-
-  const shareBanner = shareInfo ? (
-    <div
-      style={{
-        padding: '10px 24px', fontSize: 13.5, borderBottom: '1px solid var(--border)',
-        background: shareInfo.revoked
-          ? 'oklch(0.95 0.05 25)'
-          : shareInfo.permission === 'view_only'
-            ? 'var(--accent-soft)'
-            : 'var(--info-soft)',
-        color: shareInfo.revoked ? 'oklch(0.5 0.18 25)' : 'var(--text)',
-      }}
-    >
-      {shareInfo.revoked
-        ? 'This shared chat has been revoked by the owner. You can no longer continue it.'
-        : shareInfo.permission === 'view_only'
-          ? 'This chat was shared with you in view-only mode — you cannot send messages.'
-          : shareInfo.permission === 'read_data'
-            ? 'This chat was shared with you in read-data mode — only SELECT queries are allowed.'
-            : 'This chat was shared with you with full access to read and modify data.'}
-    </div>
-  ) : null;
+  const isEmptyState = messages.length === 0 && !showProjectLanding;
 
   const greetHour = new Date().getHours();
   const greeting = greetHour < 12 ? 'Good morning' : greetHour < 18 ? 'Good afternoon' : 'Good evening';
-  const hasFiles = inputAttachedFiles.length > 0 || stagedFiles.length > 0;
+  const hasStagedFiles = stagedFiles.length > 0;
 
   const composer = (
     <div className="card soft-shadow" style={{ borderRadius: 'var(--r-lg)', padding: '14px 16px 12px', maxWidth: 760, margin: '0 auto', width: '100%' }}>
@@ -1469,37 +1393,47 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         type="file"
         style={{ display: 'none' }}
         multiple={false}
-        accept=".xlsx,.xls,.csv,.pdf,.db,.sqlite,.txt,.md,application/pdf,application/x-sqlite3,text/csv,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+        accept=".xlsx,.xlsm,.xls,.xlsb,.ods,.xltx,.xltm,.csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.oasis.opendocument.spreadsheet"
         onChange={handleFileInputChange}
       />
 
-      {/* Staged / attached files */}
-      {!pendingStorageChoice && hasFiles && (
+      {/* Upload progress (after Send, before chat request) */}
+      {isUploadingFile && fileUploadProgress && (
+        <div
+          className="scale-in"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            marginBottom: 10,
+            padding: '8px 10px',
+            borderRadius: 'var(--r-sm)',
+            border: '1px solid var(--accent-soft-2)',
+            background: 'var(--accent-soft)',
+            color: 'var(--accent-ink)',
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          <span style={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>…</span>
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            Uploading {fileUploadProgress.done} of {fileUploadProgress.total}
+            {fileUploadProgress.filename ? `: ${fileUploadProgress.filename}` : ''}…
+          </span>
+        </div>
+      )}
+
+      {/* Staged files (not yet uploaded) */}
+      {!pendingStorageChoice && !isUploadingFile && hasStagedFiles && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-          {inputAttachedFiles.map((f) => (
-            <div key={f.id} className="scale-in" style={{ display: 'inline-flex', alignItems: 'center', gap: 9, padding: '7px 9px 7px 8px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
-              <FileTypeBadge filename={f.filename} size={28} radius={7} />
-              <span style={{ fontSize: 13, fontWeight: 600, maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename}</span>
-              <button
-                type="button"
-                disabled={isViewOnlyShare || isUploadingExcel}
-                onClick={() => void handleRemoveInputAttachment(f.id)}
-                className="focusable"
-                aria-label={`Remove ${f.filename}`}
-                style={{ width: 22, height: 22, borderRadius: 6, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none', flexShrink: 0 }}
-              >
-                <Icons.Close size={14} />
-              </button>
-            </div>
-          ))}
           {stagedFiles.map((f) => (
             <div key={f.localId} className="scale-in" style={{ display: 'inline-flex', alignItems: 'center', gap: 9, padding: '7px 9px 7px 8px', borderRadius: 'var(--r-sm)', border: '1px dashed var(--border-strong)', background: 'var(--surface-2)' }}>
               <FileTypeBadge filename={f.filename} mimeType={f.file.type} size={28} radius={7} style={{ opacity: 0.7 }} />
               <span style={{ fontSize: 13, fontWeight: 600, maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.filename}</span>
               <button
                 type="button"
-                disabled={isViewOnlyShare || pendingStorageChoice || isUploadingExcel}
-                onClick={() => void handleRemoveInputAttachment(f.localId)}
+                disabled={pendingStorageChoice}
+                onClick={() => handleRemoveStagedFile(f.localId)}
                 className="focusable"
                 aria-label={`Remove ${f.filename}`}
                 style={{ width: 22, height: 22, borderRadius: 6, display: 'grid', placeItems: 'center', color: 'var(--text-muted)', background: 'transparent', border: 'none', flexShrink: 0 }}
@@ -1515,7 +1449,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         key={inputKey}
         ref={textareaRef}
         value={query}
-        disabled={isViewOnlyShare}
+        disabled={isUploadingFile}
         onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setQuery(e.target.value)}
         onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
           if (e.key === 'Enter' && !e.shiftKey) {
@@ -1525,11 +1459,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           }
         }}
         placeholder={
-          isViewOnlyShare
-            ? 'Read-only shared chat — sending disabled'
-            : selectedProject
-              ? `New chat in ${selectedProject.name}`
-              : 'Ask anything about your data…'
+          selectedProject
+            ? `New chat in ${selectedProject.name}`
+            : 'Ask anything about your data…'
         }
         rows={1}
         autoComplete="off"
@@ -1545,16 +1477,23 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <AttachMenu
-            onUploadDevice={() => fileInputRef.current?.click()}
-            disabled={isViewOnlyShare || isUploadingExcel}
-          />
-          {/* Data source selector */}
+          {!viewer && (
+            <AttachMenu
+              onUploadDevice={() => fileInputRef.current?.click()}
+              disabled={isUploadingFile}
+            />
+          )}
+          {/* Data source selector — files only; empty selection = ask the database. */}
           {(() => {
-            const sources = buildDataSources(sessionFiles, connectedDbLabel);
-            return sources.length > 1 ? (
+            const sources = buildDataSources(sessionFiles);
+            return sources.length >= 1 ? (
               <div style={{ marginBottom: -12 }}>
-                <DataSourceBar sources={sources} active={activeDataSources} onToggle={handleToggleDataSource} />
+                <DataSourceBar
+                  sources={sources}
+                  active={activeDataSources}
+                  onToggle={handleToggleDataSource}
+                  dbLabel={primaryDbLabel}
+                />
               </div>
             ) : null;
           })()}
@@ -1596,19 +1535,19 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     <div className="card scale-in" style={{ maxWidth: 760, margin: '0 auto 12px', borderRadius: 'var(--r)', overflow: 'hidden', borderColor: 'var(--accent-soft-2)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '13px 16px', borderBottom: '1px solid var(--border)', background: 'var(--accent-soft)' }}>
         <span style={{ color: 'var(--accent-ink)', flexShrink: 0 }}><Icons.Question size={18} /></span>
-        <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text)' }}>Do you want to save this file's data, or just ask questions about it?</span>
+        <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text)' }}>How do you want to use this file?</span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12 }}>
-        {[
-          { save: false, icon: <Icons.Question size={17} />, bg: 'var(--surface-3)', color: 'var(--text-soft)', title: 'Q&A only', desc: "Ask about this file now — don't store it in the database." },
-          { save: true, icon: <Icons.Database size={17} />, bg: 'var(--green-soft)', color: 'var(--green-ink)', title: 'Save data', desc: "Store this file's data so you can query it anytime." },
-        ].map((opt) => (
+        {availableImportModes(stagedFiles, !!(selectedProject?.id || propProjectId)).map((mode) => {
+          const opt = IMPORT_MODE_META[mode];
+          return (
           <button
-            key={String(opt.save)}
+            key={mode}
             type="button"
-            onClick={() => void handleStorageChoice(opt.save)}
+            onClick={() => void handleStorageChoice(mode)}
+            disabled={isUploadingFile}
             className="focusable"
-            style={{ display: 'flex', alignItems: 'flex-start', gap: 12, textAlign: 'left', padding: '12px 14px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)', transition: 'all .13s' }}
+            style={{ display: 'flex', alignItems: 'flex-start', gap: 12, textAlign: 'left', padding: '12px 14px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)', transition: 'all .13s', opacity: isUploadingFile ? 0.6 : 1, cursor: isUploadingFile ? 'default' : 'pointer' }}
             onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.background = 'var(--accent-soft)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--surface)'; }}
           >
@@ -1618,18 +1557,17 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-muted)', marginTop: 1 }}>{opt.desc}</span>
             </span>
           </button>
-        ))}
+          );
+        })}
       </div>
     </div>
   ) : null;
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--bg)' }}>
-      {shareBanner}
-
       {/* Conversation */}
       {messages.length > 0 && (
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div ref={scrollContainerRef} onScroll={handleMessagesScroll} style={{ flex: 1, overflowY: 'auto' }}>
           <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px 24px' }}>
             <MessageList
               messages={messages}
@@ -1638,11 +1576,33 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               onCancelSql={(idx) => void handleCancelSql(idx)}
               onExportFile={(idx) => void handleExportExcel(idx)}
               onSchemaTypeChange={handleSchemaTypeChange}
+              onSchemaVariableChange={handleSchemaVariableChange}
+              onSchemaColumnDescChange={handleSchemaColumnDescChange}
+              onSchemaColumnEnumChange={handleSchemaColumnEnumChange}
+              onSchemaTableNameChange={handleSchemaTableNameChange}
+              onSchemaTableDescChange={handleSchemaTableDescChange}
               onToggleSchemaOptions={handleToggleSchemaOptions}
               onSchemaOptionChange={handleSchemaOptionChange}
+              onSchemaAddColumn={handleSchemaAddColumn}
+              onSchemaRemoveColumn={handleSchemaRemoveColumn}
               onConfirmSchema={(idx) => void handleConfirmSchema(idx)}
               onAssistantTypingChange={setIsAssistantTyping}
               typingStopSignal={typingStopSignal}
+              onSaveChart={selectedProject ? async (recipe: ChartRecipe): Promise<boolean> => {
+                try {
+                  const res = await saveChart(selectedProject.id, recipe);
+                  if (res.success) {
+                    const already = !!(res.chart as { already?: boolean } | undefined)?.already;
+                    toast.success(already ? 'Already in the dashboard' : 'Saved to project dashboard');
+                    return true;
+                  }
+                  toast.error(res.detail || 'Could not save chart');
+                  return false;
+                } catch {
+                  toast.error('Could not save chart');
+                  return false;
+                }
+              } : undefined}
             />
             {streamingStage && (
               <div className="fade-in" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', marginTop: 14 }}>
@@ -1675,27 +1635,19 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             </p>
             {storageChoice}
             {composer}
-            <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-faint)', marginTop: 11 }}>
-              LightDBee can make mistakes. It always asks before changing your data.
-            </p>
           </div>
         </div>
-      ) : projectHasHistory ? null : (
+      ) : showProjectLanding ? null : (
         /* Active conversation: composer pinned below. (Project landing view
            has its own "New chat in this project" CTA, so no composer here.) */
         <div style={{ padding: '12px 24px 22px', background: 'var(--bg)' }}>
           {storageChoice}
           {composer}
-          {messages.length > 0 && (
-            <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-faint)', marginTop: 11 }}>
-              LightDBee can make mistakes. It always asks before changing your data.
-            </p>
-          )}
         </div>
       )}
 
-      {/* Project chat history */}
-      {projectHasHistory && (
+      {/* Project landing: header + new-chat CTA + chats list (or empty hint) */}
+      {showProjectLanding && (
         <div style={{ flex: 1, overflowY: 'auto', padding: '44px 24px 40px' }}>
           <div style={{ maxWidth: 760, margin: '0 auto' }}>
             {/* Project header */}
@@ -1721,6 +1673,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             <div style={{ fontSize: 12.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)', margin: '34px 0 12px' }}>
               {projectSessions.length} chats
             </div>
+            {projectSessions.length === 0 ? (
+              <div style={{ fontSize: 14.5, color: 'var(--text-muted)', padding: '4px 2px' }}>
+                No chats yet — start one with “New chat in this project”.
+              </div>
+            ) : (
             <div className="card" style={{ overflow: 'hidden' }}>
               {projectSessions.map((session, index) => {
                 const deleting = deletingProjectSessionId === session.session_id;
@@ -1747,9 +1704,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                     </span>
                     <span style={{ flex: 1, minWidth: 0 }}>
                       <span style={{ display: 'block', fontSize: 14.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatSessionName(session)}</span>
-                      {sessionPreviews[session.session_id] && (
-                        <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sessionPreviews[session.session_id]}</span>
-                      )}
                     </span>
                     {session.created_at && (
                       <span style={{ fontSize: 12, color: 'var(--text-faint)', flexShrink: 0 }}>{formatDate(session.created_at)}</span>
@@ -1772,6 +1726,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 );
               })}
             </div>
+            )}
           </div>
         </div>
       )}

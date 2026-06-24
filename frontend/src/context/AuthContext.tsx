@@ -15,6 +15,7 @@ export type AuthUser = {
   email?: string;
   picture?: string;
   is_admin?: boolean;
+  role?: 'admin' | 'technical' | 'viewer';
 };
 
 type AuthContextValue = {

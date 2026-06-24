@@ -2,29 +2,21 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import {
-  createSession,
-  getSessions,
-  deleteChatSession,
   createProject,
+  createExternalProject,
   getProjects,
   deleteProject,
-  listReceivedShares,
-  connectExternalDb,
-  disconnectExternalDb,
-  getDbConnectionStatus,
   url,
-  type ReceivedShare,
-  type SessionInfo,
+  type ExternalConnectionInput,
+  type ProjectKind,
 } from '../../services/api';
 import ProjectModal from '../modals/ProjectModal';
 import DeleteProjectModal from '../modals/DeleteProjectModal';
-import DatabaseConnectPopup, { type DatabaseConnectionData } from '../modals/DatabaseConnectPopup';
+import ShareProjectModal from '../modals/ShareProjectModal';
 import StorageModal from '../modals/StorageModal';
 import { useOnboarding } from '../../context/OnboardingContext';
-import { encryptPassword, decryptPassword } from '../../utils/crypto';
 import { Icons, BeeBadge, type IconComponent } from '../../icons';
 import { toast } from '../Toaster';
-import { confirm } from '../ConfirmDialog';
 import type { AuthUser } from '../../context/AuthContext';
 
 type Project = {
@@ -32,6 +24,7 @@ type Project = {
   name: string;
   description?: string;
   createdAt: string;
+  kind: ProjectKind;
 };
 
 type SidebarProps = {
@@ -48,12 +41,14 @@ function NavItem({
   onClick,
   collapsed,
   accent,
+  tag,
 }: {
   icon: IconComponent;
   label: string;
   onClick: () => void;
   collapsed: boolean;
   accent?: boolean;
+  tag?: { text: string; tone: 'accent' | 'green' };
 }) {
   return (
     <button
@@ -75,14 +70,19 @@ function NavItem({
       onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = accent ? 'var(--accent-ink)' : 'var(--text-soft)'; }}
     >
       <Icon size={19} />
-      {!collapsed && <span>{label}</span>}
+      {!collapsed && <span style={{ flex: 1 }}>{label}</span>}
+      {!collapsed && tag && (
+        <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: 0, borderRadius: 5, padding: '1px 6px', flexShrink: 0,
+          color: tag.tone === 'green' ? 'var(--green-ink)' : 'var(--accent-ink)',
+          background: tag.tone === 'green' ? 'var(--green-soft)' : 'var(--accent-soft)' }}>{tag.text}</span>
+      )}
     </button>
   );
 }
 
-function SectionLabel({ children }: { children: ReactNode }) {
+function SectionLabel({ children, strong = false }: { children: ReactNode; strong?: boolean }) {
   return (
-    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text-faint)', padding: '0 12px', marginBottom: 8 }}>
+    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: strong ? 'var(--accent-ink)' : 'var(--text-faint)', padding: '0 12px', marginBottom: 8 }}>
       {children}
     </div>
   );
@@ -206,54 +206,15 @@ function ProfileMenu({
   );
 }
 
-export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCloseDrawer }: SidebarProps) {
+export default function Sidebar({ onSessionSelect, onRequestCloseDrawer }: SidebarProps) {
   const { user } = useAuth();
   const onboarding = useOnboarding();
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [receivedShares, setReceivedShares] = useState<ReceivedShare[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
+  const [projectToShare, setProjectToShare] = useState<Project | null>(null);
   const [isDeletingProject, setIsDeletingProject] = useState(false);
-  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
-  const [isDatabasePopupOpen, setIsDatabasePopupOpen] = useState(false);
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
-  const [connectedDb, setConnectedDb] = useState<DatabaseConnectionData | null>(null);
-
-  const saveConnectedDb = async (data: DatabaseConnectionData) => {
-    const encryptedPassword = await encryptPassword(data.password);
-    localStorage.setItem('connectedDb', JSON.stringify({ ...data, password: encryptedPassword }));
-  };
-
-  const clearConnectedDb = () => {
-    localStorage.removeItem('connectedDb');
-    setConnectedDb(null);
-  };
-
-  // On mount: load + decrypt stored connection, then verify backend is still connected.
-  useEffect(() => {
-    const stored = localStorage.getItem('connectedDb');
-    if (!stored) return;
-
-    (async () => {
-      try {
-        const parsed = JSON.parse(stored) as DatabaseConnectionData;
-        const plainPassword = await decryptPassword(parsed.password);
-        const data = { ...parsed, password: plainPassword };
-
-        const status = await getDbConnectionStatus();
-        if (status.success) {
-          setConnectedDb(data);
-        } else {
-          clearConnectedDb();
-        }
-      } catch {
-        clearConnectedDb();
-      }
-    })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
@@ -299,6 +260,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
             name: p.name,
             description: p.description,
             createdAt: p.created_at ?? new Date().toISOString(),
+            kind: p.kind ?? 'internal',
           }));
           setProjects(list);
           localStorage.setItem('projects', JSON.stringify(list));
@@ -315,133 +277,29 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
     return () => { cancelled = true; };
   }, [user]);
 
-  const fetchSessions = async () => {
-    try {
-      setIsLoading(true);
-      // Only fetch unassigned sessions (sessions where project_id IS NULL)
-      const res = await getSessions(null, true);
-      if (res.success) {
-        setSessions(res.sessions || []);
-      }
-    } catch (err) {
-      console.error('Failed to fetch sessions:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void fetchSessions();
-  }, []);
-
-  // Load shares received by the current user.
-  useEffect(() => {
-    if (!user) {
-      setReceivedShares([]);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const list = await listReceivedShares();
-        if (!cancelled) setReceivedShares(list);
-      } catch (e) {
-        console.error('Failed to load received shares:', e);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [user]);
-
-  // Listen for changes in projectSessions to update the display
-  useEffect(() => {
-    const handleStorageChange = () => {
-      // Force re-render by fetching sessions again
-      void fetchSessions();
+  // Shared optimistic insert + navigate for a freshly created project (internal or external).
+  const onProjectCreated = (p: { id: string; name: string; description?: string; created_at?: string; kind?: ProjectKind }) => {
+    const newProject: Project = {
+      id: p.id,
+      name: p.name,
+      description: p.description ?? '',
+      createdAt: p.created_at ?? new Date().toISOString(),
+      kind: p.kind ?? 'internal',
     };
-
-    window.addEventListener('storage', handleStorageChange);
-    window.addEventListener('projectSessionsUpdated', handleStorageChange);
-
-    return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      window.removeEventListener('projectSessionsUpdated', handleStorageChange);
-    };
-  }, []);
-
-  const handleNewChat = async () => {
-    try {
-      // Create new session without project (unassigned)
-      const res = await createSession(null, null);
-      if (res.success && res.session_id) {
-        // Clear selected project state
-        setSelectedProjectId(null);
-
-        await fetchSessions(); // Refresh list
-        // Navigate to /chat/sessionId for unassigned session (URL is source of truth)
-        navigate(`/chat/${res.session_id}`);
-        if (onSessionSelect) {
-          onSessionSelect(res.session_id);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to create session:', err);
-      toast.error('Failed to create new chat');
-    }
-  };
-
-  // Sessions are already filtered to only include unassigned ones from API
-  // This function is kept for consistency but just returns all sessions
-  const getUnassignedSessions = (): SessionInfo[] => {
-    // All sessions in state are already unassigned (fetched with unassigned_only=true)
-    return sessions;
-  };
-
-  const handleSessionClick = (sessionId: string) => {
-    // Find the session to check if it has a project_id
-    const session = sessions.find(s => s.session_id === sessionId);
-
-    // Navigate based on session type (URL is source of truth)
-    if (session && !session.project_id) {
-      // Unassigned session
-      setSelectedProjectId(null);
-      navigate(`/chat/${sessionId}`);
-    } else if (session && session.project_id) {
-      // Project session
-      setSelectedProjectId(session.project_id);
-      navigate(`/chat/${session.project_id}/${sessionId}`);
-    } else {
-      // Fallback: navigate to /chat/sessionId
-      navigate(`/chat/${sessionId}`);
-    }
-
-    if (onSessionSelect) {
-      onSessionSelect(sessionId);
-    }
-  };
-
-  const formatSessionName = (session: SessionInfo): string => {
-    if (session.session_name && session.session_name.trim()) {
-      return session.session_name;
-    }
-    return 'New chat';
+    const next = [newProject, ...projects];
+    // Write localStorage before navigating so the Chat project view can resolve it.
+    localStorage.setItem('projects', JSON.stringify(next));
+    setProjects(next);
+    setSelectedProjectId(p.id);
+    navigate(`/chat/${p.id}`);
+    if (onSessionSelect) onSessionSelect(null as unknown as string);
   };
 
   const handleCreateProject = async (name: string, description?: string) => {
     try {
       const res = await createProject(name, description);
       if (res.success && res.project) {
-        // Refetch projects from API so list stays per-user
-        const listRes = await getProjects();
-        if (listRes.success && listRes.projects) {
-          const projectList: Project[] = listRes.projects.map((p) => ({
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            createdAt: p.created_at ?? new Date().toISOString(),
-          }));
-          setProjects(projectList);
-          localStorage.setItem('projects', JSON.stringify(projectList));
-        }
+        onProjectCreated(res.project);
       } else {
         console.error('Failed to create project:', res);
         toast.error('Failed to create project');
@@ -449,6 +307,17 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
     } catch (err) {
       console.error('Failed to create project:', err);
       toast.error('Failed to create project');
+    }
+  };
+
+  // External project: createExternalProject probes the DSN server-side and throws on failure.
+  // We let the error propagate so ProjectModal can show it inline (and keep the form open).
+  const handleCreateExternalProject = async (name: string, conn: ExternalConnectionInput, description?: string) => {
+    const res = await createExternalProject(name, conn, description);
+    if (res.success && res.project) {
+      onProjectCreated(res.project);
+    } else {
+      throw new Error('error' in res ? res.error : 'Failed to create external project');
     }
   };
 
@@ -473,9 +342,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
         setSelectedProjectId(null);
         navigate('/');
       }
-      // Its sessions are gone — refresh the lists.
-      await fetchSessions();
-      window.dispatchEvent(new Event('projectSessionsUpdated'));
+      // No session refetch: deleting a project cascade-deletes only its assigned
+      // sessions; the sidebar shows unassigned sessions (project_id IS NULL), unchanged.
     } catch (err) {
       console.error('Failed to delete project:', err);
       toast.error('Failed to delete project');
@@ -484,49 +352,85 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
     }
   };
 
-  const handleDeleteSession = async (session: SessionInfo) => {
-    const name = formatSessionName(session);
-    if (!(await confirm({ title: 'Delete chat?', message: `Delete "${name}"? This removes the chat and its files. This can't be undone.`, confirmLabel: 'Delete', danger: true }))) return;
-    setDeletingSessionId(session.session_id);
-    try {
-      await deleteChatSession(session.session_id);
-      setSessions((prev) => prev.filter((s) => s.session_id !== session.session_id));
-      if (currentSessionId === session.session_id) {
-        navigate('/chat');
-        if (onSessionSelect) onSessionSelect(null as unknown as string);
-      }
-      window.dispatchEvent(new Event('projectSessionsUpdated'));
-    } catch (err) {
-      console.error('Failed to delete session:', err);
-      toast.error(err instanceof Error ? err.message : 'Failed to delete chat');
-    } finally {
-      setDeletingSessionId(null);
-    }
-  };
-
-  const handleDatabaseConnect = async (connectionData: DatabaseConnectionData): Promise<{ success: boolean; error?: string }> => {
-    const result = await connectExternalDb({
-      host: connectionData.server,
-      port: parseInt(connectionData.port, 10) || 5432,
-      database: connectionData.databaseName,
-      username: connectionData.username,
-      password: connectionData.password,
-    });
-    if (result.success) {
-      setConnectedDb(connectionData);
-      await saveConnectedDb(connectionData);
-    }
-    return { success: result.success, error: result.success ? undefined : result.message };
-  };
-
-  const handleDatabaseDisconnect = async () => {
-    await disconnectExternalDb();
-    clearConnectedDb();
-  };
-
   const navigate = (path: string) => {
     window.history.pushState({}, '', path);
     window.dispatchEvent(new PopStateEvent('popstate'));
+  };
+
+  // Split projects into the two sections shown in the sidebar. A project lands in
+  // exactly one list based on its `kind`, so creating an internal/external project
+  // adds the row to the matching section.
+  const internalProjects = projects.filter((p) => p.kind !== 'external');
+  const externalProjects = projects.filter((p) => p.kind === 'external');
+
+  // A single project row (button + dashboard/share/delete actions). Shared by both
+  // sections; the section header already conveys internal vs external, so no inline badge.
+  const renderProjectRow = (project: Project) => {
+    const on = selectedProjectId === project.id;
+    const isExternal = project.kind === 'external';
+    return (
+      <div
+        key={project.id}
+        style={{ position: 'relative', display: 'flex', alignItems: 'center' }}
+      >
+        <button
+          type="button"
+          className="focusable"
+          onClick={() => {
+            setSelectedProjectId(project.id);
+            navigate(`/chat/${project.id}`);
+            if (onSessionSelect) onSessionSelect(null as unknown as string);
+          }}
+          style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 12px', paddingRight: 64, borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14,
+            color: on ? 'var(--text)' : 'var(--text-soft)', background: on ? 'var(--surface)' : 'transparent', border: on ? '1px solid var(--border)' : '1px solid transparent' }}
+          onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-2)'; }}
+          onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}
+        >
+          {isExternal
+            ? <Icons.Database size={17} style={{ color: on ? 'var(--green-ink)' : 'var(--text-muted)', flexShrink: 0 }} />
+            : <Icons.Folder size={17} style={{ color: on ? 'var(--accent-ink)' : 'var(--text-muted)', flexShrink: 0 }} />}
+          <span style={{ flex: 1, minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
+            <span style={{ fontWeight: on ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name}</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          className="focusable"
+          aria-label={`Open dashboard for ${project.name}`}
+          title="Dashboard"
+          onClick={(e) => { e.stopPropagation(); onRequestCloseDrawer?.(); navigate(`/dashboard/${project.id}`); }}
+          style={{ position: 'absolute', right: 34, top: '50%', transform: 'translateY(-50%)', width: 26, height: 26, display: 'grid', placeItems: 'center', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-faint)', cursor: 'pointer', flexShrink: 0 }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-3)'; e.currentTarget.style.color = 'var(--accent-ink)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-faint)'; }}
+        >
+          <Icons.Chart size={15} />
+        </button>
+        <button
+          type="button"
+          className="focusable"
+          aria-label={`Share project ${project.name}`}
+          title="Share project"
+          onClick={(e) => { e.stopPropagation(); setProjectToShare(project); }}
+          style={{ position: 'absolute', right: 62, top: '50%', transform: 'translateY(-50%)', width: 26, height: 26, display: 'grid', placeItems: 'center', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-faint)', cursor: 'pointer', flexShrink: 0 }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-3)'; e.currentTarget.style.color = 'var(--accent-ink)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-faint)'; }}
+        >
+          <Icons.Share size={15} />
+        </button>
+        <button
+          type="button"
+          className="focusable"
+          aria-label={`Delete project ${project.name}`}
+          title="Delete project"
+          onClick={(e) => { e.stopPropagation(); setProjectToDelete(project); }}
+          style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', width: 26, height: 26, display: 'grid', placeItems: 'center', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-faint)', cursor: 'pointer', flexShrink: 0 }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-3)'; e.currentTarget.style.color = 'var(--danger, #d93025)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-faint)'; }}
+        >
+          <Icons.Trash size={15} />
+        </button>
+      </div>
+    );
   };
 
   // Logout mirrors Header.handleLogout: clear the server cookie + local state,
@@ -546,13 +450,6 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
     }
     window.location.replace('/login');
   };
-
-  const PERM: Record<string, { label: string; color: string }> = {
-    view_only: { label: 'View', color: 'var(--text-muted)' },
-    read_data: { label: 'Read', color: 'var(--info)' },
-    edit_data: { label: 'Edit', color: 'var(--green-ink)' },
-  };
-  const unassigned = getUnassignedSessions();
 
   return (
     <>
@@ -591,158 +488,30 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
 
         {/* primary nav */}
         <div style={{ padding: isCollapsed ? '6px 12px' : '6px 14px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-          <NavItem icon={Icons.NewChat} label="New chat" collapsed={isCollapsed} accent onClick={() => { void handleNewChat(); }} />
-          <NavItem icon={Icons.Database} label={connectedDb ? 'Data sources' : 'Connect data'} collapsed={isCollapsed} onClick={() => { onRequestCloseDrawer?.(); setIsDatabasePopupOpen(true); }} />
-          <NavItem icon={Icons.FolderPlus} label="New project" collapsed={isCollapsed} onClick={() => { onRequestCloseDrawer?.(); setIsProjectModalOpen(true); }} />
+          <NavItem icon={Icons.FolderPlus} label="New project" collapsed={isCollapsed} accent onClick={() => { onRequestCloseDrawer?.(); setIsProjectModalOpen(true); }} />
         </div>
 
-        {/* connected-data status */}
-        {!isCollapsed && (
-          <div style={{ padding: '10px 14px 4px' }}>
-            {connectedDb ? (
-              <button onClick={() => setIsDatabasePopupOpen(true)} type="button" className="focusable"
-                style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 11, padding: '11px 13px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)' }}>
-                <span style={{ position: 'relative', width: 32, height: 32, borderRadius: 9, display: 'grid', placeItems: 'center', background: 'var(--green-soft)', color: 'var(--green-ink)', flexShrink: 0 }}>
-                  <Icons.Database size={17} />
-                  <span style={{ position: 'absolute', right: -2, bottom: -2, width: 11, height: 11, borderRadius: 99, background: 'var(--green)', border: '2px solid var(--bg-tint)' }} />
-                </span>
-                <span style={{ flex: 1, minWidth: 0 }}>
-                  <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{connectedDb.databaseName}</span>
-                  <span style={{ display: 'block', fontSize: 11.5, color: 'var(--green-ink)', fontWeight: 600 }}>Connected</span>
-                </span>
-                <Icons.ChevronRight size={15} style={{ color: 'var(--text-faint)' }} />
-              </button>
-            ) : (
-              <button onClick={() => setIsDatabasePopupOpen(true)} type="button" className="focusable"
-                style={{ width: '100%', textAlign: 'left', padding: 13, borderRadius: 'var(--r-sm)', border: '1.5px dashed var(--border-strong)', background: 'var(--surface)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13.5, fontWeight: 700, color: 'var(--accent-ink)' }}>
-                  <Icons.Plus size={16} /> Connect a database
-                </div>
-                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>Start asking questions about your data.</p>
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* scroll area: projects + shared + history */}
+        {/* scroll area: projects + history */}
         <div style={{ flex: 1, overflowY: 'auto', padding: isCollapsed ? '12px 0' : '14px 14px', display: 'flex', flexDirection: 'column', gap: 18 }}>
           {!isCollapsed && (
-            <div>
-              <SectionLabel>Projects</SectionLabel>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {projects.length === 0 ? (
-                  <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>No projects yet</div>
-                ) : projects.map((project) => {
-                  const on = selectedProjectId === project.id;
-                  return (
-                    <div
-                      key={project.id}
-                      style={{ position: 'relative', display: 'flex', alignItems: 'center' }}
-                    >
-                      <button
-                        type="button"
-                        className="focusable"
-                        onClick={() => {
-                          setSelectedProjectId(project.id);
-                          navigate(`/chat/${project.id}`);
-                          if (onSessionSelect) onSessionSelect(null as unknown as string);
-                        }}
-                        style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 12px', paddingRight: 36, borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14,
-                          color: on ? 'var(--text)' : 'var(--text-soft)', background: on ? 'var(--surface)' : 'transparent', border: on ? '1px solid var(--border)' : '1px solid transparent' }}
-                        onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-2)'; }}
-                        onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}
-                      >
-                        <Icons.Folder size={17} style={{ color: on ? 'var(--accent-ink)' : 'var(--text-muted)', flexShrink: 0 }} />
-                        <span style={{ flex: 1, fontWeight: on ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name}</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="focusable"
-                        aria-label={`Delete project ${project.name}`}
-                        title="Delete project"
-                        onClick={(e) => { e.stopPropagation(); setProjectToDelete(project); }}
-                        style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', width: 26, height: 26, display: 'grid', placeItems: 'center', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-faint)', cursor: 'pointer', flexShrink: 0 }}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-3)'; e.currentTarget.style.color = 'var(--danger, #d93025)'; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-faint)'; }}
-                      >
-                        <Icons.Trash size={15} />
-                      </button>
-                    </div>
-                  );
-                })}
+            <>
+              <div>
+                <SectionLabel strong>Internal</SectionLabel>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {internalProjects.length === 0 ? (
+                    <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>No internal projects yet</div>
+                  ) : internalProjects.map(renderProjectRow)}
+                </div>
               </div>
-            </div>
-          )}
-
-          {!isCollapsed && receivedShares.length > 0 && (
-            <div>
-              <SectionLabel>Shared with me</SectionLabel>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {receivedShares.map((s) => {
-                  const isAccepted = !!s.accepted_at && !!s.forked_session_id;
-                  const target = isAccepted
-                    ? `/chat/${s.project_id}/${s.forked_session_id}`
-                    : `/share/accept/${encodeURIComponent(s.accept_token)}`;
-                  const ownerName = s.owner_name || s.owner_email || 'Unknown';
-                  const perm = PERM[s.permission] ?? PERM.view_only;
-                  return (
-                    <button key={s.recipient_id} onClick={() => navigate(target)} type="button" className="focusable"
-                      style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 12px', borderRadius: 'var(--r-sm)', textAlign: 'left', color: 'var(--text-soft)', background: 'transparent', border: 'none' }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
-                      <span style={{ width: 26, height: 26, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'var(--surface-3)', color: 'var(--text-soft)', fontSize: 11, fontWeight: 800 }}>{ownerName[0]}</span>
-                      <span style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.session_name || 'Shared chat'}</span>
-                        <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{isAccepted ? `from ${ownerName}` : `pending — ${ownerName}`}</span>
-                      </span>
-                      <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.03em', color: perm.color, flexShrink: 0 }}>{perm.label}</span>
-                    </button>
-                  );
-                })}
+              <div>
+                <SectionLabel strong>External</SectionLabel>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {externalProjects.length === 0 ? (
+                    <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>No external projects yet</div>
+                  ) : externalProjects.map(renderProjectRow)}
+                </div>
               </div>
-            </div>
-          )}
-
-          {!isCollapsed && (
-            <div>
-              <SectionLabel>Chat history</SectionLabel>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {isLoading ? (
-                  <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>Loading…</div>
-                ) : unassigned.length === 0 ? (
-                  <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 12px' }}>No chats yet</div>
-                ) : unassigned.map((session) => {
-                  const on = currentSessionId === session.session_id;
-                  const deleting = deletingSessionId === session.session_id;
-                  return (
-                    <div key={session.session_id} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                      <button onClick={() => handleSessionClick(session.session_id)} type="button" className="focusable"
-                        style={{ width: '100%', display: 'block', padding: '9px 12px', paddingRight: 36, borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14, fontWeight: on ? 700 : 500,
-                          color: on ? 'var(--text)' : 'var(--text-soft)', background: on ? 'var(--surface)' : 'transparent',
-                          border: on ? '1px solid var(--border)' : '1px solid transparent',
-                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                        onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-2)'; }}
-                        onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}>
-                        {formatSessionName(session)}
-                      </button>
-                      <button
-                        type="button"
-                        className="focusable"
-                        aria-label={`Delete chat ${formatSessionName(session)}`}
-                        title="Delete chat"
-                        disabled={deleting}
-                        onClick={(e) => { e.stopPropagation(); void handleDeleteSession(session); }}
-                        style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', width: 26, height: 26, display: 'grid', placeItems: 'center', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-faint)', cursor: deleting ? 'not-allowed' : 'pointer', flexShrink: 0 }}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-3)'; e.currentTarget.style.color = 'var(--danger)'; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-faint)'; }}
-                      >
-                        <Icons.Trash size={14} />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            </>
           )}
         </div>
 
@@ -760,16 +529,8 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
       <ProjectModal
         isOpen={isProjectModalOpen}
         onClose={() => setIsProjectModalOpen(false)}
-        onCreate={handleCreateProject}
-      />
-
-      <DatabaseConnectPopup
-        isOpen={isDatabasePopupOpen}
-        onClose={() => setIsDatabasePopupOpen(false)}
-        onConnect={handleDatabaseConnect}
-        onDisconnect={handleDatabaseDisconnect}
-        connectedDb={connectedDb}
-        isInProject={!!selectedProjectId}
+        onCreateInternal={handleCreateProject}
+        onCreateExternal={handleCreateExternalProject}
       />
 
       <StorageModal open={isStorageModalOpen} onClose={() => setIsStorageModalOpen(false)} />
@@ -781,6 +542,13 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
           isDeleting={isDeletingProject}
           onClose={() => setProjectToDelete(null)}
           onConfirm={() => void handleConfirmDeleteProject()}
+        />
+      )}
+
+      {projectToShare && (
+        <ShareProjectModal
+          project={{ id: projectToShare.id, name: projectToShare.name }}
+          onClose={() => setProjectToShare(null)}
         />
       )}
     </>
