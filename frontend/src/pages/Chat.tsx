@@ -25,7 +25,9 @@ import {
   type GetSessionResponse,
   type SessionMessage,
   type ChartRecipe,
+  type ProjectKind,
 } from '../services/api';
+import ConnectionInfoModal from '../components/modals/ConnectionInfoModal';
 import {
   readSqlPreview,
   readSchemaPreview,
@@ -82,8 +84,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   // Don't init from propSessionId: so on reload with URL like /chat/projectId/sessionId,
   // the "load session" effect sees propSessionId set but sessionId null and fetches messages.
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [selectedProject, setSelectedProject] = useState<{ id: string; name: string; description?: string } | null>(null);
+  const [selectedProject, setSelectedProject] = useState<{ id: string; name: string; description?: string; kind?: ProjectKind } | null>(null);
   const [projectSessions, setProjectSessions] = useState<SessionInfo[]>([]);
+  const [showConnInfo, setShowConnInfo] = useState(false);
   const [inputKey, setInputKey] = useState(0);
   const previousProjectIdRef = useRef<string | null>(null);
   const hasRestoredSessionRef = useRef(false);
@@ -148,7 +151,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const cached = JSON.parse(localStorage.getItem('projects') || '[]');
     const hit = cached.find((p: { id: string }) => p.id === propProjectId);
     if (hit) {
-      setSelectedProject({ id: hit.id, name: hit.name, description: hit.description });
+      setSelectedProject({ id: hit.id, name: hit.name, description: hit.description, kind: hit.kind });
       previousProjectIdRef.current = hit.id;
       return;
     }
@@ -157,7 +160,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       try {
         const p = await getProject(propProjectId);
         if (cancelled) return;
-        setSelectedProject({ id: p.id, name: p.name, description: p.description });
+        setSelectedProject({ id: p.id, name: p.name, description: p.description, kind: p.kind });
         previousProjectIdRef.current = p.id;
       } catch {
         if (cancelled) return;
@@ -1652,9 +1655,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           <div style={{ maxWidth: 760, margin: '0 auto' }}>
             {/* Project header */}
             <div className="fade-up" style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
-              <div style={{ width: 52, height: 52, borderRadius: 15, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>
-                <Icons.Folder size={26} />
-              </div>
+              {selectedProject?.kind === 'external' ? (
+                <div style={{ width: 52, height: 52, borderRadius: 15, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'var(--green-soft)', color: 'var(--green-ink)' }}>
+                  <Icons.Database size={26} />
+                </div>
+              ) : (
+                <div style={{ width: 52, height: 52, borderRadius: 15, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>
+                  <Icons.Folder size={26} />
+                </div>
+              )}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <h1 style={{ fontSize: 30, fontWeight: 800, letterSpacing: '-.02em', lineHeight: 1.15 }}>{selectedProject?.name}</h1>
                 {selectedProject?.description && (
@@ -1668,6 +1677,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 <Icons.NewChat size={16} />
                 New chat in this project
               </button>
+              {selectedProject?.kind === 'external' && (
+                <button type="button" onClick={() => setShowConnInfo(true)} className="btn btn-outline" style={{ padding: '11px 16px' }}>
+                  <Icons.Database size={16} />
+                  Connection info
+                </button>
+              )}
             </div>
 
             <div style={{ fontSize: 12.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)', margin: '34px 0 12px' }}>
@@ -1729,6 +1744,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             )}
           </div>
         </div>
+      )}
+
+      {showConnInfo && selectedProject && (
+        <ConnectionInfoModal
+          project={{ id: selectedProject.id, name: selectedProject.name }}
+          onClose={() => setShowConnInfo(false)}
+        />
       )}
     </div>
   );

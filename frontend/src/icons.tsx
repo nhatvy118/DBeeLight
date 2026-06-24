@@ -92,7 +92,7 @@ export const Icons: Record<string, IconComponent> = {
 export function BeeBadge({ size = 36, style }: { size?: number; style?: CSSProperties }) {
   return (
     <div className="bee-badge" style={{ width: size, height: size, ...style }}>
-      <img src={beePng} alt="LightDBee" />
+      <img src={beePng} alt="DBeeLight" />
     </div>
   );
 }

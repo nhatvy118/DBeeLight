@@ -74,7 +74,7 @@ export default function ViewerApp() {
       <aside style={{ width: 286, flexShrink: 0, height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--surface-2)', borderRight: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '16px 18px' }}>
           <BeeBadge size={36} />
-          <span style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-.02em' }}>LightDBee</span>
+          <span style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-.02em' }}>DBeeLight</span>
         </div>
 
         <button

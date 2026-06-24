@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse, parse_qs
 
 from app.agent.pool import get_connection_pool
 from app.config import get_settings
@@ -93,6 +93,31 @@ async def update_project_connection(project_id: str, user_id: str, dsn: str) -> 
     working = await probe_connection(dsn)
     await repo.set_db_url(project_id, user_id, working)
     await get_connection_pool().invalidate(project_id)
+
+
+async def get_connection_info(project_id: str, user_id: str) -> dict:
+    """Decompose an external project's stored DSN back into connection fields (host/port/database/
+    username/ssl) so the OWNER can review them. The password is never returned.
+    Owner-only; raises ProjectError for a missing/internal/unconfigured project."""
+    project = await repo.get_project(project_id, user_id)
+    if not project:
+        raise ProjectError("Project not found or not yours")
+    if project.get("kind") != "external":
+        raise ProjectError("Only external projects have a connection")
+    db_url = project.get("db_url") or ""
+    if not is_configured(db_url):
+        raise ProjectError("This project has no connection configured yet")
+    u = urlparse(db_url)
+    q = parse_qs(u.query)
+    # Password is intentionally NOT returned — never expose stored credentials, even to the owner.
+    return {
+        "host": u.hostname or "",
+        "port": u.port or 5432,
+        "database": (u.path or "").lstrip("/"),
+        "username": unquote(u.username) if u.username else "",
+        # managed Postgres often needs SSL — probe_connection appends ?ssl=require when it does.
+        "ssl": "ssl" in q or "sslmode" in q,
+    }
 
 
 async def delete_project(project_id: str, user_id: str) -> dict | None:

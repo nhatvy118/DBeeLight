@@ -465,7 +465,7 @@ export default function Sidebar({ onSessionSelect, onRequestCloseDrawer }: Sideb
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: isCollapsed ? '16px 0' : '16px 18px', justifyContent: isCollapsed ? 'center' : 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <BeeBadge size={36} />
-            {!isCollapsed && <span style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-.02em' }}>LightDBee</span>}
+            {!isCollapsed && <span style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-.02em' }}>DBeeLight</span>}
           </div>
           {!isCollapsed && (
             <button onClick={() => setIsCollapsed(true)} title="Collapse" type="button" className="focusable"

@@ -59,6 +59,16 @@ async def create_external(body: ExternalProjectCreate, user_id: str = Depends(ge
     return {"success": True, "project": _to_out(p)}
 
 
+@router.get("/{project_id}/connection")
+async def get_connection(project_id: str, user_id: str = Depends(get_current_user_id)) -> dict:
+    """Return the external project's connection fields (incl. password) for the OWNER to review."""
+    try:
+        info = await service.get_connection_info(project_id, user_id)
+    except service.ProjectError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"success": True, "connection": info}
+
+
 @router.put("/{project_id}/connection")
 async def update_connection(project_id: str, body: ExternalConnection,
                             user_id: str = Depends(get_current_user_id)) -> dict:

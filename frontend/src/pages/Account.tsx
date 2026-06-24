@@ -147,7 +147,7 @@ export default function Account() {
             </span>
             <div>
               <div style={{ fontSize: 16, fontWeight: 700 }}>Answer language</div>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Choose the language LightDBee replies in.</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Choose the language DBeeLight replies in.</div>
             </div>
           </div>
 

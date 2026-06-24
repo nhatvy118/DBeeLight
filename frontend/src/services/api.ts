@@ -340,10 +340,10 @@ export async function deleteProject(id: string): Promise<DeleteProjectResponse> 
 
 /** Fetch a single project (owner OR shared-with). Used when it isn't in the local cache,
  * e.g. a viewer opening a project shared with them. */
-export async function getProject(id: string): Promise<{ id: string; name: string; description: string }> {
+export async function getProject(id: string): Promise<{ id: string; name: string; description: string; kind: ProjectKind }> {
   const res = await fetch(url(`/api/projects/${encodeURIComponent(id)}`), { credentials: 'include' });
   if (!res.ok) throw new Error('Project not found');
-  return (await res.json()) as { id: string; name: string; description: string };
+  return (await res.json()) as { id: string; name: string; description: string; kind: ProjectKind };
 }
 
 // ----- Project sharing (viewer access) -----
@@ -734,6 +734,26 @@ export async function createExternalProject(
     throw new Error(data.detail || data.error || 'Failed to create external project');
   }
   return (await response.json()) as CreateProjectResponse;
+}
+
+/** Connection fields stored for an external project (owner-only; password is never returned). */
+export type ExternalConnectionInfo = {
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  ssl: boolean;
+};
+
+/** Read back an external project's connection info so the owner can review it. Owner-only. */
+export async function getProjectConnection(id: string): Promise<ExternalConnectionInfo> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(id)}/connection`), { credentials: 'include' });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { detail?: string };
+    throw new Error(data.detail || 'Failed to load connection info');
+  }
+  const data = (await res.json()) as { connection: ExternalConnectionInfo };
+  return data.connection;
 }
 
 /** Re-point an external project at a new DSN (Edit connection). Owner-only. */

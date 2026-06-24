@@ -30,7 +30,7 @@ export default function Login() {
 
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 12 }}>
           <BeeBadge size={44} />
-          <span className="ink" style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-.02em' }}>LightDBee</span>
+          <span className="ink" style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-.02em' }}>DBeeLight</span>
         </div>
 
         <div style={{ position: 'relative' }}>

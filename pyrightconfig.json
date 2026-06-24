@@ -1,9 +1,9 @@
 {
+  "venvPath": "backend",
+  "venv": ".venv",
   "executionEnvironments": [
     {
       "root": "backend",
-      "venvPath": "backend",
-      "venv": ".venv",
       "extraPaths": ["backend"]
     }
   ],

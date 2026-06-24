@@ -166,7 +166,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <BeeBadge size={30} />
-            <span style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-.02em' }}>LightDBee</span>
+            <span style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-.02em' }}>DBeeLight</span>
           </div>
         )}
       </div>

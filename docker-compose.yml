@@ -1,15 +1,14 @@
-# Backend stack — postgres, redis, backend.
+# Backend stack — postgres + backend API.
 # The frontend is deployed separately (not part of this compose).
 #
 # Usage:
 #   1. cp backend/.env.example backend/.env  (fill OPENAI_API_KEY, GOOGLE_*, SESSION_SECRET)
-#   2. docker compose up --build
-#   3. API at http://localhost:5001
+#   2. Set POSTGRES_PASSWORD in a root .env
+#   3. docker compose up --build
+#   4. API at http://localhost:5001  (migrations auto-run on startup — see app/main.py lifespan)
 #
-# Migrations: docker compose exec backend make migrate-up
-#
-# In production (EC2): DB_URL points at RDS, REDIS_URL may point at ElastiCache,
-# uploads should go to S3 — override via .env, not by editing this file.
+# In production (EC2): point DATABASE_URL at RDS, store uploads on EFS/S3, and
+# keep secrets in SSM/Secrets Manager — override via .env, not by editing this file.
 
 x-common: &common
   logging:
@@ -28,6 +27,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in root .env}
       POSTGRES_DB: ${POSTGRES_DB:-dbeelight_app}
     ports:
+      # Bound to loopback so the DB is never exposed publicly on EC2.
+      # Remove entirely if you don't need host access (services talk over the compose network).
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -36,20 +37,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  redis:
-    <<: *common
-    image: redis:7-alpine
-    container_name: dbeelight-redis
-    ports:
-      - "127.0.0.1:6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
 
   backend:
     <<: *common
@@ -61,24 +48,28 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      DB_URL: postgres://${POSTGRES_USER:-dbeelight}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dbeelight_app}?sslmode=disable
-      REDIS_URL: redis://redis:6379/0
+      # NOTE: the app reads DATABASE_URL (app/config.py). Must match POSTGRES_DB above.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dbeelight}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dbeelight_app}?sslmode=disable
     ports:
       - "127.0.0.1:5001:5001"
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     volumes:
       # WORKDIR=/app, DATA_ROOT=./_data → runtime data lives under /app/_data.
+      # In prod these should be backed by EFS (shared/durable) or migrated to S3.
       - app_file_handle:/app/_data/uploads
       - app_temp_dbs:/app/_data/temp_dbs
       - app_databases:/app/_data/databases
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5001/api/health').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   postgres_data:
-  redis_data:
   app_file_handle:
   app_temp_dbs:
   app_databases:

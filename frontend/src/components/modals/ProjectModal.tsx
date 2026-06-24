@@ -6,7 +6,7 @@ import { testExternalConnection, type ExternalConnectionInput, type ProjectKind 
 type ProjectModalProps = {
   isOpen: boolean;
   onClose: () => void;
-  /** Create an internal (LightDBee-hosted SQLite) project. */
+  /** Create an internal (DBeeLight-hosted SQLite) project. */
   onCreateInternal: (name: string, description?: string) => Promise<void> | void;
   /** Create a project bound to the user's own external database. May reject (bad connection). */
   onCreateExternal: (name: string, conn: ExternalConnectionInput, description?: string) => Promise<void>;
@@ -100,7 +100,7 @@ export default function ProjectModal({ isOpen, onClose, onCreateInternal, onCrea
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {/* type picker */}
           <div style={{ display: 'flex', gap: 10 }}>
-            <TypeCard value="internal" icon={Icons.Folder} title="Internal" sub="LightDBee hosts the data. Upload files to get started." />
+            <TypeCard value="internal" icon={Icons.Folder} title="Internal" sub="DBeeLight hosts the data. Upload files to get started." />
             <TypeCard value="external" icon={Icons.Database} title="External" sub="Connect to your own Postgres database." />
           </div>
 
