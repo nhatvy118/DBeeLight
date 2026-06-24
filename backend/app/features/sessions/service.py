@@ -41,9 +41,9 @@ async def db_descriptor(user_id: str, session: dict) -> dict:
     """
     project_id = session.get("project_id")
 
-    # Project-bound session → the project's own DB.
+    # Project-bound session → the project's own DB (owner OR shared-with).
     if project_id:
-        proj = await proj_repo.get_project(project_id, user_id)
+        proj = await proj_repo.get_accessible_project(project_id, user_id)
         has_db = _configured((proj or {}).get("db_url"))
         label = (proj or {}).get("name") if has_db else None
         return {"has_db": has_db, "db_kind": "project" if has_db else None, "db_label": label}

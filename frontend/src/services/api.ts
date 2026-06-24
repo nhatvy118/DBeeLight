@@ -335,6 +335,63 @@ export async function deleteProject(id: string): Promise<DeleteProjectResponse> 
   return (await response.json()) as DeleteProjectResponse;
 }
 
+/** Fetch a single project (owner OR shared-with). Used when it isn't in the local cache,
+ * e.g. a viewer opening a project shared with them. */
+export async function getProject(id: string): Promise<{ id: string; name: string; description: string }> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(id)}`), { credentials: 'include' });
+  if (!res.ok) throw new Error('Project not found');
+  return (await res.json()) as { id: string; name: string; description: string };
+}
+
+// ----- Project sharing (viewer access) -----
+
+export type SharedProject = {
+  id: string;
+  name: string;
+  description: string;
+  owner_name: string | null;
+  owner_email: string | null;
+  shared_at: string | null;
+};
+
+export type ProjectShare = {
+  user_id: string;
+  name: string | null;
+  email: string | null;
+  role: AdminRole;
+  shared_at: string | null;
+};
+
+/** Projects shared WITH the current user (the viewer home). */
+export async function listSharedProjects(): Promise<SharedProject[]> {
+  const res = await fetch(url('/api/projects/shared/with-me'), { credentials: 'include' });
+  const data = await _adminJson<{ projects: SharedProject[] }>(res, 'Failed to load shared projects');
+  return data.projects ?? [];
+}
+
+/** People a project is shared with (owner view). */
+export async function listProjectShares(projectId: string): Promise<ProjectShare[]> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/shares`), { credentials: 'include' });
+  const data = await _adminJson<{ shares: ProjectShare[] }>(res, 'Failed to load shares');
+  return data.shares ?? [];
+}
+
+export async function shareProject(projectId: string, email: string): Promise<ProjectShare> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/shares`), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  return (await _adminJson<{ share: ProjectShare }>(res, 'Failed to share project')).share;
+}
+
+export async function unshareProject(projectId: string, viewerId: string): Promise<void> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/shares/${encodeURIComponent(viewerId)}`), {
+    method: 'DELETE', credentials: 'include',
+  });
+  await _adminJson<unknown>(res, 'Failed to remove access');
+}
+
 // ----- Admin: people & roles -----
 
 export type AdminRole = 'admin' | 'technical' | 'viewer';

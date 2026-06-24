@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { VegaEmbed } from 'react-vega';
 import { useTheme } from '../../context/ThemeContext';
+import { Icons } from '../../icons';
 
 type VegaLiteChartProps = {
   /** Raw JSON string of a Vega-Lite v5 spec, taken from a `generate_chart`
    * tool_event payload (detected by tool name, not message-text markers). */
   specJson: string;
+  /** When provided, the menu shows "Save to dashboard". Resolves true on success. */
+  onSave?: () => boolean | void | Promise<boolean | void>;
+  /** Whether this chart is already saved (shows a "Saved" state). */
+  saved?: boolean;
 };
 
 /** Read a CSS custom property off :root, falling back when unset/SSR. */
@@ -88,11 +93,60 @@ function useVegaConfig(theme: string) {
 
 /** Renders a Vega-Lite v5 spec inline in chat. Falls back to a code-block
  * style error display when the spec is malformed. */
-export default function VegaLiteChart({ specJson }: VegaLiteChartProps) {
+export default function VegaLiteChart({ specJson, onSave, saved = false }: VegaLiteChartProps) {
   const { theme } = useTheme();
   const config = useVegaConfig(theme);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const triggerDownload = (href: string, filename: string) => {
+    const a = document.createElement('a');
+    a.href = href; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+
+  // Export the rendered chart (renderer='svg' → there's an <svg> in the DOM). SVG = serialize it;
+  // PNG = draw that SVG onto a canvas. Avoids needing the internal Vega view.
+  const download = (format: 'png' | 'svg') => {
+    setMenuOpen(false);
+    const svg = wrapRef.current?.querySelector('svg');
+    if (!svg) return;
+    const xml = new XMLSerializer().serializeToString(svg);
+    const svgBlob = new Blob([xml], { type: 'image/svg+xml;charset=utf-8' });
+    const svgUrl = URL.createObjectURL(svgBlob);
+    if (format === 'svg') {
+      triggerDownload(svgUrl, 'chart.svg');
+      URL.revokeObjectURL(svgUrl);
+      return;
+    }
+    const scale = 2;
+    const w = svg.clientWidth || parseInt(svg.getAttribute('width') || '600', 10);
+    const h = svg.clientHeight || parseInt(svg.getAttribute('height') || '340', 10);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = w * scale; canvas.height = h * scale;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.scale(scale, scale);
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob((blob) => {
+          if (blob) { const u = URL.createObjectURL(blob); triggerDownload(u, 'chart.png'); URL.revokeObjectURL(u); }
+        });
+      }
+      URL.revokeObjectURL(svgUrl);
+    };
+    img.src = svgUrl;
+  };
+
+  const handleSave = async () => {
+    if (!onSave || saved || busy) return;
+    setBusy(true);
+    try { await onSave(); } finally { setBusy(false); setMenuOpen(false); }
+  };
 
   // react-vega's `width:"container"` is unreliable inside a CSS grid (it measures
   // before layout and stays 0 → blank chart). Measure the real width ourselves and
@@ -144,14 +198,46 @@ export default function VegaLiteChart({ specJson }: VegaLiteChartProps) {
   }
 
   return (
-    <div className="card" style={{ margin: '16px 0', padding: 14, overflowX: 'auto' }}>
+    <div className="card" style={{ position: 'relative', margin: '16px 0', padding: 14, overflowX: 'auto' }}>
+      {/* one menu for everything: Save to dashboard + export (replaces the separate Save + vega "…") */}
+      <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 3 }}>
+        {menuOpen && <div onClick={() => setMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 2 }} />}
+        <button
+          type="button"
+          onClick={() => setMenuOpen((o) => !o)}
+          className="focusable"
+          title="Chart options"
+          style={{ width: 30, height: 30, borderRadius: 8, display: 'grid', placeItems: 'center', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-soft)', cursor: 'pointer' }}
+        >
+          <Icons.Dots size={16} />
+        </button>
+        {menuOpen && (
+          <div className="card pop-shadow" style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 3, width: 200, borderRadius: 'var(--r)', padding: 6 }}>
+            {onSave && (
+              <button type="button" onClick={() => void handleSave()} disabled={saved || busy} className="focusable"
+                style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 'var(--r-sm)', border: 'none', background: 'transparent', textAlign: 'left', fontSize: 13.5, fontWeight: 600, cursor: saved ? 'default' : 'pointer', color: saved ? 'var(--text-muted)' : 'var(--text)' }}>
+                {saved ? <><Icons.Check size={16} /> Saved to dashboard</> : <><Icons.Plus size={16} /> {busy ? 'Saving…' : 'Save to dashboard'}</>}
+              </button>
+            )}
+            <button type="button" onClick={() => void download('png')} className="focusable"
+              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 'var(--r-sm)', border: 'none', background: 'transparent', textAlign: 'left', fontSize: 13.5, fontWeight: 600, cursor: 'pointer', color: 'var(--text)' }}>
+              <Icons.Download size={16} /> Download PNG
+            </button>
+            <button type="button" onClick={() => void download('svg')} className="focusable"
+              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 'var(--r-sm)', border: 'none', background: 'transparent', textAlign: 'left', fontSize: 13.5, fontWeight: 600, cursor: 'pointer', color: 'var(--text)' }}>
+              <Icons.Download size={16} /> Download SVG
+            </button>
+          </div>
+        )}
+      </div>
+
       <div ref={wrapRef} style={{ width: '100%' }}>
         {width > 0 && (
           <VegaEmbed
             spec={spec as any}
             options={{
               mode: 'vega-lite',
-              actions: { export: true, source: false, compiled: false, editor: false },
+              actions: false,   // we provide our own menu (Save + export)
               renderer: 'svg',
               tooltip: { theme: theme === 'dark' ? 'dark' : 'light' },
               config: config as any,

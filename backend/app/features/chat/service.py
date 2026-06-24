@@ -61,9 +61,10 @@ async def _authorize(user_id: str, session_id: str) -> _Access:
         raise ChatError("Session does not exist or you do not have access.")
     project_id = row["project_id"]
 
-    # Project-bound session: DB from the project (may be None if not configured yet).
+    # Project-bound session: DB from the project. Access = owner OR shared-with (so a viewer can
+    # query a project shared with them); write is still gated by role (viewers are read-only).
     if project_id:
-        db_url = await proj_service.resolve_db_url(project_id, user_id)
+        db_url = await proj_service.resolve_db_url_for_access(project_id, user_id)
         return _Access(project_id=project_id, db_url=db_url)
 
     # Global session (no project): DB from the user's active connection (may be None).
@@ -166,6 +167,19 @@ async def handle(
     # if off-topic, return result that Chat system does not support
     if intent.route == "off_topic":
         return ChatResult(response="Sorry, I can only help with database-related questions. Please ask a database-related question.", route=intent.route)
+
+    # Viewers (non-technical) are READ-ONLY: refuse any data/schema change up front (the friendly
+    # "RefusalCard"). Read routes (lookup/analysis/chart) fall through normally.
+    if intent.route in ("db_mutation", "db_create_table"):
+        me = await auth_repo.get_user(user_id)
+        if (me or {}).get("role") == "viewer":
+            await sess_repo.add_message(session_id, "user", message)
+            refusal = (
+                "I can't change data here — you have view access to this project. I can answer "
+                "questions and build charts, but I can't add, edit or delete anything."
+            )
+            await sess_repo.add_message(session_id, "assistant", refusal)
+            return ChatResult(response=refusal, route=intent.route)
 
     # Ambiguous request → ask back, without the cost of building ctx / running the agent.
     if intent.needs_clarification:

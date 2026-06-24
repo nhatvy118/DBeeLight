@@ -15,8 +15,9 @@ router = APIRouter(tags=["sessions"])
 @router.post("/api/sessions")
 async def create(body: dict, user_id: str = Depends(get_current_user_id)):
     project_id = body.get("project_id") or None
-    if project_id and not await proj_repo.get_project(project_id, user_id):
-        raise HTTPException(status_code=404, detail="Project does not exist / not yours")
+    # Owner OR a user the project is shared with (viewers chat in shared projects).
+    if project_id and not await proj_repo.get_accessible_project(project_id, user_id):
+        raise HTTPException(status_code=404, detail="Project does not exist / not accessible")
     s = await repo.create_session(user_id, project_id, "New chat")
     info = {
         "session_id": s["id"], "session_name": s["title"], "project_id": s["project_id"],

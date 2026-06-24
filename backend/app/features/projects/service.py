@@ -76,9 +76,58 @@ def _delete_sqlite_file(db_url: str) -> None:
 
 
 async def resolve_db_url(project_id: str, user_id: str) -> str | None:
-    """Get the project db_url (after ownership check). Used by chat — server-side only."""
+    """Get the project db_url (after OWNERSHIP check). Used where only the owner may act
+    (e.g. importing a file into the project DB)."""
     project = await repo.get_project(project_id, user_id)
     if not project:
         return None
     db_url = project.get("db_url")
     return db_url if is_configured(db_url) else None
+
+
+async def resolve_db_url_for_access(project_id: str, user_id: str) -> str | None:
+    """db_url if the user can ACCESS the project — owns it OR it's shared with them. Read access;
+    WRITE is gated separately (viewers are blocked from mutations by role). Used by chat."""
+    project = await repo.get_accessible_project(project_id, user_id)
+    if not project:
+        return None
+    db_url = project.get("db_url")
+    return db_url if is_configured(db_url) else None
+
+
+class ProjectError(Exception):
+    pass
+
+
+async def share_project(project_id: str, owner_id: str, email: str) -> dict:
+    """Owner shares their project (its DATA) with an existing user by email (read-only)."""
+    if not await repo.get_project(project_id, owner_id):
+        raise ProjectError("Project not found or not yours")
+    from app.features.auth import repository as auth_repo
+    target = await auth_repo.get_user_by_email((email or "").strip())
+    if not target:
+        raise ProjectError("No account with that email yet — invite them first (admin → People).")
+    if target["google_sub"] == owner_id:
+        raise ProjectError("You already own this project")
+    await repo.add_share(project_id, target["google_sub"], owner_id)
+    return {
+        "user_id": target["google_sub"], "name": target.get("name"),
+        "email": target.get("email"), "role": target.get("role"),
+    }
+
+
+async def list_project_shares(project_id: str, owner_id: str) -> list[dict]:
+    if not await repo.get_project(project_id, owner_id):
+        raise ProjectError("Project not found or not yours")
+    return await repo.list_shares(project_id)
+
+
+async def unshare_project(project_id: str, owner_id: str, viewer_id: str) -> bool:
+    if not await repo.get_project(project_id, owner_id):
+        raise ProjectError("Project not found or not yours")
+    return await repo.remove_share(project_id, viewer_id)
+
+
+async def list_shared_with(user_id: str) -> list[dict]:
+    """Projects shared WITH this user (viewer home)."""
+    return await repo.list_shared_with(user_id)

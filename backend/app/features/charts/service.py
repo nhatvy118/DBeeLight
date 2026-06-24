@@ -25,8 +25,10 @@ class ChartError(Exception):
 
 
 async def _project_adapter(project_id: str, user_id: str):
-    """Resolve the project's DB (ownership-checked) → pooled adapter. db_url stays server-side."""
-    db_url = await proj_service.resolve_db_url(project_id, user_id)
+    """Resolve the project's DB → pooled adapter. Access = owner OR shared-with (so a viewer can
+    save/render their OWN charts on a shared project — charts are keyed by (project, user) and the
+    chart SQL is always read-only). db_url stays server-side."""
+    db_url = await proj_service.resolve_db_url_for_access(project_id, user_id)
     if not db_url:
         raise ChartError("Project has no database connected.")
     return await get_connection_pool().adapter_for(project_id, db_url)

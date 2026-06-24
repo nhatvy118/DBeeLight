@@ -16,6 +16,7 @@ import {
 } from '../../services/api';
 import ProjectModal from '../modals/ProjectModal';
 import DeleteProjectModal from '../modals/DeleteProjectModal';
+import ShareProjectModal from '../modals/ShareProjectModal';
 import DatabaseConnectPopup, { type DatabaseConnectionData } from '../modals/DatabaseConnectPopup';
 import StorageModal from '../modals/StorageModal';
 import { useOnboarding } from '../../context/OnboardingContext';
@@ -217,6 +218,7 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
+  const [projectToShare, setProjectToShare] = useState<Project | null>(null);
   const [isDeletingProject, setIsDeletingProject] = useState(false);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
@@ -665,6 +667,18 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
                       <button
                         type="button"
                         className="focusable"
+                        aria-label={`Share project ${project.name}`}
+                        title="Share project"
+                        onClick={(e) => { e.stopPropagation(); setProjectToShare(project); }}
+                        style={{ position: 'absolute', right: 62, top: '50%', transform: 'translateY(-50%)', width: 26, height: 26, display: 'grid', placeItems: 'center', borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--text-faint)', cursor: 'pointer', flexShrink: 0 }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-3)'; e.currentTarget.style.color = 'var(--accent-ink)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-faint)'; }}
+                      >
+                        <Icons.Share size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        className="focusable"
                         aria-label={`Delete project ${project.name}`}
                         title="Delete project"
                         onClick={(e) => { e.stopPropagation(); setProjectToDelete(project); }}
@@ -764,6 +778,13 @@ export default function Sidebar({ onSessionSelect, currentSessionId, onRequestCl
           isDeleting={isDeletingProject}
           onClose={() => setProjectToDelete(null)}
           onConfirm={() => void handleConfirmDeleteProject()}
+        />
+      )}
+
+      {projectToShare && (
+        <ShareProjectModal
+          project={{ id: projectToShare.id, name: projectToShare.name }}
+          onClose={() => setProjectToShare(null)}
         />
       )}
     </>

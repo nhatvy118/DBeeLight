@@ -9,6 +9,7 @@ import {
   getMessages,
   sendMessageWithStream,
   getSessions,
+  getProject,
   deleteChatSession,
   resumeWorkflow,
   createSession,
@@ -69,9 +70,11 @@ type ChatProps = {
   projectId?: string | null;
   sessionId?: string | null;
   onSessionIdChange?: (sessionId: string | null) => void;
+  /** Viewer (read-only) mode: hide write affordances (file upload). Mutations are refused by the backend. */
+  viewer?: boolean;
 };
 
-export default function Chat({ projectId: propProjectId, sessionId: propSessionId, onSessionIdChange }: ChatProps) {
+export default function Chat({ projectId: propProjectId, sessionId: propSessionId, onSessionIdChange, viewer = false }: ChatProps) {
   const [query, setQuery] = useState<string>('');
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [isSending, setIsSending] = useState<boolean>(false);
@@ -134,25 +137,35 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     ? (sessionDb.has_db ? (sessionDb.db_label || 'Database') : null)
     : (selectedProject ? (selectedProject.name || 'Database') : null);
 
-  // Load selected project from URL (propProjectId) - URL is source of truth
+  // Load the selected project. Fast path: the user's own cached projects. Otherwise (e.g. a
+  // viewer opening a project SHARED with them — not in their own list) fetch it from the API.
   useEffect(() => {
-    if (propProjectId) {
-      // Load project from URL
-      const projects = JSON.parse(localStorage.getItem('projects') || '[]');
-      const project = projects.find((p: { id: string }) => p.id === propProjectId);
-      if (project) {
-        setSelectedProject({ id: project.id, name: project.name, description: project.description });
-        previousProjectIdRef.current = project.id;
-      } else {
-        // Project not found, clear selection
+    if (!propProjectId) {
+      setSelectedProject(null);
+      previousProjectIdRef.current = null;
+      return;
+    }
+    const cached = JSON.parse(localStorage.getItem('projects') || '[]');
+    const hit = cached.find((p: { id: string }) => p.id === propProjectId);
+    if (hit) {
+      setSelectedProject({ id: hit.id, name: hit.name, description: hit.description });
+      previousProjectIdRef.current = hit.id;
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const p = await getProject(propProjectId);
+        if (cancelled) return;
+        setSelectedProject({ id: p.id, name: p.name, description: p.description });
+        previousProjectIdRef.current = p.id;
+      } catch {
+        if (cancelled) return;
         setSelectedProject(null);
         previousProjectIdRef.current = null;
       }
-    } else {
-      // No project in URL, clear selection
-      setSelectedProject(null);
-      previousProjectIdRef.current = null;
-    }
+    })();
+    return () => { cancelled = true; };
   }, [propProjectId]);
 
   // No longer listen to localStorage - URL is source of truth
@@ -1328,11 +1341,16 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProject?.id, propSessionId]);
 
-  // Load project sessions only when project *id* changes (not on every selectedProject object reference change, e.g. from 500ms poll)
+  // Reload project sessions when the project id changes (not on every selectedProject object
+  // reference change, e.g. from 500ms poll) AND when we return to the project landing
+  // (propSessionId -> null). Without the latter, backing out of a chat keeps the stale list,
+  // so a session created during that chat wouldn't appear until a full page reload.
   useEffect(() => {
+    if (!selectedProject) return;
+    if (propSessionId != null) return; // only refresh on the landing view
     void loadProjectSessions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedProject?.id]);
+  }, [selectedProject?.id, propSessionId]);
 
   // Format session name
   const formatSessionName = (session: SessionInfo): string => {
@@ -1459,10 +1477,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <AttachMenu
-            onUploadDevice={() => fileInputRef.current?.click()}
-            disabled={isUploadingFile}
-          />
+          {!viewer && (
+            <AttachMenu
+              onUploadDevice={() => fileInputRef.current?.click()}
+              disabled={isUploadingFile}
+            />
+          )}
           {/* Data source selector — files only; empty selection = ask the database. */}
           {(() => {
             const sources = buildDataSources(sessionFiles);

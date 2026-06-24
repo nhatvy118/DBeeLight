@@ -6,6 +6,7 @@ import Chat from '../pages/Chat';
 import Dashboard from '../pages/Dashboard';
 import Login from '../pages/Login';
 import NotFound from '../pages/NotFound';
+import ViewerApp from '../pages/ViewerApp';
 
 type AppRoutesProps = {
   sessionId: string | null;
@@ -105,6 +106,9 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
     }
     return <Login />;
   }
+
+  // Viewers (non-technical) get their own dedicated app — shared projects + read-only chat.
+  if (user.role === 'viewer') return <ViewerApp />;
 
   // Admins manage the workspace only — they have NO chat. Keep them on the dashboard
   // (render it directly + sync the URL, so there's no flash of the chat shell).

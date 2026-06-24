@@ -61,6 +61,15 @@ async def get_user(google_sub: str) -> dict | None:
     return dict(row) if row else None
 
 
+async def get_user_by_email(email: str) -> dict | None:
+    """Look up an existing (joined) user by email — used when sharing a project by email."""
+    pool = get_pool()
+    row = await pool.fetchrow(
+        f"SELECT {_RETURN} FROM users WHERE lower(email) = lower($1)", email or "",
+    )
+    return dict(row) if row else None
+
+
 async def get_active_db_url(google_sub: str) -> str | None:
     logger.info("→ get_active_db_url(google_sub=%r)", google_sub)  # autolog
     pool = get_pool()

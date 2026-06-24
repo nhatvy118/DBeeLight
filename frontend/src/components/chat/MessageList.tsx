@@ -299,24 +299,15 @@ export default function MessageList({
                   const isSaved = !!savedKey && savedChartKeys.has(savedKey);
                   return (
                     <div key={ci} style={{ gridColumn: full ? '1 / -1' : 'auto', minWidth: 0, position: 'relative' }}>
-                      {recipe && (
-                        <button
-                          type="button"
-                          disabled={isSaved}
-                          onClick={() => {
-                            void (async () => {
-                              const ok = await onSaveChart?.(recipe);
-                              if (ok) setSavedChartKeys((s) => new Set(s).add(savedKey));
-                            })();
-                          }}
-                          title={isSaved ? 'Already saved to dashboard' : 'Save to dashboard'}
-                          className="btn btn-outline"
-                          style={{ position: 'absolute', top: 22, right: 22, zIndex: 2, padding: '5px 10px', fontSize: 12.5 }}
-                        >
-                          {isSaved ? <><Icons.Check size={14} /> Saved</> : <><Icons.Plus size={14} /> Save</>}
-                        </button>
-                      )}
-                      <VegaLiteChart specJson={spec} />
+                      <VegaLiteChart
+                        specJson={spec}
+                        saved={isSaved}
+                        onSave={recipe ? async () => {
+                          const ok = await onSaveChart?.(recipe);
+                          if (ok) setSavedChartKeys((s) => new Set(s).add(savedKey));
+                          return ok;
+                        } : undefined}
+                      />
                     </div>
                   );
                 })}
