@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
     public_base_url: str = ""  # if set, used as the redirect_uri base for Google OAuth
 
+    # Invite-only access: these emails can always sign in AS ADMIN even with no invite/user row,
+    # so an operator can never be locked out (comma-separated).
+    bootstrap_admin_emails: str = "vyhuynh1108@gmail.com"
+
     # Tool loop
     tool_result_max_tokens: int = 4000
     max_tool_iterations: int = 10
@@ -56,6 +60,10 @@ class Settings(BaseSettings):
     @property
     def cors_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def bootstrap_admins(self) -> set[str]:
+        return {e.strip().lower() for e in self.bootstrap_admin_emails.split(",") if e.strip()}
 
 
 @lru_cache

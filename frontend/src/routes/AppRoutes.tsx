@@ -50,10 +50,11 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
     }
   }, [path, user, isLoading]);
 
-  // Đã đăng nhập vào "/" hoặc "/login" -> chuyển /chat
+  // Đã đăng nhập vào "/" hoặc "/login" -> admin về /admin, còn lại về /chat
   useEffect(() => {
     if (!isLoading && user && (path === '/' || path === '/login')) {
-      window.history.pushState({}, '', '/chat');
+      const dest = user.is_admin ? '/admin' : '/chat';
+      window.history.pushState({}, '', dest);
       window.dispatchEvent(new PopStateEvent('popstate'));
     }
   }, [path, user, isLoading]);
@@ -103,6 +104,13 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
       window.history.replaceState({}, '', '/login');
     }
     return <Login />;
+  }
+
+  // Admins manage the workspace only — they have NO chat. Keep them on the dashboard
+  // (render it directly + sync the URL, so there's no flash of the chat shell).
+  if (user.is_admin && path !== '/admin' && path !== '/account') {
+    if (pathname !== '/admin') window.history.replaceState({}, '', '/admin');
+    return <AdminDashboard />;
   }
 
   if (path.startsWith('/dashboard/')) {

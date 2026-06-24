@@ -335,58 +335,99 @@ export async function deleteProject(id: string): Promise<DeleteProjectResponse> 
   return (await response.json()) as DeleteProjectResponse;
 }
 
-// ----- Admin dashboard -----
+// ----- Admin: people & roles -----
+
+export type AdminRole = 'admin' | 'technical' | 'viewer';
 
 export type AdminUser = {
   id: number;
   name: string | null;
   email: string | null;
+  role: AdminRole;
+  status: 'active' | 'disabled';
   created_at: string | null;
-  is_admin: boolean;
-  disabled: boolean;
-  disabled_at: string | null;
   project_count: number;
   session_count: number;
   storage_bytes: number;
+  is_self: boolean;
+};
+
+export type AdminInvite = {
+  id: number;
+  email: string;
+  role: AdminRole;
+  status: 'pending';
+  created_at: string | null;
 };
 
 export type AdminStats = {
   total_users: number;
   disabled_users: number;
   admin_users: number;
+  technical_users: number;
+  viewer_users: number;
+  pending_invites: number;
   total_projects: number;
   total_sessions: number;
   total_storage_bytes: number;
 };
 
-export async function getAdminUsers(): Promise<AdminUser[]> {
-  const response = await fetch(url('/api/admin/users'), { credentials: 'include' });
-  if (!response.ok) throw new Error('Failed to load users');
-  const data = (await response.json()) as { success: boolean; users?: AdminUser[] };
-  return data.users ?? [];
+export type AdminOverview = { stats: AdminStats; users: AdminUser[]; invites: AdminInvite[] };
+
+async function _adminJson<T>(res: Response, fallback: string): Promise<T> {
+  if (!res.ok) {
+    const d = (await res.json().catch(() => ({}))) as { detail?: string; error?: string };
+    throw new Error(d.detail || d.error || fallback);
+  }
+  return (await res.json()) as T;
 }
 
-export async function getAdminStats(): Promise<AdminStats> {
-  const response = await fetch(url('/api/admin/stats'), { credentials: 'include' });
-  if (!response.ok) throw new Error('Failed to load stats');
-  const data = (await response.json()) as { success: boolean; stats: AdminStats };
-  return data.stats;
+export async function getAdminOverview(): Promise<AdminOverview> {
+  const res = await fetch(url('/api/admin/overview'), { credentials: 'include' });
+  const data = await _adminJson<{ stats: AdminStats; users: AdminUser[]; invites: AdminInvite[] }>(res, 'Failed to load admin data');
+  return { stats: data.stats, users: data.users ?? [], invites: data.invites ?? [] };
+}
+
+export async function adminInvite(email: string, role: AdminRole): Promise<AdminInvite> {
+  const res = await fetch(url('/api/admin/invite'), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, role }),
+  });
+  return (await _adminJson<{ invite: AdminInvite }>(res, 'Failed to send invite')).invite;
+}
+
+export async function adminRevokeInvite(inviteId: number): Promise<void> {
+  const res = await fetch(url(`/api/admin/invite/${inviteId}`), { method: 'DELETE', credentials: 'include' });
+  await _adminJson<unknown>(res, 'Failed to revoke invite');
+}
+
+export async function adminSetInviteRole(inviteId: number, role: AdminRole): Promise<void> {
+  const res = await fetch(url(`/api/admin/invite/${inviteId}/role`), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role }),
+  });
+  await _adminJson<unknown>(res, 'Failed to update invite');
+}
+
+export async function adminSetUserRole(userId: number, role: AdminRole): Promise<void> {
+  const res = await fetch(url(`/api/admin/users/${userId}/role`), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role }),
+  });
+  await _adminJson<unknown>(res, 'Failed to change role');
 }
 
 /** Disable (lock out) or re-enable a user account. Returns the new disabled state. */
 export async function setUserDisabled(userId: number, disabled: boolean): Promise<boolean> {
   const action = disabled ? 'disable' : 'enable';
-  const response = await fetch(url(`/api/admin/users/${userId}/${action}`), {
-    method: 'POST',
-    credentials: 'include',
+  const res = await fetch(url(`/api/admin/users/${userId}/${action}`), {
+    method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
   });
-  if (!response.ok) {
-    const data = (await response.json().catch(() => ({}))) as { detail?: string; error?: string };
-    throw new Error(data.detail || data.error || 'Failed to update user');
-  }
-  const data = (await response.json()) as { disabled: boolean };
-  return data.disabled;
+  return (await _adminJson<{ disabled: boolean }>(res, 'Failed to update user')).disabled;
 }
 
 // ----- Session file memory (RAG) -----

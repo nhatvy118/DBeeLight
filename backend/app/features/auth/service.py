@@ -70,13 +70,18 @@ async def google_callback(request: Request, code: str | None, state: str | None)
     if not sub:
         raise HTTPException(status_code=400, detail="Missing Google subject (sub)")
 
-    db_user = await repo.upsert_user(sub, user.get("email") or "", user.get("name") or "")
+    db_user = await repo.resolve_login(sub, user.get("email") or "", user.get("name") or "")
     request.session.pop("google_oauth_state", None)
     next_path = request.session.pop("google_oauth_next", "/chat") or "/chat"
+    if db_user is None:
+        # Invite-only: this email was never authorised by an admin.
+        request.session.clear()
+        return RedirectResponse(url=f"{fe}/login?error=not_invited")
     if db_user.get("disabled_at") is not None:
         request.session.clear()
         return RedirectResponse(url=f"{fe}/login?error=account_disabled")
-    user["is_admin"] = bool(db_user.get("is_admin"))
+    user["role"] = db_user.get("role")
+    user["is_admin"] = db_user.get("role") == "admin"  # kept for any FE/role checks
     request.session["user"] = user
     return RedirectResponse(url=f"{fe}{next_path}")
 

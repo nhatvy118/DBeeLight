@@ -4,8 +4,11 @@ Unrelated to the user data database — that is managed by the agent ConnectionP
 """
 from __future__ import annotations
 
+import logging
+
 import asyncpg
 
+logger = logging.getLogger("db")
 _pool: asyncpg.Pool | None = None
 
 
@@ -37,5 +40,11 @@ async def run_migrations(migrations_dir) -> None:
     files = sorted(Path(migrations_dir).glob("*.sql"))
     for f in files:
         sql = f.read_text(encoding="utf-8").strip()
-        if sql:
+        if not sql:
+            continue
+        try:
             await pool.execute(sql)  # asyncpg can run multiple statements per file (no params)
+            logger.info("migration applied: %s", f.name)
+        except Exception as e:  # noqa: BLE001 — name the culprit so a silent failure is findable
+            logger.error("migration FAILED: %s — %s", f.name, e)
+            raise

@@ -33,9 +33,11 @@ export default function MainLayout({ children, currentSessionId, onSessionSelect
     if (!isMobile) setDrawerOpen(false);
   }, [isMobile]);
 
+  // Admins manage the workspace only — no chat chrome (sidebar/header) at all.
+  const isAdmin = !!user?.is_admin;
   // Sidebar + header chỉ khi đã đăng nhập — khách chỉ thấy trang Login, không chat/header cũ.
-  const showSidebar = (path.startsWith('/chat') || path.startsWith('/dashboard')) && user !== null && !isLoading;
-  const showHeader = user !== null;
+  const showSidebar = !isAdmin && (path.startsWith('/chat') || path.startsWith('/dashboard')) && user !== null && !isLoading;
+  const showHeader = user !== null && !isAdmin;
 
   const sidebar = (
     <Sidebar
