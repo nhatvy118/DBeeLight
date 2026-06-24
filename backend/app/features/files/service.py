@@ -217,11 +217,21 @@ def _session_uploads_dir(session_id: str) -> Path:
     return Path(get_settings().data_root) / "uploads" / session_id
 
 
-async def excel_file_paths(session_id: str) -> list[str]:
+async def excel_file_paths(session_id: str, file_ids: list[str] | None = None) -> list[str]:
     """Relative paths ('<session>/<file>') of workbooks the excel-server can open for this session —
-    injected into the Excel agent prompt so it opens/saves the RIGHT file under the session folder."""
+    injected into the Excel agent prompt so it opens/saves the RIGHT file under the session folder.
+
+    If `file_ids` is given (the files the user picked for this turn), restrict to those workbooks so
+    the agent edits the chosen file when several are uploaded. A picked set that contains no
+    workbook (e.g. only Q&A files, or nothing) falls back to ALL of the session's workbooks."""
     rows = await repo.list_for_session(session_id)
-    return [f"{session_id}/{Path(r['disk_path']).name}" for r in rows if r.get("disk_path")]
+    workbooks = [r for r in rows if r.get("disk_path")]
+    if file_ids:
+        wanted = set(file_ids)
+        picked = [r for r in workbooks if str(r.get("id")) in wanted]
+        if picked:
+            workbooks = picked
+    return [f"{session_id}/{Path(r['disk_path']).name}" for r in workbooks]
 
 
 def snapshot_excel_dir(session_id: str) -> dict[str, float]:

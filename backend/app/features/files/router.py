@@ -42,6 +42,9 @@ def _meta(row: dict) -> dict:
         "mime_type": mimetypes.guess_type(fn)[0] or "application/octet-stream",
         "size_bytes": int(row.get("size_bytes") or 0),
         "uploaded_at": created.isoformat() if isinstance(created, datetime) else created,
+        # How this file can be used: "query" = imported as a Q&A table (SQL-queryable);
+        # "workbook" = an Excel-mode file the Excel tools edit. Drives the FE source badges.
+        "kind": "query" if (row.get("sqlite_db_path") and row.get("table_name")) else "workbook",
     }
 
 

@@ -475,8 +475,10 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         listSessionFiles(sid)
           .then((files) => {
             setSessionFiles(files);
-            // Auto-scope this turn to the files just uploaded (intent: ask about them).
-            // Only the new files — don't re-add ones the user deliberately unticked.
+            // Auto-scope this turn to the files just uploaded (intent: ask about / edit them).
+            // Q&A files become the SQL query scope; Excel files become the edit target for the
+            // Excel agent. Excel files no longer break SQL turns: the backend ignores them for
+            // query scope and falls back to the project DB. (project_db imports have no files row.)
             const justUploaded: DataSource[] = files
               .filter((f) => uploadedIds.has(f.id))
               .map((f) => ({ type: 'file', id: f.id, filename: f.filename, mime_type: f.mime_type, uploaded_at: f.uploaded_at ?? null }));

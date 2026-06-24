@@ -75,7 +75,8 @@ PRIMARY_DB_SENTINEL = "__primary_db__"
 
 
 async def _build_ctx(
-    user_id: str, session_id: str, access: _Access, active_file_ids: list[str] | None = None
+    user_id: str, session_id: str, access: _Access, active_file_ids: list[str] | None = None,
+    *, require_source: bool = True,
 ) -> RequestContext:
     """Build the per-request DB scope from the data sources picked for this turn.
 
@@ -94,19 +95,11 @@ async def _build_ctx(
     )  # autolog (access.db_url is intentionally not logged — it holds the DSN)
 
     file_ids = [fid for fid in (active_file_ids or []) if fid != PRIMARY_DB_SENTINEL]
-    # Picked file(s) → the session temp DB only; nothing picked → the primary DB.
-    want_primary = not file_ids
 
-    # Primary DB only when it's both wanted and actually configured (db_url may be None for
-    # a file-only session that has no database connected).
-    pool = get_connection_pool()
-    primary = (
-        await pool.adapter_for(access.project_id, access.db_url)
-        if (want_primary and access.db_url) else None
-    )
-
-    # session-file adapter (only when files are in scope). Not pooled: request-scoped,
-    # disposed by the caller (see _dispose_ctx) at the end of the request.
+    # session-file adapter, built ONLY from queryable picked files (Q&A imports). session_db
+    # already ignores non-queryable files (Excel-mode workbooks have no session table), so picking
+    # an Excel file yields no adapter here → we fall back to the primary DB below. Not pooled:
+    # request-scoped, disposed by the caller (see _dispose_ctx) at the end of the request.
     session_adapter = None
     allowed: frozenset[str] | None = None
     if file_ids:
@@ -115,8 +108,17 @@ async def _build_ctx(
             session_adapter = make_adapter(sqlite_path, allowed_tables=tables)
             allowed = tables
 
+    # Use the primary DB unless the picked files resolved to queryable session tables. (So
+    # selecting only Excel files doesn't strand the turn — it queries the project DB as usual.)
+    want_primary = session_adapter is None
+    pool = get_connection_pool()
+    primary = (
+        await pool.adapter_for(access.project_id, access.db_url)
+        if (want_primary and access.db_url) else None
+    )
+
     active = primary or session_adapter
-    if active is None:
+    if active is None and require_source:
         # Neither a database nor an in-scope file resolved → nothing to query.
         raise ChatError("No data source available. Connect a database or upload a file to query.")
     return RequestContext(
@@ -127,7 +129,9 @@ async def _build_ctx(
             primary=primary,
             session=session_adapter,
             allowed_tables=allowed,
-            engine=active.engine_name,
+            # No active source is allowed for the Excel route (it edits workbooks, not the DB);
+            # engine is unused there, so fall back to a harmless default.
+            engine=active.engine_name if active is not None else "sqlite",
         ),
     )
 
@@ -187,12 +191,15 @@ async def handle(
             needs_clarification=True,
         )
     else:
-        ctx = await _build_ctx(user_id, session_id, access, active_file_ids)
-        token = set_ctx(ctx)
-        # Excel turns: tell the agent which workbooks it can open, and snapshot the folder so we
-        # can detect what it created/modified and offer an in-chat download afterwards.
+        # The Excel route edits workbooks via the excel-server, not the DB — so it must NOT require
+        # a queryable data source (a workbook-only session has none).
         is_excel = intent.route == "excel"
-        excel_paths = await files_service.excel_file_paths(session_id) if is_excel else None
+        ctx = await _build_ctx(user_id, session_id, access, active_file_ids, require_source=not is_excel)
+        token = set_ctx(ctx)
+        # Excel turns: tell the agent which workbooks it can open (restricted to the ones the user
+        # picked for this turn, so it edits the right file when several are uploaded), and snapshot
+        # the folder so we can detect what it created/modified and offer an in-chat download after.
+        excel_paths = await files_service.excel_file_paths(session_id, active_file_ids) if is_excel else None
         excel_before = files_service.snapshot_excel_dir(session_id) if is_excel else {}
         try:
             result = await orch.process_query(

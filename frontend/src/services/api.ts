@@ -520,6 +520,8 @@ export type SessionFileMeta = {
   mime_type: string;
   size_bytes: number;
   uploaded_at?: string | null;
+  /** "query" = imported for Q&A (SQL-queryable); "workbook" = Excel-mode file for the Excel tools. */
+  kind?: 'query' | 'workbook';
 };
 
 export async function listSessionFiles(sessionId: string): Promise<SessionFileMeta[]> {
