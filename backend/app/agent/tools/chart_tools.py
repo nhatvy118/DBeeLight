@@ -27,10 +27,6 @@ _CHANNELS = {
     "row", "column", "facet",
 }
 _TYPES = {"quantitative", "nominal", "ordinal", "temporal"}
-# Plotting more marks than this is meaningless (the eye/canvas can't read it) and would bloat
-# the payload. We do NOT truncate (that would silently draw a WRONG chart from a partial result);
-# instead we reject and ask the agent to aggregate in SQL. So this is an alarm threshold, not a cap.
-_MAX_ROWS = 5000
 
 
 def _check_field_def(channel: str, defn: object, cols: set[str]) -> str | None:
@@ -76,7 +72,7 @@ def _validate_encoding(encoding: object, columns: list[str]) -> str | None:
         "- Multi-dimension: add channels — color (series/group), size (bubble), xOffset (grouped bar).\n"
         "- Pie: mark 'arc' with encoding {theta:{value col, quantitative}, color:{category col, nominal}}.\n"
         "- Heatmap: mark 'rect' with x (nominal/ordinal), y (nominal/ordinal), color (quantitative).\n"
-        "- Aggregate in the SQL (GROUP BY) for large tables; only return the columns you encode.\n"
+        "- Return only the columns you encode (aggregate with GROUP BY if that suits the question).\n"
         "- Every encoding field MUST be a column returned by your SELECT.\n"
         "For a dashboard, call this tool multiple times — one chart per call."
     ),
@@ -125,16 +121,8 @@ async def generate_chart(
     if err:
         return f"Invalid chart spec: {err}"
 
-    # Too many rows → the SQL did not aggregate enough. Do NOT truncate (a 5k-row slice of a
-    # 1M-row result draws a misleading chart and skews every total). Tell the agent to aggregate.
-    if len(res.rows) > _MAX_ROWS:
-        return (
-            f"The query returned {len(res.rows)} rows — too many to plot, and truncating would "
-            f"produce a misleading chart. Aggregate in the SQL so the result has at most "
-            f"{_MAX_ROWS} rows: GROUP BY the category, bin/round the axis, or take the top-N and "
-            f"bucket the rest as 'Other', then call generate_chart again."
-        )
-
+    # Plot every returned row, inline. No row cap and no forced aggregation — the agent decides
+    # what to SELECT (raw points, a scatter, or an aggregate); the data is stored as a snapshot.
     values = [dict(zip(res.columns, row)) for row in res.rows]
     if not values:
         # An empty result renders a blank chart — tell the agent so it can report it

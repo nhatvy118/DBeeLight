@@ -17,7 +17,6 @@ from app.features.projects import service as proj_service
 
 logger = logging.getLogger("features.charts.service")
 
-_MAX_ROWS = 5000
 _SCHEMA = "https://vega.github.io/schema/vega-lite/v6.json"
 
 
@@ -97,7 +96,7 @@ async def list_charts(project_id: str, user_id: str) -> list[dict]:
 
 
 def _build_spec(columns, rows, mark, encoding, transform, title, layout) -> str:
-    values = [dict(zip(columns, r)) for r in rows[:_MAX_ROWS]]
+    values = [dict(zip(columns, r)) for r in rows]
     spec: dict = {"$schema": _SCHEMA, "data": {"values": values}, "mark": mark, "encoding": encoding}
     if title:
         spec["title"] = title

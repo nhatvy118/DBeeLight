@@ -37,8 +37,6 @@ def chart_system_prompt(engine: str) -> str:
         "a read-only SELECT for the data that answers the question (run it with execute_query if "
         "seeing the actual shape helps you decide); then pick the chart that visualizes it best and "
         "call generate_chart. Read only — never INSERT/UPDATE/DELETE or DDL. "
-        "Aggregate in the SQL (GROUP BY, bin/round the axis, or top-N + 'Other') so a chart has at "
-        "most a few hundred marks — never plot raw unaggregated rows. "
         "Choose a mark that fits the data: line/area for a trend over time, bar to compare across "
         "categories, arc for a pie (part-to-whole), point for a scatter of two measures, rect for a "
         "heatmap. Type each encoding field correctly (temporal/quantitative/nominal/ordinal) and use "
