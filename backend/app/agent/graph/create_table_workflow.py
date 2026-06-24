@@ -38,7 +38,18 @@ logger = logging.getLogger("agent.graph.create_table")
 # rebuilt SQL is re-verified by tier1_static (must be DDL) before it can run.
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TYPE_RE = re.compile(r"^([A-Za-z ]+?)\s*(\(\d+(?:,\d+)?\))?$")  # base type + optional (n[,m])
-_DEFAULT_KEYWORDS = {"NULL", "TRUE", "FALSE", "CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME"}
+# Literal keyword defaults valid as-is on both engines.
+_DEFAULT_KEYWORDS = {"NULL", "TRUE", "FALSE"}
+
+# "Current moment" default expressions. Users (and the LLM) write these in many dialects —
+# NOW() is Postgres/MySQL, GETDATE()/SYSDATETIME() is SQL Server, SYSDATE is Oracle. SQLite has
+# NONE of those functions, only the SQL-standard CURRENT_* keywords. So we normalize every synonym
+# to the matching CURRENT_* keyword, which BOTH SQLite and Postgres accept as a column default —
+# never letting an engine-specific function (e.g. NOW()) reach SQLite, where it would error.
+_NOW_ALIASES = {"NOW()", "NOW", "CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP()", "GETDATE()",
+                "SYSDATE", "SYSDATETIME()", "LOCALTIMESTAMP"}
+_TODAY_ALIASES = {"CURRENT_DATE", "CURRENT_DATE()", "TODAY()", "CURDATE()"}
+_CURTIME_ALIASES = {"CURRENT_TIME", "CURRENT_TIME()", "CURTIME()", "LOCALTIME"}
 _INT_TYPES = {"INT", "INTEGER", "SMALLINT", "BIGINT"}  # integer PK → auto-increment surrogate
 
 # Reserved SQL keywords that can't be used as an unquoted table/column name — an
@@ -131,11 +142,22 @@ def _safe_ident(name: object) -> str:
 
 
 def _safe_default(v: object) -> str:
+    """Render a column default as safe SQL. Numbers pass through; NULL/TRUE/FALSE stay keywords;
+    'current moment' synonyms (NOW(), GETDATE(), CURRENT_DATE, …) normalize to the SQL-standard
+    CURRENT_TIMESTAMP / CURRENT_DATE / CURRENT_TIME — so they run as a function on both engines,
+    not as the literal string 'NOW()'. Anything else is treated as a quoted string literal."""
     s = str(v).strip()
     if re.fullmatch(r"-?\d+(\.\d+)?", s):
         return s  # numeric literal
-    if s.upper() in _DEFAULT_KEYWORDS:
-        return s.upper()
+    key = s.upper()
+    if key in _NOW_ALIASES:
+        return "CURRENT_TIMESTAMP"
+    if key in _TODAY_ALIASES:
+        return "CURRENT_DATE"
+    if key in _CURTIME_ALIASES:
+        return "CURRENT_TIME"
+    if key in _DEFAULT_KEYWORDS:
+        return key
     return "'" + s.replace("'", "''") + "'"  # quoted string literal (escaped)
 
 
@@ -258,7 +280,9 @@ async def _schema_preview(state: AgentState) -> AgentState:
                 f"- type: one of these logical types only (engine-agnostic): {', '.join(LOGICAL_TYPES)}.\n"
                 "- primaryKey: exactly ONE column. If the request implies none, add an integer "
                 "\"id\". Never mark more than one.\n"
-                "- notNull / unique / defaultValue: set only when the request clearly implies it.\n"
+                "- notNull / unique / defaultValue: set only when the request clearly implies it. "
+                "For a 'current date/time' default, use the keyword CURRENT_TIMESTAMP (or "
+                "CURRENT_DATE / CURRENT_TIME) — never NOW() or other engine-specific functions.\n"
                 "- identifiers: table and column names must be valid SQL identifiers — start "
                 "with a letter or underscore, then letters/digits/underscore only.\n"
                 "- description: write a SHORT plain-language meaning for the table and for "
