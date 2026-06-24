@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
     public_base_url: str = ""  # if set, used as the redirect_uri base for Google OAuth
 
+    # Email (Resend). Leave the API key blank to disable email — invite/share still work, just
+    # without a notification. resend_from must be a verified sender on your Resend domain.
+    resend_api_key: str = ""
+    resend_from: str = "noreply@dbeelight.local"
+
     # Invite-only access: these emails can always sign in AS ADMIN even with no invite/user row,
     # so an operator can never be locked out (comma-separated).
     bootstrap_admin_emails: str = "vyhuynh1108@gmail.com"

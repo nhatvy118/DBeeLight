@@ -3,6 +3,7 @@ import logging
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
+from app import email as email_mod
 from app.features.admin import repository as repo
 from app.features.auth.deps import get_current_user_id
 
@@ -72,6 +73,7 @@ async def invite(user_id: str = Depends(get_current_user_id),
         raise HTTPException(status_code=409, detail="Someone with that email already has an account")
     inv = await repo.create_invite(email, role, invited_by=user_id)
     logger.info("admin %s invited %s as %s", admin_id, email, role)
+    await email_mod.send_invite_email(email, role)  # best-effort; no-op if email isn't configured
     return {"success": True, "invite": _ser_invite(inv)}
 
 

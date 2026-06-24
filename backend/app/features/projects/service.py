@@ -285,7 +285,8 @@ def _effective_permission(requested: str, target_role: str | None) -> str:
 async def share_project(project_id: str, owner_id: str, email: str, permission: str = "view") -> dict:
     """Owner shares their project (its DATA) with an existing user by email. `permission` may be
     'view' or 'edit', but 'edit' is only granted to technical recipients (viewers stay view-only)."""
-    if not await repo.get_project(project_id, owner_id):
+    project = await repo.get_project(project_id, owner_id)
+    if not project:
         raise ProjectError("Project not found or not yours")
     from app.features.auth import repository as auth_repo
     target = await auth_repo.get_user_by_email((email or "").strip())
@@ -295,6 +296,14 @@ async def share_project(project_id: str, owner_id: str, email: str, permission: 
         raise ProjectError("You already own this project")
     perm = _effective_permission(permission, target.get("role"))
     await repo.add_share(project_id, target["google_sub"], owner_id, perm)
+
+    # Notify the recipient (best-effort; a failed email must not fail the share).
+    owner = await auth_repo.get_user(owner_id)
+    from app import email as email_mod
+    await email_mod.send_share_email(
+        target.get("email") or "", (owner or {}).get("name") or "",
+        project.get("name") or "", perm,
+    )
     return {
         "user_id": target["google_sub"], "name": target.get("name"),
         "email": target.get("email"), "role": target.get("role"), "permission": perm,
