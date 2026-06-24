@@ -268,11 +268,14 @@ export async function healthCheck(): Promise<HealthResponse> {
   return (await response.json()) as HealthResponse;
 }
 
+export type ProjectKind = 'internal' | 'external';
+
 export type ProjectItem = {
   id: string;
   name: string;
   description?: string;
   created_at?: string;
+  kind?: ProjectKind;
 };
 
 export type GetProjectsResponse =
@@ -299,7 +302,7 @@ export type CreateProjectRequest = {
 };
 
 export type CreateProjectResponse =
-  | { success: true; project: { id: string; name: string; description?: string; created_at?: string } }
+  | { success: true; project: { id: string; name: string; description?: string; created_at?: string; kind?: ProjectKind } }
   | { success: false; error: string };
 
 export async function createProject(name: string, description?: string): Promise<CreateProjectResponse> {
@@ -354,11 +357,14 @@ export type SharedProject = {
   shared_at: string | null;
 };
 
+export type SharePermission = 'view' | 'edit';
+
 export type ProjectShare = {
   user_id: string;
   name: string | null;
   email: string | null;
   role: AdminRole;
+  permission: SharePermission;
   shared_at: string | null;
 };
 
@@ -369,6 +375,15 @@ export async function listSharedProjects(): Promise<SharedProject[]> {
   return data.projects ?? [];
 }
 
+export type ShareableUser = { user_id: string; name: string | null; email: string | null; role: AdminRole };
+
+/** Users this project can still be shared with (pick-list, excludes owner + already-shared). */
+export async function listShareableUsers(projectId: string): Promise<ShareableUser[]> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/shareable`), { credentials: 'include' });
+  const data = await _adminJson<{ users: ShareableUser[] }>(res, 'Failed to load users');
+  return data.users ?? [];
+}
+
 /** People a project is shared with (owner view). */
 export async function listProjectShares(projectId: string): Promise<ProjectShare[]> {
   const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/shares`), { credentials: 'include' });
@@ -376,13 +391,23 @@ export async function listProjectShares(projectId: string): Promise<ProjectShare
   return data.shares ?? [];
 }
 
-export async function shareProject(projectId: string, email: string): Promise<ProjectShare> {
+export async function shareProject(projectId: string, email: string, permission: SharePermission = 'view'): Promise<ProjectShare> {
   const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/shares`), {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, permission }),
   });
   return (await _adminJson<{ share: ProjectShare }>(res, 'Failed to share project')).share;
+}
+
+/** Change a person's access on a project. Returns the EFFECTIVE permission (viewers stay 'view'). */
+export async function setSharePermission(projectId: string, viewerId: string, permission: SharePermission): Promise<SharePermission> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/shares/${encodeURIComponent(viewerId)}/permission`), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ permission }),
+  });
+  return (await _adminJson<{ permission: SharePermission }>(res, 'Failed to update access')).permission;
 }
 
 export async function unshareProject(projectId: string, viewerId: string): Promise<void> {
@@ -674,45 +699,56 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
 
 export type DbConnectResult = { success: boolean; message: string };
 
-/** Status of the user's active external DB. Redacted — never includes the password. */
-export type DbStatusResult = {
-  success: boolean;
-  message: string;
-  host?: string | null;
-  port?: number | null;
-  database?: string | null;
-  username?: string | null;
-};
-
-export async function connectExternalDb(data: {
+/** Connection form for an external Postgres database (project-bound). */
+export type ExternalConnectionInput = {
   host: string;
   port: number;
   database: string;
   username: string;
   password: string;
-}): Promise<DbConnectResult> {
-  const response = await fetch(url('/api/db/connect'), {
+};
+
+/** Probe a connection without creating anything (the "Test connection" button). */
+export async function testExternalConnection(conn: ExternalConnectionInput): Promise<DbConnectResult> {
+  const response = await fetch(url('/api/projects/external/test'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify(data),
+    body: JSON.stringify(conn),
   });
   return response.json() as Promise<DbConnectResult>;
 }
 
-export async function disconnectExternalDb(): Promise<DbConnectResult> {
-  const response = await fetch(url('/api/db/disconnect'), {
+/** Create a project bound to the user's own external Postgres database. */
+export async function createExternalProject(
+  name: string, conn: ExternalConnectionInput, description?: string,
+): Promise<CreateProjectResponse> {
+  const response = await fetch(url('/api/projects/external'), {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
+    body: JSON.stringify({ name, description, ...conn }),
   });
-  return response.json() as Promise<DbConnectResult>;
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as { detail?: string; error?: string };
+    throw new Error(data.detail || data.error || 'Failed to create external project');
+  }
+  return (await response.json()) as CreateProjectResponse;
 }
 
-export async function getDbConnectionStatus(): Promise<DbStatusResult> {
-  const response = await fetch(url('/api/db/status'), {
+/** Re-point an external project at a new DSN (Edit connection). Owner-only. */
+export async function updateProjectConnection(id: string, conn: ExternalConnectionInput): Promise<DbConnectResult> {
+  const response = await fetch(url(`/api/projects/${encodeURIComponent(id)}/connection`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
+    body: JSON.stringify(conn),
   });
-  return response.json() as Promise<DbStatusResult>;
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as { detail?: string };
+    return { success: false, message: data.detail || 'Failed to update connection' };
+  }
+  return (await response.json()) as DbConnectResult;
 }
 
 // ---------------------------------------------------------------- saved charts / dashboard

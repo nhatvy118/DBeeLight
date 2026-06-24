@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Icons } from '../icons';
+import { Icons, BeeBadge } from '../icons';
 import { useAuth } from '../context/AuthContext';
 import Chat from './Chat';
 import Dashboard from './Dashboard';
@@ -73,6 +73,7 @@ export default function ViewerApp() {
       {/* sidebar — switch between shared projects (and chat/dashboard per project) */}
       <aside style={{ width: 286, flexShrink: 0, height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--surface-2)', borderRight: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '16px 18px' }}>
+          <BeeBadge size={36} />
           <span style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-.02em' }}>LightDBee</span>
         </div>
 

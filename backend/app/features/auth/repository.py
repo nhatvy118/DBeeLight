@@ -70,13 +70,3 @@ async def get_user_by_email(email: str) -> dict | None:
     return dict(row) if row else None
 
 
-async def get_active_db_url(google_sub: str) -> str | None:
-    logger.info("→ get_active_db_url(google_sub=%r)", google_sub)  # autolog
-    pool = get_pool()
-    return await pool.fetchval("SELECT active_db_url FROM users WHERE google_sub = $1", google_sub)
-
-
-async def set_active_db_url(google_sub: str, db_url: str | None) -> None:
-    logger.info("→ set_active_db_url(google_sub=%r db_url=***)", google_sub)  # autolog
-    pool = get_pool()
-    await pool.execute("UPDATE users SET active_db_url = $2 WHERE google_sub = $1", google_sub, db_url)

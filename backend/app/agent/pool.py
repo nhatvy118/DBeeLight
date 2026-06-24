@@ -62,11 +62,6 @@ class ConnectionPool:
         self._projects.clear()
 
 
-def user_pool_key(user_id: str) -> str:
-    """Pool key for a user's global (per-user active_db_url) connection."""
-    return f"user:{user_id}"
-
-
 _singleton: ConnectionPool | None = None
 
 

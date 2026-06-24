@@ -1,32 +1,18 @@
 """Sessions service — read-only helpers that don't belong in the router or repository.
 
-db_descriptor() summarizes a session's primary DB for the UI. It mirrors the
-db_url resolution in chat.service._authorize, but is non-raising and NEVER exposes
-the DSN (only a human label). The frontend uses this instead of guessing from
-localStorage, so "does this session have a DB?" has a single source of truth: the
-session's project_id (project DB) vs the user's active_db_url (external/global).
+db_descriptor() summarizes a session's project DB for the UI. It mirrors the db_url
+resolution in chat.service._authorize, but is non-raising and NEVER exposes the DSN
+(only a human label). Every data source is now a project (internal SQLite or external DB),
+so "does this session have a DB?" comes from the session's project_id alone.
 """
 from __future__ import annotations
 
 import logging
-from urllib.parse import urlparse
 
-from app.features.auth import repository as auth_repo
 from app.features.projects import repository as proj_repo
 from app.features.projects import service as proj_service
 
 logger = logging.getLogger("sessions")
-
-
-def _external_label(dsn: str) -> str | None:
-    """'<database>@<host>' from a DSN — never the user/password (redacted by design)."""
-    try:
-        u = urlparse(dsn)
-        db = (u.path or "").lstrip("/")
-        host = u.hostname or "localhost"
-        return f"{db}@{host}" if db else host
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def _configured(db_url: str | None) -> bool:
@@ -34,25 +20,18 @@ def _configured(db_url: str | None) -> bool:
 
 
 async def db_descriptor(user_id: str, session: dict) -> dict:
-    """Non-raising summary of a session's primary DB for the UI.
+    """Non-raising summary of a session's project DB for the UI.
 
-    Returns {"has_db": bool, "db_kind": "project"|"external"|None, "db_label": str|None}.
-    No DSN is ever returned — db_label is a project name or '<database>@<host>'.
+    Returns {"has_db": bool, "db_kind": "internal"|"external"|None, "db_label": str|None}.
+    No DSN is ever returned — db_label is the project name.
     """
     project_id = session.get("project_id")
+    if not project_id:
+        # Legacy global session — no project, nothing to query.
+        return {"has_db": False, "db_kind": None, "db_label": None}
 
-    # Project-bound session → the project's own DB (owner OR shared-with).
-    if project_id:
-        proj = await proj_repo.get_accessible_project(project_id, user_id)
-        has_db = _configured((proj or {}).get("db_url"))
-        label = (proj or {}).get("name") if has_db else None
-        return {"has_db": has_db, "db_kind": "project" if has_db else None, "db_label": label}
-
-    # Global session → the user's active external DB.
-    db_url = await auth_repo.get_active_db_url(user_id)
-    has_db = _configured(db_url)
-    return {
-        "has_db": has_db,
-        "db_kind": "external" if has_db else None,
-        "db_label": _external_label(db_url) if has_db else None,
-    }
+    proj = await proj_repo.get_accessible_project(project_id, user_id)
+    has_db = _configured((proj or {}).get("db_url"))
+    if not has_db:
+        return {"has_db": False, "db_kind": None, "db_label": None}
+    return {"has_db": True, "db_kind": (proj or {}).get("kind") or "internal", "db_label": (proj or {}).get("name")}

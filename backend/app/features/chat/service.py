@@ -19,7 +19,7 @@ from app.agent.context import DbContext, RequestContext, reset_ctx, set_ctx
 from app.agent.orchestration import get_orchestrator
 from app.agent.orchestration.orchestrator import ChatResult
 from app.agent.adapters import make_adapter
-from app.agent.pool import get_connection_pool, user_pool_key
+from app.agent.pool import get_connection_pool
 from app.features.auth import repository as auth_repo
 from app.features.files import service as files_service
 from app.features.projects import service as proj_service
@@ -60,18 +60,14 @@ async def _authorize(user_id: str, session_id: str) -> _Access:
     if row is None:
         raise ChatError("Session does not exist or you do not have access.")
     project_id = row["project_id"]
+    if not project_id:
+        # Legacy global session (pre-unification) — no project, nothing to query.
+        raise ChatError("No data source available. Open or create a project to query.")
 
-    # Project-bound session: DB from the project. Access = owner OR shared-with (so a viewer can
-    # query a project shared with them); write is still gated by role (viewers are read-only).
-    if project_id:
-        db_url = await proj_service.resolve_db_url_for_access(project_id, user_id)
-        return _Access(project_id=project_id, db_url=db_url)
-
-    # Global session (no project): DB from the user's active connection (may be None).
-    db_url = await auth_repo.get_active_db_url(user_id)
-    db_url = db_url if (db_url and proj_service.is_configured(db_url)) else None
-    # Pool key per user so global sessions of different users don't collide.
-    return _Access(project_id=user_pool_key(user_id), db_url=db_url)
+    # Every data source is a project (internal SQLite or external DB). Access = owner OR shared-with
+    # (a viewer can query a project shared with them); write is gated separately by role.
+    db_url = await proj_service.resolve_db_url_for_access(project_id, user_id)
+    return _Access(project_id=project_id, db_url=db_url)
 
 
 # Sentinel the frontend sends in active_file_ids to mean "the project / primary DB".
@@ -168,14 +164,17 @@ async def handle(
     if intent.route == "off_topic":
         return ChatResult(response="Sorry, I can only help with database-related questions. Please ask a database-related question.", route=intent.route)
 
-    # Viewers (non-technical) are READ-ONLY: refuse any data/schema change up front (the friendly
-    # "RefusalCard"). Read routes (lookup/analysis/chart) fall through normally.
+    # Write gate: only owners and technical users with EDIT access may change data/schema. Viewers
+    # are always read-only; a technical user with a VIEW-only share is read-only too. Refuse up
+    # front (the friendly "RefusalCard"). Read routes (lookup/analysis/chart) fall through normally.
     if intent.route in ("db_mutation", "db_create_table"):
         me = await auth_repo.get_user(user_id)
-        if (me or {}).get("role") == "viewer":
+        role = (me or {}).get("role")
+        can_edit = await proj_service.user_can_edit(access.project_id, user_id, role)
+        if not can_edit:
             await sess_repo.add_message(session_id, "user", message)
             refusal = (
-                "I can't change data here — you have view access to this project. I can answer "
+                "I can't change data here — you have view-only access to this project. I can answer "
                 "questions and build charts, but I can't add, edit or delete anything."
             )
             await sess_repo.add_message(session_id, "assistant", refusal)

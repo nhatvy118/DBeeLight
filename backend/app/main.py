@@ -23,7 +23,6 @@ from app.features.admin.router import router as admin_router
 from app.features.auth.router import router as auth_router
 from app.features.charts.router import router as charts_router
 from app.features.chat.router import router as chat_router
-from app.features.db.router import router as db_router
 from app.features.files.router import router as files_router
 from app.features.projects.router import router as projects_router
 from app.features.sessions.router import router as sessions_router
@@ -76,8 +75,7 @@ def create_app() -> FastAPI:
         https_only=s.session_https_only,
     )
     app.include_router(auth_router)       # /api/auth/* (cookie session)
-    app.include_router(projects_router)   # /api/projects/*
-    app.include_router(db_router)         # /api/db/* (per-user connection)
+    app.include_router(projects_router)   # /api/projects/* (incl. external-DB projects)
     app.include_router(charts_router)     # /api/projects/{id}/charts, /dashboard/render
     app.include_router(sessions_router)   # /api/sessions/*
     app.include_router(files_router)      # /api/files/*
