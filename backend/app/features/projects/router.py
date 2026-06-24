@@ -95,6 +95,16 @@ async def get_one(project_id: str, user_id: str = Depends(get_current_user_id)) 
     return _to_out(p)
 
 
+@router.get("/{project_id}/tables")
+async def list_tables(project_id: str, user_id: str = Depends(get_current_user_id)) -> dict:
+    """Tables in the project DB (owner-only) — the target picker for appending an uploaded file."""
+    try:
+        tables = await service.list_tables(project_id, user_id)
+    except service.ProjectError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"success": True, "tables": tables}
+
+
 @router.delete("/{project_id}")
 async def remove(project_id: str, user_id: str = Depends(get_current_user_id)) -> dict:
     deleted = await service.delete_project(project_id, user_id)

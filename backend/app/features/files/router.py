@@ -54,6 +54,7 @@ async def upload(
     file: UploadFile = File(...),
     import_mode: str = Form(...),
     project_id: str | None = Form(None),
+    target_table: str | None = Form(None),
     user_id: str = Depends(get_current_user_id),
 ):
     sess = await sess_repo.get_session(session_id, user_id)
@@ -88,6 +89,7 @@ async def upload(
         rec = await service.save_and_import(
             user_id, session_id, file.filename or "upload", content,
             mode=import_mode, project_id=pid, project_db_url=project_db_url,
+            target_table=(target_table or None),
         )
     except service.FileImportError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

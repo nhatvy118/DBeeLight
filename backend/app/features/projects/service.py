@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TypeGuard
 from urllib.parse import quote, unquote, urlparse, parse_qs
 
 from app.agent.pool import get_connection_pool
@@ -16,7 +17,7 @@ _GENERIC_CONNECT_ERROR = (
 )
 
 
-def is_configured(db_url: str | None) -> bool:
+def is_configured(db_url: str | None) -> TypeGuard[str]:
     """True if the project/user has a real db_url (not the unconfigured placeholder)."""
     return bool(db_url) and not db_url.startswith(_PLACEHOLDER)
 
@@ -151,6 +152,20 @@ def _delete_sqlite_file(db_url: str) -> None:
                 logger.info("delete_project: removed %s", p)
     except Exception as e:  # noqa: BLE001
         logger.warning("delete_project: failed to remove sqlite file: %s", e)
+
+
+async def list_tables(project_id: str, user_id: str) -> list[dict]:
+    """Tables in the project's database (owner-only), as [{name, columns:[...]}] — used to pick a
+    target when appending an uploaded file into an existing table. Empty list if no DB configured."""
+    project = await repo.get_project(project_id, user_id)
+    if not project:
+        raise ProjectError("Project not found or not yours")
+    db_url = project.get("db_url")
+    if not is_configured(db_url):
+        return []
+    adapter = await get_connection_pool().adapter_for(project_id, db_url)
+    schema = await adapter.get_schema()
+    return [{"name": t, "columns": [c.name for c in cols]} for t, cols in schema.items()]
 
 
 async def resolve_db_url(project_id: str, user_id: str) -> str | None:

@@ -609,17 +609,27 @@ export async function listExportFilesInventory(): Promise<ExportFileInventoryRow
   return (data as { files?: ExportFileInventoryRow[] }).files ?? [];
 }
 
+/** Tables in a project's database (owner-only) — used to pick an append target. */
+export async function listProjectTables(projectId: string): Promise<{ name: string; columns: string[] }[]> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/tables`), { credentials: 'include' });
+  const data = (await res.json().catch(() => ({}))) as { tables?: { name: string; columns: string[] }[]; detail?: string };
+  if (!res.ok) throw new Error(data.detail || 'Failed to load tables');
+  return data.tables ?? [];
+}
+
 export async function uploadSessionFile(
   sessionId: string,
   file: File,
   importMode: ImportMode,
   projectId: string | null = null,
+  targetTable: string | null = null,
 ): Promise<UploadSessionFileResult> {
   const form = new FormData();
   form.append('file', file);
   form.append('session_id', sessionId);
   form.append('import_mode', importMode);
   if (projectId) form.append('project_id', projectId);
+  if (targetTable) form.append('target_table', targetTable);
   const response = await fetch(url('/api/files/upload'), {
     method: 'POST',
     credentials: 'include',

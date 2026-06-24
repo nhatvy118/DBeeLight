@@ -270,14 +270,18 @@ async def save_and_import(
     mode: str,
     project_id: str | None = None,
     project_db_url: str | None = None,
+    target_table: str | None = None,
 ) -> dict:
     """Single-purpose import per `mode`. Any failure raises FileImportError → 400:
-    - "project_db": import the table into the project DB (no disk file, no `files` row).
+    - "project_db": import into the project DB. By default a NEW table (file-named); when
+      `target_table` is given, APPEND the rows into that existing table instead.
     - "qa":         import the table into the session SQLite sandbox (Q&A; no disk file).
     - "excel":      keep the original on the shared volume for the excel-server (no SQL import).
     """
-    logger.info("→ save_and_import(user_id=%r session_id=%r filename=%r mode=%r project_id=%r)", user_id, session_id, filename, mode, project_id)  # autolog
+    logger.info("→ save_and_import(user_id=%r session_id=%r filename=%r mode=%r project_id=%r target_table=%r)", user_id, session_id, filename, mode, project_id, target_table)  # autolog
     if mode == "project_db":
+        if target_table:
+            return await _append_to_project_table(filename, content, project_id, project_db_url, target_table)
         return await _import_to_project_db(filename, content, project_id, project_db_url)
     if mode == "qa":
         return await _import_to_session(user_id, session_id, filename, content)
@@ -315,6 +319,81 @@ async def _import_to_project_db(
             await adapter.import_dataframe(targets[label], df, if_exists="fail")
         except ValueError as e:  # raced with a concurrent import that just created the table
             raise FileImportError(f"Table '{targets[label]}' already exists.") from e
+    return {
+        "id": str(uuid.uuid4()),  # synthesized: nothing persisted in `files`
+        "filename": filename,
+        "size_bytes": len(content),
+        "created_at": None,
+    }
+
+
+def _align_to_table(df, table_columns: list) -> tuple:
+    """Match the uploaded DataFrame's columns to an existing table's columns by name (flexible
+    import). Returns (aligned_df, missing_required) where:
+      - aligned_df keeps only columns present in BOTH (renamed to the table's exact casing),
+        so extra file columns are dropped and the DB fills any column the file omits;
+      - missing_required lists table columns the file lacks that are NOT NULL with no default
+        (and not the auto-increment PK) — i.e. ones the append would fail on.
+    Matching is case-insensitive on the column name (the file's headers were already sanitized)."""
+    by_lower = {str(c.name).lower(): c for c in table_columns}
+    rename: dict = {}
+    for raw in df.columns:
+        hit = by_lower.get(str(raw).lower())
+        if hit is not None:
+            rename[raw] = hit.name
+    aligned = df[list(rename.keys())].rename(columns=rename) if rename else df.iloc[:, :0]
+    present = {c.name for c in table_columns if c.name in set(rename.values())}
+    missing_required = [
+        c.name for c in table_columns
+        if c.name not in present and not c.nullable and c.default is None and not c.pk
+    ]
+    return aligned, missing_required
+
+
+async def _append_to_project_table(
+    filename: str, content: bytes, project_id: str | None, project_db_url: str | None,
+    target_table: str,
+) -> dict:
+    """Append a file's rows INTO an existing project table (flexible column matching). Columns
+    are matched to the target by name; extras are ignored and omitted columns fall back to the
+    DB's default/NULL/auto-increment. Raises FileImportError on any problem (→ 400)."""
+    if not (project_id and project_db_url):
+        raise FileImportError("No project database to import into")
+    ext = Path(filename).suffix.lower()
+    if ext not in _TABULAR_EXTS:
+        raise FileImportError("Only CSV/Excel files can be imported into the database")
+    tables = _read_tables(ext, content)
+    if len(tables) > 1:
+        raise FileImportError(
+            "This file has multiple sheets — appending supports a single table. "
+            "Split the sheets or import as a new table instead."
+        )
+    df = next(iter(tables.values()))
+
+    from app.agent.pool import get_connection_pool
+    adapter = await get_connection_pool().adapter_for(project_id, project_db_url)
+    schema = await adapter.get_schema()
+    if target_table not in schema:
+        raise FileImportError(f"Table '{target_table}' doesn't exist in the database.")
+
+    aligned, missing_required = _align_to_table(df, schema[target_table])
+    if aligned.shape[1] == 0:
+        raise FileImportError(
+            f"None of the file's columns match the columns of '{target_table}'. "
+            "Check the headers or import as a new table."
+        )
+    if missing_required:
+        raise FileImportError(
+            f"The file is missing required column(s) of '{target_table}': "
+            f"{', '.join(missing_required)}."
+        )
+    try:
+        await adapter.import_dataframe(target_table, aligned, if_exists="append")
+    except Exception as e:  # noqa: BLE001 — surface a clean reason, not the raw driver text
+        from app.agent.graph import dbtools
+        raise FileImportError(
+            f"Couldn’t append to '{target_table}': {dbtools.clean_db_error(str(e))}."
+        ) from e
     return {
         "id": str(uuid.uuid4()),  # synthesized: nothing persisted in `files`
         "filename": filename,

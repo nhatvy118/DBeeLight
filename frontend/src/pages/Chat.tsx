@@ -18,6 +18,7 @@ import {
   uploadSessionFile,
   downloadStoredSessionFile,
   saveChart,
+  listProjectTables,
   type SessionInfo,
   type SessionFileMeta,
   type ImportMode,
@@ -104,6 +105,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   } | null>(null);
   /** Whether to show the "Save data / Q&A only" question above the input. */
   const [pendingStorageChoice, setPendingStorageChoice] = useState(false);
+  /** Sub-step shown after "Save to database": pick new-table vs an existing table to append to.
+   *  null = not in that step; otherwise carries the project's tables (loading flag). */
+  const [dbTablesPicker, setDbTablesPicker] = useState<{ loading: boolean; tables: string[] } | null>(null);
+  /** Chosen append target in the db sub-step. '' = create a new table. */
+  const [appendTarget, setAppendTarget] = useState<string>('');
   /** Message payload waiting to be sent after storage choice is made. */
   const pendingSendPayloadRef = useRef<string | null>(null);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
@@ -369,6 +375,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const uploadStagedFiles = async (
     importMode: ImportMode,
     filesToUpload: { localId: string; file: File; filename: string }[],
+    targetTable: string | null = null,
   ): Promise<{ id: string; filename: string }[]> => {
     if (filesToUpload.length === 0) return [];
 
@@ -405,6 +412,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             staged.file,
             importMode,
             selectedProject?.id || propProjectId || null,
+            targetTable,
           ),
         ),
       );
@@ -746,17 +754,37 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     await doSend(displayText);
   };
 
-  /** Called after user picks an import destination — upload staged files then send. */
-  const handleStorageChoice = async (mode: ImportMode) => {
+  /** User chose "Save to database": open the new-table-vs-existing sub-step. If the project has
+   *  no tables yet there's nothing to append to → import straight as a new table. */
+  const handlePickDatabase = async () => {
+    const pid = selectedProject?.id || propProjectId;
+    if (!pid) { void handleStorageChoice('project_db'); return; }
+    setDbTablesPicker({ loading: true, tables: [] });
+    setAppendTarget('');
+    try {
+      const tables = await listProjectTables(pid);
+      if (tables.length === 0) { void handleStorageChoice('project_db'); return; }
+      setDbTablesPicker({ loading: false, tables: tables.map((t) => t.name) });
+    } catch {
+      // Couldn't list tables → fall back to the new-table import rather than blocking the user.
+      void handleStorageChoice('project_db');
+    }
+  };
+
+  /** Called after user picks an import destination — upload staged files then send.
+   *  `targetTable` (project_db only) appends into an existing table instead of creating one. */
+  const handleStorageChoice = async (mode: ImportMode, targetTable: string | null = null) => {
     const captured = [...stagedFiles];
     setStagedFiles([]);
     setPendingStorageChoice(false);
+    setDbTablesPicker(null);
+    setAppendTarget('');
     const displayText = pendingSendPayloadRef.current ?? '';
     pendingSendPayloadRef.current = null;
 
     let uploaded: { id: string; filename: string }[] = [];
     try {
-      uploaded = await uploadStagedFiles(mode, captured);
+      uploaded = await uploadStagedFiles(mode, captured, targetTable);
     } catch (err) {
       if (err instanceof Error && err.message === 'session_create_failed') {
         setStagedFiles(captured);
@@ -1547,8 +1575,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           <button
             key={mode}
             type="button"
-            onClick={() => void handleStorageChoice(mode)}
-            disabled={isUploadingFile}
+            onClick={() => { if (mode === 'project_db') void handlePickDatabase(); else void handleStorageChoice(mode); }}
+            disabled={isUploadingFile || dbTablesPicker?.loading}
             className="focusable"
             style={{ display: 'flex', alignItems: 'flex-start', gap: 12, textAlign: 'left', padding: '12px 14px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)', transition: 'all .13s', opacity: isUploadingFile ? 0.6 : 1, cursor: isUploadingFile ? 'default' : 'pointer' }}
             onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.background = 'var(--accent-soft)'; }}
@@ -1562,6 +1590,44 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           </button>
           );
         })}
+
+        {dbTablesPicker?.loading && (
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '8px 4px' }}>Loading tables…</div>
+        )}
+
+        {dbTablesPicker && !dbTablesPicker.loading && (
+          <div className="card" style={{ padding: 14, borderRadius: 'var(--r-sm)', display: 'flex', flexDirection: 'column', gap: 12, background: 'var(--green-soft)', borderColor: 'var(--green-soft-2, var(--border))' }}>
+            <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)' }}>Save to database</span>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, cursor: 'pointer', fontSize: 13.5 }}>
+              <input type="radio" name="dbtarget" checked={appendTarget === ''} onChange={() => setAppendTarget('')} style={{ marginTop: 2 }} />
+              <span><b>Create a new table</b><span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>A fresh table named after the file.</span></span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, cursor: 'pointer', fontSize: 13.5 }}>
+              <input type="radio" name="dbtarget" checked={appendTarget !== ''} onChange={() => setAppendTarget(dbTablesPicker.tables[0] || '')} style={{ marginTop: 2 }} />
+              <span style={{ flex: 1 }}>
+                <b>Append to an existing table</b>
+                <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Add the file's rows; columns are matched by name.</span>
+                <select
+                  value={appendTarget}
+                  disabled={appendTarget === ''}
+                  onChange={(e) => setAppendTarget(e.target.value)}
+                  className="field"
+                  style={{ width: '100%', maxWidth: 320, padding: '8px 10px', fontSize: 13.5 }}
+                >
+                  {dbTablesPicker.tables.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </span>
+            </label>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button type="button" className="btn btn-outline" style={{ padding: '8px 14px', fontSize: 13.5 }} disabled={isUploadingFile}
+                onClick={() => { setDbTablesPicker(null); setAppendTarget(''); }}>Back</button>
+              <button type="button" className="btn btn-primary" style={{ padding: '8px 16px', fontSize: 13.5 }} disabled={isUploadingFile}
+                onClick={() => void handleStorageChoice('project_db', appendTarget || null)}>
+                {appendTarget ? `Append to ${appendTarget}` : 'Create table'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   ) : null;
