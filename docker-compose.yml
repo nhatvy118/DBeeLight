@@ -20,7 +20,7 @@ x-common: &common
 services:
   postgres:
     <<: *common
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg16
     container_name: dbeelight-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-dbeelight}
