@@ -1629,7 +1629,17 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     <div className="card scale-in" style={{ maxWidth: 760, margin: '0 auto 12px', borderRadius: 'var(--r)', overflow: 'hidden', borderColor: 'var(--accent-soft-2)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '13px 16px', borderBottom: '1px solid var(--border)', background: 'var(--accent-soft)' }}>
         <span style={{ color: 'var(--accent-ink)', flexShrink: 0 }}><Icons.Question size={18} /></span>
-        <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text)' }}>How do you want to use this file?</span>
+        <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text)', flex: 1 }}>How do you want to use this file?</span>
+        <button
+          type="button"
+          onClick={() => { setStagedFiles([]); setPendingStorageChoice(false); setMessages((prev) => prev.slice(0, -1)); pendingSendPayloadRef.current = null; }}
+          className="focusable"
+          style={{ display: 'grid', placeItems: 'center', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2, borderRadius: 4 }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+        >
+          <Icons.Close size={16} />
+        </button>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12 }}>
         {availableImportModes(stagedFiles, !viewer && !!(selectedProject?.id || propProjectId)).map((mode) => {
