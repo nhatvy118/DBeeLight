@@ -196,6 +196,11 @@ class Orchestrator:
         """Classify an already-normalized query (used for permission gating before running)."""
         return await intent_mod.classify(query)
 
+    async def offtopic_reply(self, user_message: str) -> str:
+        """A friendly, language-matched decline for an off-topic turn. Pass the RAW user
+        message (not the normalized/English one) so the reply matches the user's language."""
+        return await normalize_mod.offtopic_reply(user_message)
+
     async def process_query(
         self,
         user_message: str,

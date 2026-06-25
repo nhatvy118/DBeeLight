@@ -64,6 +64,36 @@ commentary. If the message is already a standalone English request, return it un
 """
 
 
+_OFFTOPIC_PROMPT = (
+    "You are LightDBee, an assistant that ONLY helps with the user's database/data, charts, and "
+    "uploaded spreadsheets, and answer the question related to those. The user's message is off-topic (not about those). Reply briefly and "
+    "warmly IN THE SAME LANGUAGE as the user: gently acknowledge what they said, note that you focus "
+    "on their data, and invite a database/data question. Do NOT actually answer the off-topic message "
+    "or provide general knowledge. Keep it to 1-2 short sentences. Return only the message."
+)
+
+
+async def offtopic_reply(user_message: str) -> str:
+    """A friendly, language-matched decline for an off-topic message (instead of a fixed string).
+    Acknowledges the user's message and steers back to data. Best-effort: falls back on error."""
+    fallback = "I can only help with questions about your database and data — could you ask something about that?"
+    if not (user_message and user_message.strip()):
+        return fallback
+    try:
+        resp = await get_llm().chat.completions.create(
+            model=get_settings().router_model,
+            messages=[
+                {"role": "system", "content": _OFFTOPIC_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=0.3,
+        )
+        return (resp.choices[0].message.content or "").strip() or fallback
+    except Exception as e:  # noqa: BLE001 — best-effort
+        logger.warning("offtopic_reply failed: %s", e)
+        return fallback
+
+
 def _build_context(history: list[dict] | None) -> str:
     if not history:
         return ""

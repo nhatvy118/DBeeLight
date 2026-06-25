@@ -142,9 +142,14 @@ async def handle(
     else:
         intent = await orch.classify(normalized)
 
-    # if off-topic, return result that Chat system does not support
+    # Off-topic: don't run the agent. Reply with a warm, language-matched decline (built from the
+    # RAW message so it matches the user's language — `normalized` is English), and persist the turn
+    # like any other so it shows up in history.
     if intent.route == "off_topic":
-        return ChatResult(response="Sorry, I can only help with database-related questions. Please ask a database-related question.", route=intent.route, cancelled_action_ids=cancelled_action_ids)
+        decline = await orch.offtopic_reply(message)
+        await sess_repo.add_message(session_id, "user", message)
+        await sess_repo.add_message(session_id, "assistant", decline)
+        return ChatResult(response=decline, route=intent.route, cancelled_action_ids=cancelled_action_ids)
 
     # Write gate: only owners and technical users with EDIT access may change data/schema. Viewers
     # are always read-only; a technical user with a VIEW-only share is read-only too. Refuse up
