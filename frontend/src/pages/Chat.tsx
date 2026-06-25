@@ -82,10 +82,10 @@ type ChatProps = {
  *  doesn't call the AI, so this is the only feedback the user gets). */
 function importConfirmation(fileNames: string[], createdTables: string[], appendedTo: string | null): string {
   const files = fileNames.length ? fileNames.join(', ') : 'the file';
-  if (appendedTo) return `✓ Appended ${files} into the existing table \`${appendedTo}\`.`;
-  if (createdTables.length === 1) return `✓ Imported ${files} into a new table \`${createdTables[0]}\`. Ask me anything about it.`;
-  if (createdTables.length > 1) return `✓ Imported ${files} into new tables: ${createdTables.map((t) => `\`${t}\``).join(', ')}.`;
-  return `✓ Imported ${files} into the project database.`;
+  if (appendedTo) return `Appended ${files} into the existing table \`${appendedTo}\`.`;
+  if (createdTables.length === 1) return `Imported ${files} into a new table \`${createdTables[0]}\`. Ask me anything about it.`;
+  if (createdTables.length > 1) return `Imported ${files} into new tables: ${createdTables.map((t) => `\`${t}\``).join(', ')}.`;
+  return `Imported ${files} into the project database.`;
 }
 
 export default function Chat({ projectId: propProjectId, sessionId: propSessionId, onSessionIdChange, viewer = false }: ChatProps) {
@@ -1669,7 +1669,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               <input type="radio" name="dbtarget" checked={appendTarget !== ''} onChange={() => setAppendTarget(dbTablesPicker.tables[0] || '')} style={{ marginTop: 2 }} />
               <span style={{ flex: 1 }}>
                 <b>Append to an existing table</b>
-                <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Add the file's rows; columns are matched by name.</span>
+                <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Add the file's rows; Only columns matching the existing table are imported — unrecognized columns are skipped.</span>
                 <select
                   value={appendTarget}
                   disabled={appendTarget === ''}
