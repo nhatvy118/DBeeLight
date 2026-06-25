@@ -59,7 +59,6 @@ services:
       # WORKDIR=/app, DATA_ROOT=./_data → runtime data lives under /app/_data.
       # In prod these should be backed by EFS (shared/durable) or migrated to S3.
       - app_file_handle:/app/_data/uploads
-      - app_temp_dbs:/app/_data/temp_dbs
       - app_databases:/app/_data/databases
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5001/api/health').status==200 else 1)\""]
@@ -71,5 +70,4 @@ services:
 volumes:
   postgres_data:
   app_file_handle:
-  app_temp_dbs:
   app_databases:

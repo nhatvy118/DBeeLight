@@ -95,9 +95,8 @@ class Column:
 class DatabaseAdapter(ABC):
     engine_name: str = "sql"
 
-    def __init__(self, sqlalchemy_url: str, allowed_tables: frozenset[str] | None = None):
+    def __init__(self, sqlalchemy_url: str):
         self._engine: AsyncEngine = create_async_engine(sqlalchemy_url, pool_pre_ping=True)
-        self.allowed_tables = allowed_tables
         if self._engine.dialect.name == "sqlite":
             _enable_sqlite_transactional_ddl(self._engine)
 

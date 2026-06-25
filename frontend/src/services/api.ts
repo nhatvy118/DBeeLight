@@ -520,8 +520,6 @@ export type SessionFileMeta = {
   mime_type: string;
   size_bytes: number;
   uploaded_at?: string | null;
-  /** "query" = imported for Q&A (SQL-queryable); "workbook" = Excel-mode file for the Excel tools. */
-  kind?: 'query' | 'workbook';
 };
 
 export async function listSessionFiles(sessionId: string): Promise<SessionFileMeta[]> {
@@ -578,9 +576,8 @@ export async function saveTableDescriptions(
 
 /** Where an uploaded file's data goes (mutually exclusive):
  *  - project_db: imported into the project's real database
- *  - qa:         imported into the session sandbox for SQL Q&A (not persisted to the real DB)
  *  - excel:      kept as a workbook for the Excel tools to read/edit (no SQL import) */
-export type ImportMode = 'project_db' | 'qa' | 'excel';
+export type ImportMode = 'project_db' | 'excel';
 
 function uploadErrorMessage(data: unknown): string {
   if (typeof data !== 'object' || data === null) return 'Failed to upload file';

@@ -114,8 +114,14 @@ class ExcelHttpBackend:
                 async with ClientSession(r, w) as session:
                     await session.initialize()
                     result = await session.call_tool(name, args or {})
-            parts = [getattr(b, "text", "") for b in (result.content or [])]
-            return ToolResult(content="".join(p for p in parts if p), is_error=bool(result.isError))
+                    # Parse INSIDE the context managers: if call_tool raised, the except below sees
+                    # the REAL error (never an UnboundLocalError from reading `result` after the
+                    # `async with` swallowed the failure on exit).
+                    parts = [getattr(b, "text", "") for b in (result.content or [])]
+                    return ToolResult(content="".join(p for p in parts if p), is_error=bool(result.isError))
         except Exception as e:  # noqa: BLE001
             logger.exception("Excel HTTP tool %s failed: %s", name, e)
             return ToolResult(content=json.dumps({"error": str(e)}), is_error=True)
+        # Reached only if the MCP context exited without a result (e.g. a cancellation suppressed
+        # on exit) — surface a clean error instead of crashing on an unbound `result`.
+        return ToolResult(content=json.dumps({"error": f"Excel tool {name} returned no result"}), is_error=True)

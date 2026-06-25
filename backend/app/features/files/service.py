@@ -1,9 +1,7 @@
-"""Upload a file → one of three single-purpose imports (see save_and_import `mode`):
+"""Upload a file → one of two single-purpose imports (see save_and_import `mode`):
 
 - "project_db": import the table into the project DB — a real project table (queried via the
   primary adapter). No disk file, no `files` row.
-- "qa":         import the table into the session SQLite sandbox — queried by the agent via the
-  session adapter (DbContext.session). Recorded as a `files` row; no disk file.
 - "excel":      keep the original workbook on the shared volume so the excel-server (HTTP) can
   read/edit it. No SQL import. Recorded as a `files` row with only the disk path.
 """
@@ -32,24 +30,6 @@ _EXCEL_EDITABLE = _TABULAR_EXTS
 
 class FileImportError(Exception):
     """Raised when an upload cannot be imported (e.g. non-tabular file into a DB)."""
-
-
-def _table_name(filename: str, sheet: str | None = None, file_id: str | None = None) -> str:
-    """Table name for an imported file.
-
-    Base is t_<filestem> (+ _<sheet> for multi-sheet workbooks). When `file_id` is given
-    (session / Q&A import) it is woven in as t_<fileid8>_<filestem> so two uploads that share a
-    filename stem get DISTINCT tables instead of one silently overwriting the other
-    (df.to_sql uses if_exists="replace"). Project-DB imports pass no file_id → clean names.
-    """
-    stem = Path(filename).stem.lower()
-    slug = re.sub(r"[^a-z0-9_]+", "_", stem).strip("_") or "data"
-    prefix = f"t_{file_id.replace('-', '')[:8]}_" if file_id else "t_"
-    name = f"{prefix}{slug}"
-    if sheet is not None:
-        ssl = re.sub(r"[^a-z0-9_]+", "_", str(sheet).lower()).strip("_") or "sheet"
-        name = f"{name}_{ssl}"
-    return name[:63]
 
 
 def _project_table_name(filename: str, sheet: str | None = None) -> str:
@@ -207,11 +187,6 @@ def _to_xlsx_bytes(ext: str, content: bytes) -> bytes:
     return out.getvalue()
 
 
-def _session_sqlite_path(session_id: str) -> Path:
-    logger.info("→ _session_sqlite_path(session_id=%r)", session_id)  # autolog
-    return get_settings().temp_dbs_dir / f"{session_id}.sqlite"
-
-
 def _session_uploads_dir(session_id: str) -> Path:
     """Where this session's Excel workbooks live (shared with the excel-server)."""
     return Path(get_settings().data_root) / "uploads" / session_id
@@ -221,16 +196,14 @@ async def excel_file_paths(session_id: str, file_ids: list[str] | None = None) -
     """Relative paths ('<session>/<file>') of workbooks the excel-server can open for this session —
     injected into the Excel agent prompt so it opens/saves the RIGHT file under the session folder.
 
-    If `file_ids` is given (the files the user picked for this turn), restrict to those workbooks so
-    the agent edits the chosen file when several are uploaded. A picked set that contains no
-    workbook (e.g. only Q&A files, or nothing) falls back to ALL of the session's workbooks."""
+    STRICT scoping: if `file_ids` is given (the ids the user picked this turn), return ONLY the
+    workbooks among them — an empty result when no workbook is picked (the caller treats this as
+    "not an Excel turn"). `file_ids=None` returns ALL of the session's workbooks."""
     rows = await repo.list_for_session(session_id)
     workbooks = [r for r in rows if r.get("disk_path")]
-    if file_ids:
+    if file_ids is not None:
         wanted = set(file_ids)
-        picked = [r for r in workbooks if str(r.get("id")) in wanted]
-        if picked:
-            workbooks = picked
+        workbooks = [r for r in workbooks if str(r.get("id")) in wanted]
     return [f"{session_id}/{Path(r['disk_path']).name}" for r in workbooks]
 
 
@@ -261,9 +234,7 @@ async def register_excel_outputs(
             continue  # untouched this turn
         row = by_path.get(str(p))
         if row is None:  # a NEW workbook the agent created → register it so it is listable/downloadable
-            row = await repo.insert_file(
-                user_id, session_id, p.name, str(p), None, None, p.stat().st_size
-            )
+            row = await repo.insert_file(user_id, session_id, p.name, str(p), p.stat().st_size)
         out.append({
             "tool": "excel", "type": "file_export",
             "payload": {"filename": p.name, "sessionFileId": row["id"]},
@@ -285,7 +256,6 @@ async def save_and_import(
     """Single-purpose import per `mode`. Any failure raises FileImportError → 400:
     - "project_db": import into the project DB. By default a NEW table (file-named); when
       `target_table` is given, APPEND the rows into that existing table instead.
-    - "qa":         import the table into the session SQLite sandbox (Q&A; no disk file).
     - "excel":      keep the original on the shared volume for the excel-server (no SQL import).
     """
     logger.info("→ save_and_import(user_id=%r session_id=%r filename=%r mode=%r project_id=%r target_table=%r)", user_id, session_id, filename, mode, project_id, target_table)  # autolog
@@ -293,8 +263,6 @@ async def save_and_import(
         if target_table:
             return await _append_to_project_table(filename, content, project_id, project_db_url, target_table)
         return await _import_to_project_db(filename, content, project_id, project_db_url)
-    if mode == "qa":
-        return await _import_to_session(user_id, session_id, filename, content)
     if mode == "excel":
         return await _save_for_excel(user_id, session_id, filename, content)
     raise FileImportError(f"Unknown import mode: {mode!r}")
@@ -416,47 +384,6 @@ async def _append_to_project_table(
     }
 
 
-async def _import_to_session(user_id: str, session_id: str, filename: str, content: bytes) -> dict:
-    """Import into the session SQLite sandbox (Q&A). One `files` row per sheet/table so
-    session_db() gates them all into the agent's allowed tables; no file kept on disk."""
-    ext = Path(filename).suffix.lower()
-    if ext not in _TABULAR_EXTS:
-        raise FileImportError("Only CSV/Excel files can be queried")
-    tables = _read_tables(ext, content)  # one entry per sheet (multi-sheet → multiple tables)
-    spath = _session_sqlite_path(session_id)
-    # Pin a file id per table UP FRONT so the table name can embed it (t_<id8>_<stem>) — this is
-    # what makes two uploads with the same filename stem land in distinct tables.
-    named = [
-        (fid := str(uuid.uuid4()), label, df, _table_name(filename, label, fid))
-        for label, df in tables.items()
-    ]
-    # write via sync sqlite3 in a threadpool to avoid blocking the event loop
-    import sqlite3
-
-    def _write():
-        logger.info("→ _write()")  # autolog
-        con = sqlite3.connect(str(spath))
-        try:
-            for _fid, _label, df, tname in named:
-                df.to_sql(tname, con, if_exists="replace", index=False)
-        finally:
-            con.close()
-
-    await asyncio.to_thread(_write)
-
-    # one row per table; the first carries the upload size, the rest 0 (avoid double-counting).
-    first: dict | None = None
-    for i, (fid, label, _df, tname) in enumerate(named):
-        display = filename if label is None else f"{filename} ({label})"
-        row = await repo.insert_file(
-            user_id, session_id, display, None, str(spath),
-            tname, len(content) if i == 0 else 0, file_id=fid,
-        )
-        first = first or row
-    assert first is not None  # _read_tables guarantees ≥1 table
-    return first
-
-
 async def _save_for_excel(user_id: str, session_id: str, filename: str, content: bytes) -> dict:
     """Keep a workbook on the shared volume so the excel-server (xlsx-only) can read/edit it.
     Native .xlsx is stored as-is (preserves sheets/formulas); other tabular formats are
@@ -477,69 +404,26 @@ async def _save_for_excel(user_id: str, session_id: str, filename: str, content:
     if uploads not in disk_path.parents:
         raise FileImportError("Invalid file name")
     disk_path.write_bytes(out_bytes)
-    return await repo.insert_file(
-        user_id, session_id, out_name, str(disk_path), None, None, len(out_bytes)
-    )
-
-
-def _drop_table(sqlite_path: str, table_name: str) -> None:
-    """DROP a session table from its SQLite file (sync; run in a threadpool)."""
-    import sqlite3
-
-    con = sqlite3.connect(sqlite_path)
-    try:
-        con.execute(f'DROP TABLE IF EXISTS "{table_name}"')  # table_name is server-generated (safe)
-        con.commit()
-    finally:
-        con.close()
+    return await repo.insert_file(user_id, session_id, out_name, str(disk_path), len(out_bytes))
 
 
 async def delete_file(user_id: str, file_id: str) -> bool:
-    """Delete a file's DB row AND its backing storage, so nothing is orphaned:
-    - qa import   → DROP the session SQLite table.
-    - excel import → unlink the workbook on disk.
-    A backing resource is only removed when no OTHER file row still references it."""
+    """Delete a file's DB row AND its backing workbook on disk, so nothing is orphaned. The disk
+    file is removed only when no OTHER file row still points to it."""
     logger.info("→ delete_file(user_id=%r file_id=%r)", user_id, file_id)  # autolog
     row = await repo.get_file_full(file_id, user_id)
     if not row:
         return False
     await repo.delete_file(file_id, user_id)
 
-    remaining = await repo.list_for_session(row["session_id"])
-    spath, tname, dpath = row.get("sqlite_db_path"), row.get("table_name"), row.get("disk_path")
-
-    # Drop the orphan session table (unless another row still maps to the same table).
-    if spath and tname and not any(
-        r.get("sqlite_db_path") == spath and r.get("table_name") == tname for r in remaining
-    ):
-        try:
-            await asyncio.to_thread(_drop_table, spath, tname)
-        except Exception as e:  # noqa: BLE001 — cleanup is best-effort, never fail the delete
-            logger.warning("could not drop table %s in %s: %s", tname, spath, e)
-
-    # Remove the on-disk workbook (unless another row still points to the same file).
-    if dpath and not any(r.get("disk_path") == dpath for r in remaining):
-        try:
-            Path(dpath).unlink(missing_ok=True)
-        except OSError as e:
-            logger.warning("could not unlink %s: %s", dpath, e)
+    dpath = row.get("disk_path")
+    if dpath:
+        remaining = await repo.list_for_session(row["session_id"])
+        if not any(r.get("disk_path") == dpath for r in remaining):
+            try:
+                Path(dpath).unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning("could not unlink %s: %s", dpath, e)
     return True
 
 
-async def session_db(
-    session_id: str, file_ids: list[str]
-) -> tuple[str | None, frozenset[str] | None]:
-    """(session SQLite path, allowed table set) for the picked uploaded files — used to attach
-    the session adapter scoped to the data sources the user selected for this turn."""
-    logger.info("→ session_db(session_id=%r file_ids=%r)", session_id, file_ids)  # autolog
-    files = await repo.list_for_session(session_id)
-    wanted = set(file_ids)
-    path = None
-    tables: set[str] = set()
-    for f in files:
-        if str(f.get("id")) not in wanted:
-            continue
-        if f.get("sqlite_db_path") and f.get("table_name"):
-            path = f["sqlite_db_path"]
-            tables.add(f["table_name"])
-    return path, (frozenset(tables) if tables else None)

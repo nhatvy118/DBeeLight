@@ -149,10 +149,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const scopedFileIds = (fileIds: string[]): string[] => (fileIds.length ? fileIds : ['__primary_db__']);
 
   const handleToggleDataSource = (src: DataSource) => {
-    setActiveDataSources((prev) => {
-      const selected = prev.some((s) => s.id === src.id);
-      return selected ? prev.filter((s) => s.id !== src.id) : [...prev, src];
-    });
+    // Single-select: only one active file at a time. Clicking the selected one clears it (→ ask the
+    // DB); clicking another replaces the selection. Picking an Excel file routes the turn to editing.
+    setActiveDataSources((prev) => (prev.some((s) => s.id === src.id) ? [] : [src]));
   };
 
   // Primary DB shown in the data-source selector. The backend is the source of truth
@@ -475,17 +474,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         listSessionFiles(sid)
           .then((files) => {
             setSessionFiles(files);
-            // Auto-scope this turn to the files just uploaded (intent: ask about / edit them).
-            // Q&A files become the SQL query scope; Excel files become the edit target for the
-            // Excel agent. Excel files no longer break SQL turns: the backend ignores them for
-            // query scope and falls back to the project DB. (project_db imports have no files row.)
+            // Single-select: make the freshly-uploaded Excel workbook the sole active source so the
+            // next turn edits it. project_db imports leave no `files` row → justUploaded is empty →
+            // selection clears (next turn asks the project DB).
             const justUploaded: DataSource[] = files
               .filter((f) => uploadedIds.has(f.id))
               .map((f) => ({ type: 'file', id: f.id, filename: f.filename, mime_type: f.mime_type, uploaded_at: f.uploaded_at ?? null }));
-            setActiveDataSources((prev) => {
-              const have = new Set(prev.map((s) => s.id));
-              return [...prev, ...justUploaded.filter((s) => !have.has(s.id))];
-            });
+            setActiveDataSources(justUploaded.slice(0, 1));
           })
           .catch(() => {});
       }
@@ -603,19 +598,20 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     el.style.overflowY = scrollHeight > MAX_TEXTAREA_HEIGHT ? 'auto' : 'hidden';
   }, [query]);
 
-  const doSend = async (text: string) => {
+  // `activeFileIdsOverride` scopes this turn to specific files instead of the activeDataSources
+  // state — needed right after an upload, where the state hasn't propagated to this closure yet
+  // (so the just-uploaded workbook would otherwise be missed and the Excel route wouldn't fire).
+  const doSend = async (text: string, activeFileIdsOverride?: string[]) => {
     setIsSending(true);
     setIsAssistantTyping(false);
     setStreamingStage('Processing');
     const controller = new AbortController();
     sendAbortControllerRef.current = controller;
-    console.log('Sending message with sessionId:', sessionId);
-    console.log('Selected project:', selectedProject);
     try {
       const finalRes = await sendMessageWithStream(text, sessionId, selectedProject?.id || null, {
         onStage: (m) => setStreamingStage(m),
         signal: controller.signal,
-        activeFileIds: scopedFileIds(getActiveFileIds(activeDataSources)),
+        activeFileIds: scopedFileIds(activeFileIdsOverride ?? getActiveFileIds(activeDataSources)),
       });
       setStreamingStage(null);
       // ChatResponse is a discriminated union; downstream code reads optional
@@ -713,7 +709,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     { icon: React.ReactNode; bg: string; color: string; title: string; desc: string }
   > = {
     project_db: { icon: <Icons.Database size={17} />, bg: 'var(--green-soft)', color: 'var(--green-ink)', title: 'Save to database', desc: "Store this file's data in your project database so you can query it anytime." },
-    qa: { icon: <Icons.Question size={17} />, bg: 'var(--surface-3)', color: 'var(--text-soft)', title: 'Q&A only', desc: "Ask about this file now — don't store it in the database." },
     excel: { icon: <Icons.Pencil size={17} />, bg: 'var(--accent-soft)', color: 'var(--accent-ink)', title: 'Edit in Excel', desc: 'Let the assistant open and edit this workbook with the Excel tools.' },
   };
 
@@ -728,7 +723,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (!anyTabular) return [];
     const modes: ImportMode[] = [];
     if (canUseProjectDb) modes.push('project_db');
-    modes.push('qa', 'excel');
+    modes.push('excel');
     return modes;
   };
 
@@ -750,7 +745,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (!displayText) return;
 
     // project_db needs a real project (the session sandbox / Excel modes don't).
-    const canUseProjectDb = !!(selectedProject?.id || propProjectId);
+    // Viewers can only edit Excel — never import into the project DB.
+    const canUseProjectDb = !viewer && !!(selectedProject?.id || propProjectId);
     const modes = stagedFiles.length > 0 ? availableImportModes(stagedFiles, canUseProjectDb) : [];
 
     // Staged a file we can't import (not CSV/Excel) → refuse before rendering the turn.
@@ -770,6 +766,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
 
     // Exactly one possible destination → no need to ask; upload with it then send.
+    let uploadedIdsForSend: string[] | undefined;
     if (modes.length === 1) {
       const captured = [...stagedFiles];
       let uploaded: { id: string; filename: string }[];
@@ -781,10 +778,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       }
       if (uploaded.length === 0) return; // upload failed → don't send a dangling turn
       setStagedFiles([]);
-      // Files are bound to the session server-side; the user text is sent as-is.
+      // Scope this turn to the just-uploaded file(s) so the Excel route fires immediately (the
+      // activeDataSources state update hasn't reached doSend's closure yet).
+      uploadedIdsForSend = uploaded.map((u) => u.id);
     }
 
-    await doSend(displayText);
+    await doSend(displayText, uploadedIdsForSend);
   };
 
   /** User chose "Save to database": open the new-table-vs-existing sub-step. If the project has
@@ -847,7 +846,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       return;
     }
     lastImportRef.current = null;
-    await doSend(displayText);
+    // Scope this turn to the just-uploaded workbook so the Excel route fires immediately (the
+    // activeDataSources state update hasn't reached doSend's closure yet).
+    await doSend(displayText, uploaded.map((u) => u.id));
   };
 
   /** Start a fresh chat inside the current project (from the project view). */
@@ -1551,12 +1552,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          {!viewer && (
-            <AttachMenu
-              onUploadDevice={() => fileInputRef.current?.click()}
-              disabled={isUploadingFile}
-            />
-          )}
+          {/* Viewers can upload too — but only to EDIT in Excel (project_db import is blocked for
+              them in availableImportModes + the backend). */}
+          <AttachMenu
+            onUploadDevice={() => fileInputRef.current?.click()}
+            disabled={isUploadingFile}
+          />
           {/* Data source selector — files only; empty selection = ask the database. */}
           {(() => {
             const sources = buildDataSources(sessionFiles);
@@ -1566,6 +1567,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                   sources={sources}
                   active={activeDataSources}
                   onToggle={handleToggleDataSource}
+                  onClear={() => setActiveDataSources([])}
                   dbLabel={primaryDbLabel}
                 />
               </div>
@@ -1612,7 +1614,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text)' }}>How do you want to use this file?</span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12 }}>
-        {availableImportModes(stagedFiles, !!(selectedProject?.id || propProjectId)).map((mode) => {
+        {availableImportModes(stagedFiles, !viewer && !!(selectedProject?.id || propProjectId)).map((mode) => {
           const opt = IMPORT_MODE_META[mode];
           return (
           <button

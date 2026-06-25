@@ -6,7 +6,7 @@ db_url does NOT come from the client: resolved server-side from the project (aft
 Supports:
 - Session owner: full permission (edit).
 - Share recipient: gated by permission vs the route access_level.
-- Files uploaded in the session: attach a session adapter (DbContext.session).
+- Uploaded Excel workbooks: edited via the Excel tools (not queried as a DB).
 """
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from app.agent import titling
 from app.agent.context import DbContext, RequestContext, reset_ctx, set_ctx
 from app.agent.orchestration import get_orchestrator
+from app.agent.orchestration.intent import Intent
 from app.agent.orchestration.orchestrator import ChatResult
-from app.agent.adapters import make_adapter
 from app.agent.pool import get_connection_pool
 from app.features.auth import repository as auth_repo
 from app.features.files import service as files_service
@@ -70,77 +70,38 @@ async def _authorize(user_id: str, session_id: str) -> _Access:
     return _Access(project_id=project_id, db_url=db_url)
 
 
-# Sentinel the frontend sends in active_file_ids to mean "the project / primary DB".
-PRIMARY_DB_SENTINEL = "__primary_db__"
-
 
 async def _build_ctx(
     user_id: str, session_id: str, access: _Access, active_file_ids: list[str] | None = None,
     *, require_source: bool = True,
 ) -> RequestContext:
-    """Build the per-request DB scope from the data sources picked for this turn.
+    """Build the per-request DB scope. The only queryable source is the project's primary DB
+    (project SQLite or external Postgres). Uploaded files are Excel workbooks edited via the
+    Excel tools, not queried — so they never form a SQL scope here.
 
-    The source is MUTUALLY EXCLUSIVE — the primary DB is the implicit default and is never a
-    pickable item; the user only picks uploaded files:
-    - any file ids        → ask ONLY those uploaded files' tables (session temp DB).
-    - empty / None / only  → ask the primary (project/external) DB.
-      PRIMARY_DB_SENTINEL
-
-    So "no file picked = ask the database" is derived here, not signalled by a sentinel (the old
-    PRIMARY_DB_SENTINEL is still tolerated: it is not a file id, so it leaves file_ids empty).
+    `require_source=False` (the Excel route) allows a turn with no queryable DB at all.
+    `active_file_ids` is accepted for signature symmetry but no longer scopes the query.
     """
     logger.info(
         "→ _build_ctx(user_id=%r session_id=%r active_file_ids=%r)",
         user_id, session_id, active_file_ids,
     )  # autolog (access.db_url is intentionally not logged — it holds the DSN)
 
-    file_ids = [fid for fid in (active_file_ids or []) if fid != PRIMARY_DB_SENTINEL]
-
-    # session-file adapter, built ONLY from queryable picked files (Q&A imports). session_db
-    # already ignores non-queryable files (Excel-mode workbooks have no session table), so picking
-    # an Excel file yields no adapter here → we fall back to the primary DB below. Not pooled:
-    # request-scoped, disposed by the caller (see _dispose_ctx) at the end of the request.
-    session_adapter = None
-    allowed: frozenset[str] | None = None
-    if file_ids:
-        sqlite_path, tables = await files_service.session_db(session_id, file_ids)
-        if sqlite_path:
-            session_adapter = make_adapter(sqlite_path, allowed_tables=tables)
-            allowed = tables
-
-    # Use the primary DB unless the picked files resolved to queryable session tables. (So
-    # selecting only Excel files doesn't strand the turn — it queries the project DB as usual.)
-    want_primary = session_adapter is None
     pool = get_connection_pool()
-    primary = (
-        await pool.adapter_for(access.project_id, access.db_url)
-        if (want_primary and access.db_url) else None
-    )
+    primary = await pool.adapter_for(access.project_id, access.db_url) if access.db_url else None
 
-    active = primary or session_adapter
-    if active is None and require_source:
-        # Neither a database nor an in-scope file resolved → nothing to query.
-        raise ChatError("No data source available. Connect a database or upload a file to query.")
+    if primary is None and require_source:
+        raise ChatError("No data source available. Connect a database to query.")
     return RequestContext(
         user_id=user_id,
         session_id=session_id,
         project_id=access.project_id,
         db=DbContext(
             primary=primary,
-            session=session_adapter,
-            allowed_tables=allowed,
-            # No active source is allowed for the Excel route (it edits workbooks, not the DB);
-            # engine is unused there, so fall back to a harmless default.
-            engine=active.engine_name if active is not None else "sqlite",
+            # engine is unused when there's no primary (Excel route) → harmless default.
+            engine=primary.engine_name if primary is not None else "sqlite",
         ),
     )
-
-
-async def _dispose_ctx(ctx: RequestContext) -> None:
-    """Release request-scoped resources. The session-file adapter is not pooled, so
-    its engine must be disposed once the request is done (the primary adapter is pooled)."""
-    if ctx.db.session is not None:
-        await ctx.db.session.dispose()
 
 
 async def handle(
@@ -163,17 +124,15 @@ async def handle(
     # tool-loop routes that actually need conversation memory.
     normalized = await orch.normalize(message, history)
 
-    intent = await orch.classify(normalized)
-
-    # Deterministic override: if this session holds an uploaded Excel WORKBOOK — a file kept for the
-    # Excel tools, i.e. uploaded WITHOUT "Save to database" — then it's an "work on this file"
-    # session, so every data turn goes to the Excel agent (read or edit the workbook) instead of the
-    # DB. Files imported to the DB ("Save to database") leave no workbook, so they don't trigger this;
-    # off-topic chit-chat is left untouched. (Q&A-imported files are queried via the normal routes.)
-    if intent.route != "off_topic" and await files_service.excel_file_paths(session_id):
-        intent.route = "excel"
-        intent.needs_clarification = False
-        intent.clarification_question = None
+    # Routing is SELECTION-driven for Excel: if the user has an uploaded workbook selected as an
+    # active data source this turn, force the Excel route (read/edit that file) and SKIP the
+    # classifier — no LLM call. With no workbook selected, classify normally into a DB route, so the
+    # same session can both edit a workbook (when picked) and query the project DB (when not).
+    excel_paths = await files_service.excel_file_paths(session_id, active_file_ids or [])
+    if excel_paths:
+        intent = Intent(route="excel")
+    else:
+        intent = await orch.classify(normalized)
 
     # if off-topic, return result that Chat system does not support
     if intent.route == "off_topic":
@@ -207,15 +166,14 @@ async def handle(
         is_excel = intent.route == "excel"
         ctx = await _build_ctx(user_id, session_id, access, active_file_ids, require_source=not is_excel)
         token = set_ctx(ctx)
-        # Excel turns: tell the agent which workbooks it can open (restricted to the ones the user
-        # picked for this turn, so it edits the right file when several are uploaded), and snapshot
-        # the folder so we can detect what it created/modified and offer an in-chat download after.
-        excel_paths = await files_service.excel_file_paths(session_id, active_file_ids) if is_excel else None
+        # Excel turns: the workbook(s) to open were already resolved above (excel_paths = the picked
+        # files). Snapshot the folder so we can detect what the agent created/modified and offer an
+        # in-chat download afterwards.
         excel_before = files_service.snapshot_excel_dir(session_id) if is_excel else {}
         try:
             result = await orch.process_query(
                 normalized, intent=intent, history=history, on_stage=emit,
-                excel_file_paths=excel_paths,
+                excel_file_paths=excel_paths if is_excel else None,
             )
             if is_excel:
                 exports = await files_service.register_excel_outputs(user_id, session_id, excel_before)
@@ -223,7 +181,6 @@ async def handle(
                     result.tool_events = (result.tool_events or []) + exports
         finally:
             reset_ctx(token)
-            await _dispose_ctx(ctx)
 
     await sess_repo.add_message(session_id, "user", message)
     await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
@@ -253,7 +210,6 @@ async def approve(
         result = await get_orchestrator().resume(session_id, approved, edited_schema=edited_schema)
     finally:
         reset_ctx(token)
-        await _dispose_ctx(ctx)
     await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
     if result.action_id and result.action_state:
         await sess_repo.set_sql_action(session_id, result.action_id, result.action_state)

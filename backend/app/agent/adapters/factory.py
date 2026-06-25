@@ -29,8 +29,8 @@ def _to_sqlalchemy_url(db_url: str) -> tuple[str, str]:
     return f"sqlite+aiosqlite:///{raw}", "sqlite"
 
 
-def make_adapter(db_url: str, allowed_tables: frozenset[str] | None = None) -> DatabaseAdapter:
+def make_adapter(db_url: str) -> DatabaseAdapter:
     sa_url, engine = _to_sqlalchemy_url(db_url)
     if engine == "postgresql":
-        return PostgresAdapter(sa_url, allowed_tables=allowed_tables)
-    return SQLiteAdapter(sa_url, allowed_tables=allowed_tables)
+        return PostgresAdapter(sa_url)
+    return SQLiteAdapter(sa_url)

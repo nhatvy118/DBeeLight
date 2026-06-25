@@ -23,13 +23,11 @@ def engine_name() -> str:
 
 
 async def full_schema() -> dict[str, list]:
-    """Full schema {table: [Column]} across primary + session DBs, each in ONE query."""
+    """Full schema {table: [Column]} of the project DB, in ONE query."""
     db = get_db()
     out: dict[str, list] = {}
     if db.primary is not None:
         out.update(await db.primary.get_schema())
-    if db.session is not None:
-        out.update(await db.session.get_schema())
     return out
 
 
@@ -40,7 +38,7 @@ async def table_names() -> list[str]:
 
 async def run(sql: str) -> QueryResult:
     db = get_db()
-    adapter = db.any_adapter
+    adapter = db.primary
     if adapter is None:
         raise RuntimeError("No database connected")
     return await adapter.execute(sql)
@@ -48,7 +46,7 @@ async def run(sql: str) -> QueryResult:
 
 async def explain(sql: str) -> str:
     db = get_db()
-    adapter = db.any_adapter
+    adapter = db.primary
     if adapter is None:
         raise RuntimeError("No database connected")
     return await adapter.explain(sql)

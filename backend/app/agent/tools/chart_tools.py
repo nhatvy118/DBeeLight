@@ -108,7 +108,7 @@ async def generate_chart(
     title: str = "", layout: str = "",
 ) -> str:
     db = get_db()
-    adapter = db.any_adapter
+    adapter = db.primary
     if adapter is None:
         return "No database connected."
     if mark not in _MARKS:

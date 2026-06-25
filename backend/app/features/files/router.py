@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
+from app.features.auth import repository as auth_repo
 from app.features.auth.deps import get_current_user_id
 from app.features.files import repository as repo
 from app.features.files import service
@@ -42,13 +43,10 @@ def _meta(row: dict) -> dict:
         "mime_type": mimetypes.guess_type(fn)[0] or "application/octet-stream",
         "size_bytes": int(row.get("size_bytes") or 0),
         "uploaded_at": created.isoformat() if isinstance(created, datetime) else created,
-        # How this file can be used: "query" = imported as a Q&A table (SQL-queryable);
-        # "workbook" = an Excel-mode file the Excel tools edit. Drives the FE source badges.
-        "kind": "query" if (row.get("sqlite_db_path") and row.get("table_name")) else "workbook",
     }
 
 
-_IMPORT_MODES = ("project_db", "qa", "excel")
+_IMPORT_MODES = ("project_db", "excel")
 
 
 @router.post("/upload")
@@ -68,9 +66,9 @@ async def upload(
     content = await _read_limited(file, _QUOTA_BYTES)
 
     # Cumulative quota: per-file size was capped above; also reject when the user's TOTAL stored
-    # bytes would exceed the limit. Only 'qa'/'excel' persist into `files` (project_db lives in the
+    # bytes would exceed the limit. Only 'excel' persists into `files` (project_db lives in the
     # user's own DB and is not counted as our storage).
-    if import_mode in ("qa", "excel"):
+    if import_mode == "excel":
         used, _ = await repo.user_storage(user_id)
         if used + len(content) > _QUOTA_BYTES:
             raise HTTPException(
@@ -82,6 +80,13 @@ async def upload(
     project_db_url: str | None = None
     pid = project_id or sess.get("project_id")
     if import_mode == "project_db":
+        # Viewers (non-technical) may upload + EDIT Excel files, but never import into a database.
+        me = await auth_repo.get_user(user_id)
+        if (me or {}).get("role") == "viewer":
+            raise HTTPException(
+                status_code=403,
+                detail="Viewers can edit Excel files, but can't import data into the database.",
+            )
         if not pid:
             raise HTTPException(status_code=400, detail="No project to import into")
         project_db_url = await proj_service.resolve_db_url(pid, user_id)

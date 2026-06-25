@@ -1,4 +1,5 @@
-"""Classify intent → one of 7 orchestrator branches (single LLM call)."""
+"""Classify intent → one of 6 routes (single LLM call). Excel-file editing is routed
+deterministically upstream (when a workbook is uploaded), so it is not classified here."""
 from __future__ import annotations
 
 import json
@@ -17,7 +18,7 @@ Route = Literal[
 ]
 _VALID: set[str] = {
     "db_readonly", "db_create_table", "db_mutation",
-    "db_general", "excel", "chart", "off_topic",
+    "db_general", "chart", "off_topic",
 }
 ACCESS_LEVEL: dict[str, str] = {
     "db_readonly": "read_data",
@@ -60,12 +61,8 @@ SQL. The SQL terms below are only anchors for what each route covers.
                     churn", trends, comparisons, root-cause. The agent inspects the schema and
                     runs SEVERAL read-only queries, then reasons toward an answer. Read-only
                     (never changes data) — distinct from db_readonly's single-result lookup.
-- excel           : Operating on an Excel FILE the user already uploaded — format cells,
-                    formulas, sheets, in-file charts, clean/edit the workbook. Acts on the
-                    FILE only; it does NOT query the database. (Exporting DATABASE data is a
-                    read → db_readonly, not here.)
 - chart           : The request is to VISUALIZE database data — "plot", "chart", "graph",
-                    "visualize", "draw", "bar/line/pie chart". Chart inside an Excel file → excel.
+                    "visualize", "draw", "bar/line/pie chart".
 - off_topic       : NOT about data, databases, files, or charts — greetings, small talk,
                     weather, general knowledge, jokes, opinions, advice that needs no query.
 
@@ -77,8 +74,7 @@ SQL. The SQL terms below are only anchors for what each route covers.
    NOT default to the destructive route — clarify instead (see needs_clarification reason A).
 2. "Show top N and plot" → chart (downstream agent fetches the data).
 3. "Export / download / save the data as Excel/CSV" is a READ of the database → db_readonly
-   (it returns the rows; turning them into a file is a UI action). Route to `excel` ONLY when
-   the user operates on an Excel FILE they uploaded (not when they want DB data exported).
+   (it returns the rows; turning them into a file is a UI action).
 4. "Create table + insert sample data" → db_create_table (downstream handles the insert).
 5. LOOKUP vs ANALYSIS/MEANING (both read-only):
    - One SELECT that returns a table/number the user wants to SEE → db_readonly
@@ -90,7 +86,7 @@ SQL. The SQL terms below are only anchors for what each route covers.
 # Output fields
 
 ## route
-One of the seven routes above. Set to null ONLY when needs_clarification=true.
+One of the six routes above. Set to null ONLY when needs_clarification=true.
 
 ## needs_clarification
 true ONLY when one of these holds (set route=null and write a clarification_question):
@@ -110,7 +106,6 @@ B. Missing target — the request names an action but gives NO concrete target t
      because it cannot default to "all columns". "add a column to orders" / "drop a
      column from students" (no column named) → clarify which column.
    - chart: needs what to plot. "draw a chart" (no metric / dimension) → clarify.
-   - excel: an Excel action with nothing to act on → clarify.
    - db_create_table: "create a table" with no name → clarify the name. A name is enough
      (columns are filled later in the schema editor), so "a table for students" → route.
 
@@ -127,7 +122,6 @@ you are clarifying:
   - db_mutation: which table / rows / condition / value (or, for "add a column",
     the column name and type)
   - chart: what data to plot — which metric and dimension (and chart type if relevant)
-  - excel: which file / sheet / range and what operation
   (db_readonly never reaches here — reads are never clarified, see reason B.)
 Rules:
 - Be SPECIFIC — name the missing piece. Never ask a vague "what do you mean?".
@@ -137,7 +131,7 @@ Rules:
 
 JSON only. No markdown fences, no commentary. Exact schema:
 {
-  "route": "<one of the seven, or null when needs_clarification=true>",
+  "route": "<one of the six, or null when needs_clarification=true>",
   "needs_clarification": <bool>,
   "clarification_question": "<question to ask user, or null>"
 }

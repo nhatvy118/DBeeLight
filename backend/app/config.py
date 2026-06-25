@@ -23,7 +23,6 @@ class Settings(BaseSettings):
 
     # Storage
     data_root: str = "./_data"
-    sqlite_allowed_dirs: str = "./_data/databases:./_data/temp_dbs"
 
     # Auth (cookie session)
     google_client_id: str = ""
@@ -55,14 +54,6 @@ class Settings(BaseSettings):
         return Path(self.data_root) / "databases"
 
     @property
-    def temp_dbs_dir(self) -> Path:
-        return Path(self.data_root) / "temp_dbs"
-
-    @property
-    def allowed_dirs(self) -> list[Path]:
-        return [Path(p).resolve() for p in self.sqlite_allowed_dirs.split(":") if p.strip()]
-
-    @property
     def cors_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
@@ -75,5 +66,4 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     s = Settings()
     s.databases_dir.mkdir(parents=True, exist_ok=True)
-    s.temp_dbs_dir.mkdir(parents=True, exist_ok=True)
     return s
