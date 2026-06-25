@@ -1,19 +1,15 @@
 import { useState } from 'react';
 import { Icons, type IconComponent } from '../../icons';
-import { toast } from '../Toaster';
 
 type AttachMenuProps = {
   /** Open the OS file picker (device upload). */
   onUploadDevice: () => void;
-  /** Import from Google Drive. When omitted, the option shows a placeholder. */
-  onGoogleDrive?: () => void;
   disabled?: boolean;
 };
 
-/** The "+" attach button with a popup offering "Upload from device" and
- *  "Google Drive" — ported from the Chat/ design prototype (app.jsx Composer).
+/** The "+" attach button with a popup offering "Upload from device".
  *  Manages its own open state so it can drop into the composer unchanged. */
-export default function AttachMenu({ onUploadDevice, onGoogleDrive, disabled }: AttachMenuProps) {
+export default function AttachMenu({ onUploadDevice, disabled }: AttachMenuProps) {
   const [open, setOpen] = useState(false);
 
   const options: { icon: IconComponent; label: string; sub: string; act: () => void }[] = [
@@ -22,16 +18,6 @@ export default function AttachMenu({ onUploadDevice, onGoogleDrive, disabled }: 
       label: 'Upload from device',
       sub: 'Spreadsheets (.xlsx, .xls, .xlsb, .ods, .csv)',
       act: () => { setOpen(false); onUploadDevice(); },
-    },
-    {
-      icon: Icons.Drive,
-      label: 'Google Drive',
-      sub: 'Import an Excel file',
-      act: () => {
-        setOpen(false);
-        if (onGoogleDrive) onGoogleDrive();
-        else toast.info('Google Drive import is coming soon.');
-      },
     },
   ];
 
