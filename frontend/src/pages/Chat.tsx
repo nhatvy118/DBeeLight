@@ -18,6 +18,7 @@ import {
   uploadSessionFile,
   downloadStoredSessionFile,
   saveChart,
+  listProjectTables,
   type SessionInfo,
   type SessionFileMeta,
   type ImportMode,
@@ -28,6 +29,7 @@ import {
   type ProjectKind,
 } from '../services/api';
 import ConnectionInfoModal from '../components/modals/ConnectionInfoModal';
+import DescribeTableModal from '../components/modals/DescribeTableModal';
 import {
   readSqlPreview,
   readSchemaPreview,
@@ -76,6 +78,16 @@ type ChatProps = {
   viewer?: boolean;
 };
 
+/** Deterministic, non-LLM confirmation line shown after a "Save to database" import (that path
+ *  doesn't call the AI, so this is the only feedback the user gets). */
+function importConfirmation(fileNames: string[], createdTables: string[], appendedTo: string | null): string {
+  const files = fileNames.length ? fileNames.join(', ') : 'the file';
+  if (appendedTo) return `✓ Appended ${files} into the existing table \`${appendedTo}\`.`;
+  if (createdTables.length === 1) return `✓ Imported ${files} into a new table \`${createdTables[0]}\`. Ask me anything about it.`;
+  if (createdTables.length > 1) return `✓ Imported ${files} into new tables: ${createdTables.map((t) => `\`${t}\``).join(', ')}.`;
+  return `✓ Imported ${files} into the project database.`;
+}
+
 export default function Chat({ projectId: propProjectId, sessionId: propSessionId, onSessionIdChange, viewer = false }: ChatProps) {
   const [query, setQuery] = useState<string>('');
   const [messages, setMessages] = useState<UiMessage[]>([]);
@@ -104,8 +116,18 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   } | null>(null);
   /** Whether to show the "Save data / Q&A only" question above the input. */
   const [pendingStorageChoice, setPendingStorageChoice] = useState(false);
+  /** Sub-step shown after "Save to database": pick new-table vs an existing table to append to.
+   *  null = not in that step; otherwise carries the project's tables (loading flag). */
+  const [dbTablesPicker, setDbTablesPicker] = useState<{ loading: boolean; tables: string[] } | null>(null);
+  /** Chosen append target in the db sub-step. '' = create a new table. */
+  const [appendTarget, setAppendTarget] = useState<string>('');
+  /** Tables just created by an import, awaiting the optional "describe table" step (one at a time). */
+  const [describeQueue, setDescribeQueue] = useState<{ name: string; columns: string[] }[]>([]);
   /** Message payload waiting to be sent after storage choice is made. */
   const pendingSendPayloadRef = useRef<string | null>(null);
+  /** Summary of the most recent import, captured in uploadStagedFiles and read right after by
+   *  handleStorageChoice to build the deterministic confirmation line. */
+  const lastImportRef = useRef<{ mode: ImportMode; fileNames: string[]; createdTables: string[]; appendedTo: string | null } | null>(null);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [typingStopSignal, setTypingStopSignal] = useState(0);
   // Live progress label streamed from the backend (e.g. "Đang sinh SQL...").
@@ -127,10 +149,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const scopedFileIds = (fileIds: string[]): string[] => (fileIds.length ? fileIds : ['__primary_db__']);
 
   const handleToggleDataSource = (src: DataSource) => {
-    setActiveDataSources((prev) => {
-      const selected = prev.some((s) => s.id === src.id);
-      return selected ? prev.filter((s) => s.id !== src.id) : [...prev, src];
-    });
+    // Single-select: only one active file at a time. Clicking the selected one clears it (→ ask the
+    // DB); clicking another replaces the selection. Picking an Excel file routes the turn to editing.
+    setActiveDataSources((prev) => (prev.some((s) => s.id === src.id) ? [] : [src]));
   };
 
   // Primary DB shown in the data-source selector. The backend is the source of truth
@@ -369,6 +390,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const uploadStagedFiles = async (
     importMode: ImportMode,
     filesToUpload: { localId: string; file: File; filename: string }[],
+    targetTable: string | null = null,
   ): Promise<{ id: string; filename: string }[]> => {
     if (filesToUpload.length === 0) return [];
 
@@ -405,10 +427,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             staged.file,
             importMode,
             selectedProject?.id || propProjectId || null,
+            targetTable,
           ),
         ),
       );
 
+      const createdTables: { name: string; columns: string[] }[] = [];
       for (let i = 0; i < results.length; i++) {
         const result = results[i];
         const staged = filesToUpload[i];
@@ -417,6 +441,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         if (result.status === 'fulfilled') {
           const up = result.value.file;
           uploaded.push({ id: up.id, filename: up.filename });
+          if (result.value.tables) createdTables.push(...result.value.tables);
           continue;
         }
 
@@ -431,20 +456,31 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         }
       }
 
+      // Stash a summary so handleStorageChoice can show a deterministic import confirmation.
+      lastImportRef.current = {
+        mode: importMode,
+        fileNames: uploaded.map((u) => u.filename),
+        createdTables: createdTables.map((t) => t.name),
+        appendedTo: targetTable,
+      };
+
+      // New project tables → queue the "describe this table" step (data dictionary).
+      if (importMode === 'project_db' && !targetTable && createdTables.length > 0) {
+        setDescribeQueue(createdTables);
+      }
+
       if (sid && uploaded.length > 0) {
         const uploadedIds = new Set(uploaded.map((u) => u.id));
         listSessionFiles(sid)
           .then((files) => {
             setSessionFiles(files);
-            // Auto-scope this turn to the files just uploaded (intent: ask about them).
-            // Only the new files — don't re-add ones the user deliberately unticked.
+            // Single-select: make the freshly-uploaded Excel workbook the sole active source so the
+            // next turn edits it. project_db imports leave no `files` row → justUploaded is empty →
+            // selection clears (next turn asks the project DB).
             const justUploaded: DataSource[] = files
               .filter((f) => uploadedIds.has(f.id))
               .map((f) => ({ type: 'file', id: f.id, filename: f.filename, mime_type: f.mime_type, uploaded_at: f.uploaded_at ?? null }));
-            setActiveDataSources((prev) => {
-              const have = new Set(prev.map((s) => s.id));
-              return [...prev, ...justUploaded.filter((s) => !have.has(s.id))];
-            });
+            setActiveDataSources(justUploaded.slice(0, 1));
           })
           .catch(() => {});
       }
@@ -562,19 +598,20 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     el.style.overflowY = scrollHeight > MAX_TEXTAREA_HEIGHT ? 'auto' : 'hidden';
   }, [query]);
 
-  const doSend = async (text: string) => {
+  // `activeFileIdsOverride` scopes this turn to specific files instead of the activeDataSources
+  // state — needed right after an upload, where the state hasn't propagated to this closure yet
+  // (so the just-uploaded workbook would otherwise be missed and the Excel route wouldn't fire).
+  const doSend = async (text: string, activeFileIdsOverride?: string[]) => {
     setIsSending(true);
     setIsAssistantTyping(false);
     setStreamingStage('Processing');
     const controller = new AbortController();
     sendAbortControllerRef.current = controller;
-    console.log('Sending message with sessionId:', sessionId);
-    console.log('Selected project:', selectedProject);
     try {
       const finalRes = await sendMessageWithStream(text, sessionId, selectedProject?.id || null, {
         onStage: (m) => setStreamingStage(m),
         signal: controller.signal,
-        activeFileIds: scopedFileIds(getActiveFileIds(activeDataSources)),
+        activeFileIds: scopedFileIds(activeFileIdsOverride ?? getActiveFileIds(activeDataSources)),
       });
       setStreamingStage(null);
       // ChatResponse is a discriminated union; downstream code reads optional
@@ -596,6 +633,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               const sqlAction = resolveSqlExecuteAction((res as any).tool_events, pendingResume);
               return {
                 sqlToExecute: sqlAction.sqlToExecute,
+                sqlActionId: readSqlPreview((res as any).tool_events)?.actionId,
                 sqlActionState: sqlAction.sqlActionState,
                 workflowResumePending: pendingResume,
               };
@@ -608,6 +646,18 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             schemaLocked: false,
           },
         ]);
+
+        // Supersede: disable any earlier gated card the backend just cancelled (live, no reload).
+        const cancelledIds = ((res as { cancelled_action_ids?: string[] }).cancelled_action_ids) ?? [];
+        if (cancelledIds.length > 0) {
+          const cset = new Set(cancelledIds);
+          setMessages((prev) => prev.map((m) => {
+            const aid = m.schemaPreview?.actionId ?? m.sqlActionId;
+            return aid && cset.has(aid)
+              ? { ...m, schemaLocked: true, schemaCancelled: true, sqlActionState: 'cancelled' as const }
+              : m;
+          }));
+        }
 
         if (res.session_id) {
           const newSessionId = res.session_id;
@@ -672,7 +722,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     { icon: React.ReactNode; bg: string; color: string; title: string; desc: string }
   > = {
     project_db: { icon: <Icons.Database size={17} />, bg: 'var(--green-soft)', color: 'var(--green-ink)', title: 'Save to database', desc: "Store this file's data in your project database so you can query it anytime." },
-    qa: { icon: <Icons.Question size={17} />, bg: 'var(--surface-3)', color: 'var(--text-soft)', title: 'Q&A only', desc: "Ask about this file now — don't store it in the database." },
     excel: { icon: <Icons.Pencil size={17} />, bg: 'var(--accent-soft)', color: 'var(--accent-ink)', title: 'Edit in Excel', desc: 'Let the assistant open and edit this workbook with the Excel tools.' },
   };
 
@@ -687,7 +736,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (!anyTabular) return [];
     const modes: ImportMode[] = [];
     if (canUseProjectDb) modes.push('project_db');
-    modes.push('qa', 'excel');
+    modes.push('excel');
     return modes;
   };
 
@@ -709,7 +758,8 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     if (!displayText) return;
 
     // project_db needs a real project (the session sandbox / Excel modes don't).
-    const canUseProjectDb = !!(selectedProject?.id || propProjectId);
+    // Viewers can only edit Excel — never import into the project DB.
+    const canUseProjectDb = !viewer && !!(selectedProject?.id || propProjectId);
     const modes = stagedFiles.length > 0 ? availableImportModes(stagedFiles, canUseProjectDb) : [];
 
     // Staged a file we can't import (not CSV/Excel) → refuse before rendering the turn.
@@ -729,6 +779,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
 
     // Exactly one possible destination → no need to ask; upload with it then send.
+    let uploadedIdsForSend: string[] | undefined;
     if (modes.length === 1) {
       const captured = [...stagedFiles];
       let uploaded: { id: string; filename: string }[];
@@ -740,23 +791,45 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       }
       if (uploaded.length === 0) return; // upload failed → don't send a dangling turn
       setStagedFiles([]);
-      // Files are bound to the session server-side; the user text is sent as-is.
+      // Scope this turn to the just-uploaded file(s) so the Excel route fires immediately (the
+      // activeDataSources state update hasn't reached doSend's closure yet).
+      uploadedIdsForSend = uploaded.map((u) => u.id);
     }
 
-    await doSend(displayText);
+    await doSend(displayText, uploadedIdsForSend);
   };
 
-  /** Called after user picks an import destination — upload staged files then send. */
-  const handleStorageChoice = async (mode: ImportMode) => {
+  /** User chose "Save to database": open the new-table-vs-existing sub-step. If the project has
+   *  no tables yet there's nothing to append to → import straight as a new table. */
+  const handlePickDatabase = async () => {
+    const pid = selectedProject?.id || propProjectId;
+    if (!pid) { void handleStorageChoice('project_db'); return; }
+    setDbTablesPicker({ loading: true, tables: [] });
+    setAppendTarget('');
+    try {
+      const tables = await listProjectTables(pid);
+      if (tables.length === 0) { void handleStorageChoice('project_db'); return; }
+      setDbTablesPicker({ loading: false, tables: tables.map((t) => t.name) });
+    } catch {
+      // Couldn't list tables → fall back to the new-table import rather than blocking the user.
+      void handleStorageChoice('project_db');
+    }
+  };
+
+  /** Called after user picks an import destination — upload staged files then send.
+   *  `targetTable` (project_db only) appends into an existing table instead of creating one. */
+  const handleStorageChoice = async (mode: ImportMode, targetTable: string | null = null) => {
     const captured = [...stagedFiles];
     setStagedFiles([]);
     setPendingStorageChoice(false);
+    setDbTablesPicker(null);
+    setAppendTarget('');
     const displayText = pendingSendPayloadRef.current ?? '';
     pendingSendPayloadRef.current = null;
 
     let uploaded: { id: string; filename: string }[] = [];
     try {
-      uploaded = await uploadStagedFiles(mode, captured);
+      uploaded = await uploadStagedFiles(mode, captured, targetTable);
     } catch (err) {
       if (err instanceof Error && err.message === 'session_create_failed') {
         setStagedFiles(captured);
@@ -774,9 +847,21 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       return;
     }
 
-    // Uploaded files are bound to the session server-side; send the user text as-is.
-    void uploaded;
-    await doSend(displayText);
+    // "Save to database" is a pure storage action: keep the user's text as history (already
+    // rendered) and show a deterministic confirmation — do NOT send it to the AI. The other
+    // destinations (Q&A, Excel) forward the text as a real prompt.
+    if (mode === 'project_db') {
+      const imp = lastImportRef.current;
+      lastImportRef.current = null;
+      if (imp) {
+        setMessages((prev) => [...prev, { text: importConfirmation(imp.fileNames, imp.createdTables, imp.appendedTo), isUser: false }]);
+      }
+      return;
+    }
+    lastImportRef.current = null;
+    // Scope this turn to the just-uploaded workbook so the Excel route fires immediately (the
+    // activeDataSources state update hasn't reached doSend's closure yet).
+    await doSend(displayText, uploaded.map((u) => u.id));
   };
 
   /** Start a fresh chat inside the current project (from the project view). */
@@ -1122,7 +1207,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const handleExecuteSql = async (aiIndex: number) => {
     const msg = messages[aiIndex];
-    if (!msg || !msg.sqlToExecute || isSending || msg.sqlActionState === 'running' || msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled') return;
+    if (!msg || !msg.sqlToExecute || isSending || msg.sqlActionState === 'running' || msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled' || msg.sqlActionState === 'failed') return;
     if (!sessionId) {
       setMessages((prev) => [...prev, { text: 'Error: No session — cannot execute SQL.', isUser: false }]);
       return;
@@ -1480,12 +1565,12 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          {!viewer && (
-            <AttachMenu
-              onUploadDevice={() => fileInputRef.current?.click()}
-              disabled={isUploadingFile}
-            />
-          )}
+          {/* Viewers can upload too — but only to EDIT in Excel (project_db import is blocked for
+              them in availableImportModes + the backend). */}
+          <AttachMenu
+            onUploadDevice={() => fileInputRef.current?.click()}
+            disabled={isUploadingFile}
+          />
           {/* Data source selector — files only; empty selection = ask the database. */}
           {(() => {
             const sources = buildDataSources(sessionFiles);
@@ -1495,6 +1580,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                   sources={sources}
                   active={activeDataSources}
                   onToggle={handleToggleDataSource}
+                  onClear={() => setActiveDataSources([])}
                   dbLabel={primaryDbLabel}
                 />
               </div>
@@ -1541,14 +1627,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         <span style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text)' }}>How do you want to use this file?</span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12 }}>
-        {availableImportModes(stagedFiles, !!(selectedProject?.id || propProjectId)).map((mode) => {
+        {availableImportModes(stagedFiles, !viewer && !!(selectedProject?.id || propProjectId)).map((mode) => {
           const opt = IMPORT_MODE_META[mode];
           return (
           <button
             key={mode}
             type="button"
-            onClick={() => void handleStorageChoice(mode)}
-            disabled={isUploadingFile}
+            onClick={() => { if (mode === 'project_db') void handlePickDatabase(); else void handleStorageChoice(mode); }}
+            disabled={isUploadingFile || dbTablesPicker?.loading}
             className="focusable"
             style={{ display: 'flex', alignItems: 'flex-start', gap: 12, textAlign: 'left', padding: '12px 14px', borderRadius: 'var(--r-sm)', border: '1px solid var(--border)', background: 'var(--surface)', transition: 'all .13s', opacity: isUploadingFile ? 0.6 : 1, cursor: isUploadingFile ? 'default' : 'pointer' }}
             onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.background = 'var(--accent-soft)'; }}
@@ -1562,6 +1648,44 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           </button>
           );
         })}
+
+        {dbTablesPicker?.loading && (
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '8px 4px' }}>Loading tables…</div>
+        )}
+
+        {dbTablesPicker && !dbTablesPicker.loading && (
+          <div className="card" style={{ padding: 14, borderRadius: 'var(--r-sm)', display: 'flex', flexDirection: 'column', gap: 12, background: 'var(--green-soft)', borderColor: 'var(--green-soft-2, var(--border))' }}>
+            <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)' }}>Save to database</span>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, cursor: 'pointer', fontSize: 13.5 }}>
+              <input type="radio" name="dbtarget" checked={appendTarget === ''} onChange={() => setAppendTarget('')} style={{ marginTop: 2 }} />
+              <span><b>Create a new table</b><span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>A fresh table named after the file.</span></span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, cursor: 'pointer', fontSize: 13.5 }}>
+              <input type="radio" name="dbtarget" checked={appendTarget !== ''} onChange={() => setAppendTarget(dbTablesPicker.tables[0] || '')} style={{ marginTop: 2 }} />
+              <span style={{ flex: 1 }}>
+                <b>Append to an existing table</b>
+                <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Add the file's rows; columns are matched by name.</span>
+                <select
+                  value={appendTarget}
+                  disabled={appendTarget === ''}
+                  onChange={(e) => setAppendTarget(e.target.value)}
+                  className="field"
+                  style={{ width: '100%', maxWidth: 320, padding: '8px 10px', fontSize: 13.5 }}
+                >
+                  {dbTablesPicker.tables.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </span>
+            </label>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button type="button" className="btn btn-outline" style={{ padding: '8px 14px', fontSize: 13.5 }} disabled={isUploadingFile}
+                onClick={() => { setDbTablesPicker(null); setAppendTarget(''); }}>Back</button>
+              <button type="button" className="btn btn-primary" style={{ padding: '8px 16px', fontSize: 13.5 }} disabled={isUploadingFile}
+                onClick={() => void handleStorageChoice('project_db', appendTarget || null)}>
+                {appendTarget ? `Append to ${appendTarget}` : 'Create table'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   ) : null;
@@ -1750,6 +1874,14 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         <ConnectionInfoModal
           project={{ id: selectedProject.id, name: selectedProject.name }}
           onClose={() => setShowConnInfo(false)}
+        />
+      )}
+
+      {describeQueue.length > 0 && (selectedProject?.id || propProjectId) && (
+        <DescribeTableModal
+          projectId={(selectedProject?.id || propProjectId)!}
+          table={describeQueue[0]}
+          onDone={() => setDescribeQueue((q) => q.slice(1))}
         />
       )}
     </div>

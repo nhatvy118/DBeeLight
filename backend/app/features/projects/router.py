@@ -10,6 +10,7 @@ from app.features.projects.schema import (
     ExternalProjectCreate,
     ProjectCreate,
     ProjectOut,
+    TableDescriptions,
 )
 
 
@@ -93,6 +94,41 @@ async def get_one(project_id: str, user_id: str = Depends(get_current_user_id)) 
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
     return _to_out(p)
+
+
+@router.get("/{project_id}/tables")
+async def list_tables(project_id: str, user_id: str = Depends(get_current_user_id)) -> dict:
+    """Tables in the project DB (owner-only) — the target picker for appending an uploaded file."""
+    try:
+        tables = await service.list_tables(project_id, user_id)
+    except service.ProjectError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"success": True, "tables": tables}
+
+
+@router.post("/{project_id}/tables/{table}/describe-suggest")
+async def describe_suggest(project_id: str, table: str,
+                          user_id: str = Depends(get_current_user_id)) -> dict:
+    """LLM-suggested table + column descriptions to pre-fill the describe-table form."""
+    try:
+        suggestion = await service.suggest_table_descriptions(project_id, user_id, table)
+    except service.ProjectError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"success": True, "suggestion": suggestion}
+
+
+@router.put("/{project_id}/tables/{table}/description")
+async def save_table_description(project_id: str, table: str, body: TableDescriptions,
+                                 user_id: str = Depends(get_current_user_id)) -> dict:
+    """Save the user-edited data-dictionary entries for an imported table (owner-only)."""
+    try:
+        await service.save_table_descriptions(
+            project_id, user_id, table, body.tableDescription,
+            [c.model_dump() for c in body.columns],
+        )
+    except service.ProjectError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"success": True}
 
 
 @router.delete("/{project_id}")

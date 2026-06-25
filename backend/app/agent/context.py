@@ -20,16 +20,8 @@ if TYPE_CHECKING:
 class DbContext:
     """Connection scope of a request."""
 
-    primary: Optional["DatabaseAdapter"] = None      # project DB
-    session: Optional["DatabaseAdapter"] = None       # SQLite of files uploaded in the session
-    allowed_tables: Optional[frozenset[str]] = None   # restrict tables of the session file
+    primary: Optional["DatabaseAdapter"] = None      # project DB (the only queryable source)
     engine: str = "postgresql"                        # 'sqlite' | 'postgresql' (cho dialect rules)
-
-    @property
-    def any_adapter(self) -> Optional["DatabaseAdapter"]:
-        # Primary and session are mutually exclusive per request (see chat._build_ctx),
-        # so "the one that's set" is the request's adapter.
-        return self.primary or self.session
 
 
 @dataclass

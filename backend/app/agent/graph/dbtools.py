@@ -23,13 +23,11 @@ def engine_name() -> str:
 
 
 async def full_schema() -> dict[str, list]:
-    """Full schema {table: [Column]} across primary + session DBs, each in ONE query."""
+    """Full schema {table: [Column]} of the project DB, in ONE query."""
     db = get_db()
     out: dict[str, list] = {}
     if db.primary is not None:
         out.update(await db.primary.get_schema())
-    if db.session is not None:
-        out.update(await db.session.get_schema())
     return out
 
 
@@ -40,7 +38,7 @@ async def table_names() -> list[str]:
 
 async def run(sql: str) -> QueryResult:
     db = get_db()
-    adapter = db.any_adapter
+    adapter = db.primary
     if adapter is None:
         raise RuntimeError("No database connected")
     return await adapter.execute(sql)
@@ -48,7 +46,7 @@ async def run(sql: str) -> QueryResult:
 
 async def explain(sql: str) -> str:
     db = get_db()
-    adapter = db.any_adapter
+    adapter = db.primary
     if adapter is None:
         raise RuntimeError("No database connected")
     return await adapter.explain(sql)
@@ -130,6 +128,30 @@ def classify_access(sql: str, engine: str = "sqlite") -> AccessInfo:
 def is_read_only(sql: str, engine: str = "sqlite") -> bool:
     """Convenience bool wrapper over classify_access (True only for read-only SQL)."""
     return classify_access(sql, engine).access == "read_only"
+
+
+def is_bare_create_table(sql: str, engine: str = "sqlite") -> bool:
+    """True if the batch CREATEs a new TABLE WITHOUT dropping or renaming one — a plain table
+    creation that belongs on the create-table flow, not the mutation path. The recreate-for-ALTER
+    pattern (the only legit reason a mutation creates a table) always RENAMEs the original away and
+    DROPs it, so the presence of any DROP/ALTER means it's a recreate, not a bare create."""
+    raw = (sql or "").strip().rstrip(";")
+    if not raw:
+        return False
+    try:
+        nodes = [s for s in sqlglot.parse(raw, read=_dialect(engine) or None) if s is not None]
+    except Exception:  # noqa: BLE001
+        return False
+    has_create_table = has_drop = has_alter = False
+    for node in nodes:
+        for c in node.find_all(exp.Create):
+            if str(c.args.get("kind") or "").upper() == "TABLE":
+                has_create_table = True
+        if next(node.find_all(exp.Drop), None) is not None:
+            has_drop = True
+        if next(node.find_all(exp.Alter), None) is not None:
+            has_alter = True
+    return has_create_table and not has_drop and not has_alter
 
 
 async def verify_with_explain(sql: str) -> tuple[bool, str]:

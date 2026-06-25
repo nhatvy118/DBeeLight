@@ -23,7 +23,6 @@ class Settings(BaseSettings):
 
     # Storage
     data_root: str = "./_data"
-    sqlite_allowed_dirs: str = "./_data/databases:./_data/temp_dbs"
 
     # Auth (cookie session)
     google_client_id: str = ""
@@ -33,6 +32,11 @@ class Settings(BaseSettings):
     session_https_only: bool = False
     frontend_url: str = "http://localhost:5173"
     public_base_url: str = ""  # if set, used as the redirect_uri base for Google OAuth
+
+    # Email (Resend). Leave the API key blank to disable email — invite/share still work, just
+    # without a notification. resend_from must be a verified sender on your Resend domain.
+    resend_api_key: str = ""
+    resend_from: str = "noreply@dbeelight.local"
 
     # Invite-only access: these emails can always sign in AS ADMIN even with no invite/user row,
     # so an operator can never be locked out (comma-separated).
@@ -50,14 +54,6 @@ class Settings(BaseSettings):
         return Path(self.data_root) / "databases"
 
     @property
-    def temp_dbs_dir(self) -> Path:
-        return Path(self.data_root) / "temp_dbs"
-
-    @property
-    def allowed_dirs(self) -> list[Path]:
-        return [Path(p).resolve() for p in self.sqlite_allowed_dirs.split(":") if p.strip()]
-
-    @property
     def cors_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
@@ -70,5 +66,4 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     s = Settings()
     s.databases_dir.mkdir(parents=True, exist_ok=True)
-    s.temp_dbs_dir.mkdir(parents=True, exist_ok=True)
     return s

@@ -53,9 +53,17 @@ async def generate_sql(
             f"Generate one or more {engine} statements that edit data or schema for the request. "
             f"Use several statements separated by ';' when the request needs them.{dialect_note}"
         )
+    # Ground the model to the actual schema: the request may NAME a table that doesn't exist (e.g. a
+    # table that was only proposed but never created). The schema below is the source of truth.
+    grounding = (
+        " Use ONLY tables and columns that appear in the schema below; never assume or invent a table"
+        " or column the schema does not contain. If the request targets a table/column that is not in"
+        " the schema, do NOT guess — return no SQL. (You MAY create a new table only when the request"
+        " is explicitly to recreate/replace one, per the note above.)"
+    )
     client = get_llm()
     msgs: list[dict] = [
-        {"role": "system", "content": f"{instruction} Return SQL only, no explanation.\nSchema:\n{schema}"},
+        {"role": "system", "content": f"{instruction}{grounding} Return SQL only, no explanation.\nSchema:\n{schema}"},
         {"role": "user", "content": user_message},
     ]
     sql, err, kind = "", "No SQL generated", ("DQL" if read else "DML")

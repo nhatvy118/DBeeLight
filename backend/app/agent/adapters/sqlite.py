@@ -46,8 +46,6 @@ class SQLiteAdapter(DatabaseAdapter):
                     if col is not None:
                         col.unique = True
 
-        if self.allowed_tables is not None:
-            out = {t: c for t, c in out.items() if t in self.allowed_tables}
         return out
 
     async def explain(self, sql: str) -> str:

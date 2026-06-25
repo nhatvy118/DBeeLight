@@ -51,11 +51,13 @@ type Props = {
   sources: DataSource[];
   active: DataSource[];
   onToggle: (source: DataSource) => void;
+  /** Clear the file selection → ask the primary DB. */
+  onClear: () => void;
   /** Label of the primary DB, shown as the default target when no file is picked. */
   dbLabel: string | null;
 };
 
-export default function DataSourceBar({ sources, active, onToggle, dbLabel }: Props) {
+export default function DataSourceBar({ sources, active, onToggle, onClear, dbLabel }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -93,14 +95,37 @@ export default function DataSourceBar({ sources, active, onToggle, dbLabel }: Pr
       {open && (
         <div className="card pop-shadow scale-in" style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 31, width: 320, maxWidth: '78vw', borderRadius: 'var(--r)', overflow: 'hidden', transformOrigin: 'bottom left' }}>
           <div style={{ padding: '12px 14px 10px', borderBottom: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-faint)', marginBottom: 2 }}>Ask about</div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-faint)', marginBottom: 2 }}>Files in this chat</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               {dbLabel
-                ? <>Leave empty to ask <b>{dbLabel}</b>, or pick file(s) to ask only those.</>
-                : <>Pick the file(s) you want to ask about.</>}
+                ? <>Leave empty to ask <b>{dbLabel}</b>, or pick an <b>Excel</b> file to edit it.</>
+                : <>Pick an <b>Excel</b> file to edit.</>}
             </div>
           </div>
-          <div style={{ maxHeight: 280, overflowY: 'auto', padding: 6 }}>
+          <div style={{ maxHeight: 300, overflowY: 'auto', padding: 6 }}>
+            {/* Explicit "ask the database" option (selected when no file is picked) so it's clear
+                you can always go back to the project DB without hunting for a deselect. */}
+            {dbLabel && (() => {
+              const checked = active.length === 0;
+              return (
+                <div
+                  onClick={() => { onClear(); }}
+                  className="focusable"
+                  style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '9px 10px', borderRadius: 'var(--r-sm)', cursor: 'pointer', transition: 'background .12s', background: checked ? 'var(--accent-soft)' : 'transparent' }}
+                  onMouseEnter={(e) => { if (!checked) e.currentTarget.style.background = 'var(--surface-2)'; }}
+                  onMouseLeave={(e) => { if (!checked) e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <span style={{ width: 18, height: 18, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', border: `2px solid ${checked ? 'var(--accent-strong)' : 'var(--border-strong)'}`, background: 'transparent' }}>
+                    {checked && <span style={{ width: 9, height: 9, borderRadius: 99, background: 'var(--accent-strong)' }} />}
+                  </span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'var(--green-soft)', color: 'var(--green-ink)' }}><Icons.Database size={16} /></span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, color: checked ? 'var(--accent-ink)' : 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dbLabel}</span>
+                    <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text-muted)' }}>Ask the project database</span>
+                  </span>
+                </div>
+              );
+            })()}
             {sources.map((src) => {
               const checked = isChecked(src);
               const sub = formatUploadTime(src.uploaded_at) || `${getFileTypeInfo(src.filename, src.mime_type).label} file`;
@@ -113,8 +138,8 @@ export default function DataSourceBar({ sources, active, onToggle, dbLabel }: Pr
                   onMouseEnter={(e) => { if (!checked) e.currentTarget.style.background = 'var(--surface-2)'; }}
                   onMouseLeave={(e) => { if (!checked) e.currentTarget.style.background = 'transparent'; }}
                 >
-                  <span style={{ width: 18, height: 18, borderRadius: 5, flexShrink: 0, display: 'grid', placeItems: 'center', border: `2px solid ${checked ? 'var(--accent-strong)' : 'var(--border-strong)'}`, background: checked ? 'var(--accent-strong)' : 'transparent', color: 'var(--on-accent)' }}>
-                    {checked && <Icons.Check size={12} />}
+                  <span style={{ width: 18, height: 18, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', border: `2px solid ${checked ? 'var(--accent-strong)' : 'var(--border-strong)'}`, background: 'transparent' }}>
+                    {checked && <span style={{ width: 9, height: 9, borderRadius: 99, background: 'var(--accent-strong)' }} />}
                   </span>
                   <FileTypeBadge filename={src.filename} mimeType={src.mime_type} size={30} radius={8} />
                   <span style={{ flex: 1, minWidth: 0 }}>

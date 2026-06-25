@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
+from app.features.auth import repository as auth_repo
 from app.features.auth.deps import get_current_user_id
 from app.features.files import repository as repo
 from app.features.files import service
@@ -45,7 +46,7 @@ def _meta(row: dict) -> dict:
     }
 
 
-_IMPORT_MODES = ("project_db", "qa", "excel")
+_IMPORT_MODES = ("project_db", "excel")
 
 
 @router.post("/upload")
@@ -54,6 +55,7 @@ async def upload(
     file: UploadFile = File(...),
     import_mode: str = Form(...),
     project_id: str | None = Form(None),
+    target_table: str | None = Form(None),
     user_id: str = Depends(get_current_user_id),
 ):
     sess = await sess_repo.get_session(session_id, user_id)
@@ -64,9 +66,9 @@ async def upload(
     content = await _read_limited(file, _QUOTA_BYTES)
 
     # Cumulative quota: per-file size was capped above; also reject when the user's TOTAL stored
-    # bytes would exceed the limit. Only 'qa'/'excel' persist into `files` (project_db lives in the
+    # bytes would exceed the limit. Only 'excel' persists into `files` (project_db lives in the
     # user's own DB and is not counted as our storage).
-    if import_mode in ("qa", "excel"):
+    if import_mode == "excel":
         used, _ = await repo.user_storage(user_id)
         if used + len(content) > _QUOTA_BYTES:
             raise HTTPException(
@@ -78,6 +80,13 @@ async def upload(
     project_db_url: str | None = None
     pid = project_id or sess.get("project_id")
     if import_mode == "project_db":
+        # Viewers (non-technical) may upload + EDIT Excel files, but never import into a database.
+        me = await auth_repo.get_user(user_id)
+        if (me or {}).get("role") == "viewer":
+            raise HTTPException(
+                status_code=403,
+                detail="Viewers can edit Excel files, but can't import data into the database.",
+            )
         if not pid:
             raise HTTPException(status_code=400, detail="No project to import into")
         project_db_url = await proj_service.resolve_db_url(pid, user_id)
@@ -88,10 +97,14 @@ async def upload(
         rec = await service.save_and_import(
             user_id, session_id, file.filename or "upload", content,
             mode=import_mode, project_id=pid, project_db_url=project_db_url,
+            target_table=(target_table or None),
         )
     except service.FileImportError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"file": _meta(rec)}
+    resp: dict = {"file": _meta(rec)}
+    if rec.get("tables"):  # project_db new-table import → let the FE prompt for descriptions
+        resp["tables"] = rec["tables"]
+    return resp
 
 
 @router.get("")

@@ -6,7 +6,7 @@ db_url does NOT come from the client: resolved server-side from the project (aft
 Supports:
 - Session owner: full permission (edit).
 - Share recipient: gated by permission vs the route access_level.
-- Files uploaded in the session: attach a session adapter (DbContext.session).
+- Uploaded Excel workbooks: edited via the Excel tools (not queried as a DB).
 """
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from app.agent import titling
 from app.agent.context import DbContext, RequestContext, reset_ctx, set_ctx
 from app.agent.orchestration import get_orchestrator
+from app.agent.orchestration.intent import Intent
 from app.agent.orchestration.orchestrator import ChatResult
-from app.agent.adapters import make_adapter
 from app.agent.pool import get_connection_pool
 from app.features.auth import repository as auth_repo
 from app.features.files import service as files_service
@@ -70,73 +70,38 @@ async def _authorize(user_id: str, session_id: str) -> _Access:
     return _Access(project_id=project_id, db_url=db_url)
 
 
-# Sentinel the frontend sends in active_file_ids to mean "the project / primary DB".
-PRIMARY_DB_SENTINEL = "__primary_db__"
-
 
 async def _build_ctx(
-    user_id: str, session_id: str, access: _Access, active_file_ids: list[str] | None = None
+    user_id: str, session_id: str, access: _Access, active_file_ids: list[str] | None = None,
+    *, require_source: bool = True,
 ) -> RequestContext:
-    """Build the per-request DB scope from the data sources picked for this turn.
+    """Build the per-request DB scope. The only queryable source is the project's primary DB
+    (project SQLite or external Postgres). Uploaded files are Excel workbooks edited via the
+    Excel tools, not queried — so they never form a SQL scope here.
 
-    The source is MUTUALLY EXCLUSIVE — the primary DB is the implicit default and is never a
-    pickable item; the user only picks uploaded files:
-    - any file ids        → ask ONLY those uploaded files' tables (session temp DB).
-    - empty / None / only  → ask the primary (project/external) DB.
-      PRIMARY_DB_SENTINEL
-
-    So "no file picked = ask the database" is derived here, not signalled by a sentinel (the old
-    PRIMARY_DB_SENTINEL is still tolerated: it is not a file id, so it leaves file_ids empty).
+    `require_source=False` (the Excel route) allows a turn with no queryable DB at all.
+    `active_file_ids` is accepted for signature symmetry but no longer scopes the query.
     """
     logger.info(
         "→ _build_ctx(user_id=%r session_id=%r active_file_ids=%r)",
         user_id, session_id, active_file_ids,
     )  # autolog (access.db_url is intentionally not logged — it holds the DSN)
 
-    file_ids = [fid for fid in (active_file_ids or []) if fid != PRIMARY_DB_SENTINEL]
-    # Picked file(s) → the session temp DB only; nothing picked → the primary DB.
-    want_primary = not file_ids
-
-    # Primary DB only when it's both wanted and actually configured (db_url may be None for
-    # a file-only session that has no database connected).
     pool = get_connection_pool()
-    primary = (
-        await pool.adapter_for(access.project_id, access.db_url)
-        if (want_primary and access.db_url) else None
-    )
+    primary = await pool.adapter_for(access.project_id, access.db_url) if access.db_url else None
 
-    # session-file adapter (only when files are in scope). Not pooled: request-scoped,
-    # disposed by the caller (see _dispose_ctx) at the end of the request.
-    session_adapter = None
-    allowed: frozenset[str] | None = None
-    if file_ids:
-        sqlite_path, tables = await files_service.session_db(session_id, file_ids)
-        if sqlite_path:
-            session_adapter = make_adapter(sqlite_path, allowed_tables=tables)
-            allowed = tables
-
-    active = primary or session_adapter
-    if active is None:
-        # Neither a database nor an in-scope file resolved → nothing to query.
-        raise ChatError("No data source available. Connect a database or upload a file to query.")
+    if primary is None and require_source:
+        raise ChatError("No data source available. Connect a database to query.")
     return RequestContext(
         user_id=user_id,
         session_id=session_id,
         project_id=access.project_id,
         db=DbContext(
             primary=primary,
-            session=session_adapter,
-            allowed_tables=allowed,
-            engine=active.engine_name,
+            # engine is unused when there's no primary (Excel route) → harmless default.
+            engine=primary.engine_name if primary is not None else "sqlite",
         ),
     )
-
-
-async def _dispose_ctx(ctx: RequestContext) -> None:
-    """Release request-scoped resources. The session-file adapter is not pooled, so
-    its engine must be disposed once the request is done (the primary adapter is pooled)."""
-    if ctx.db.session is not None:
-        await ctx.db.session.dispose()
 
 
 async def handle(
@@ -153,16 +118,33 @@ async def handle(
     is_first_message = not history
     orch = get_orchestrator()
 
+    # Supersede: a NEW message cancels any gated action still waiting for confirmation, so a stale
+    # "Confirm & create table" / SQL-preview card can't conflict with or corrupt this turn.
+    # (Confirming goes through approve(), not here, so this only fires when the user moved on.)
+    cancelled_action_ids: list[str] = []
+    for cancelled_id in await orch.cancel_pending(session_id):
+        await sess_repo.set_sql_action(session_id, cancelled_id, "cancelled")
+        cancelled_action_ids.append(cancelled_id)
+
     # Normalize the turn once (resolve references + English) → one standalone query used
     # by BOTH the classifier and every downstream route. Uses raw recent history; the
     # (expensive) running summary is computed lazily inside process_query, only for the
     # tool-loop routes that actually need conversation memory.
     normalized = await orch.normalize(message, history)
 
-    intent = await orch.classify(normalized)
+    # Routing is SELECTION-driven for Excel: if the user has an uploaded workbook selected as an
+    # active data source this turn, force the Excel route (read/edit that file) and SKIP the
+    # classifier — no LLM call. With no workbook selected, classify normally into a DB route, so the
+    # same session can both edit a workbook (when picked) and query the project DB (when not).
+    excel_paths = await files_service.excel_file_paths(session_id, active_file_ids or [])
+    if excel_paths:
+        intent = Intent(route="excel")
+    else:
+        intent = await orch.classify(normalized)
+
     # if off-topic, return result that Chat system does not support
     if intent.route == "off_topic":
-        return ChatResult(response="Sorry, I can only help with database-related questions. Please ask a database-related question.", route=intent.route)
+        return ChatResult(response="Sorry, I can only help with database-related questions. Please ask a database-related question.", route=intent.route, cancelled_action_ids=cancelled_action_ids)
 
     # Write gate: only owners and technical users with EDIT access may change data/schema. Viewers
     # are always read-only; a technical user with a VIEW-only share is read-only too. Refuse up
@@ -178,7 +160,7 @@ async def handle(
                 "questions and build charts, but I can't add, edit or delete anything."
             )
             await sess_repo.add_message(session_id, "assistant", refusal)
-            return ChatResult(response=refusal, route=intent.route)
+            return ChatResult(response=refusal, route=intent.route, cancelled_action_ids=cancelled_action_ids)
 
     # Ambiguous request → ask back, without the cost of building ctx / running the agent.
     if intent.needs_clarification:
@@ -187,17 +169,19 @@ async def handle(
             needs_clarification=True,
         )
     else:
-        ctx = await _build_ctx(user_id, session_id, access, active_file_ids)
-        token = set_ctx(ctx)
-        # Excel turns: tell the agent which workbooks it can open, and snapshot the folder so we
-        # can detect what it created/modified and offer an in-chat download afterwards.
+        # The Excel route edits workbooks via the excel-server, not the DB — so it must NOT require
+        # a queryable data source (a workbook-only session has none).
         is_excel = intent.route == "excel"
-        excel_paths = await files_service.excel_file_paths(session_id) if is_excel else None
+        ctx = await _build_ctx(user_id, session_id, access, active_file_ids, require_source=not is_excel)
+        token = set_ctx(ctx)
+        # Excel turns: the workbook(s) to open were already resolved above (excel_paths = the picked
+        # files). Snapshot the folder so we can detect what the agent created/modified and offer an
+        # in-chat download afterwards.
         excel_before = files_service.snapshot_excel_dir(session_id) if is_excel else {}
         try:
             result = await orch.process_query(
                 normalized, intent=intent, history=history, on_stage=emit,
-                excel_file_paths=excel_paths,
+                excel_file_paths=excel_paths if is_excel else None,
             )
             if is_excel:
                 exports = await files_service.register_excel_outputs(user_id, session_id, excel_before)
@@ -205,8 +189,8 @@ async def handle(
                     result.tool_events = (result.tool_events or []) + exports
         finally:
             reset_ctx(token)
-            await _dispose_ctx(ctx)
 
+    result.cancelled_action_ids = cancelled_action_ids  # superseded cards → FE disables them live
     await sess_repo.add_message(session_id, "user", message)
     await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
     if result.action_id and result.action_state:
@@ -235,7 +219,6 @@ async def approve(
         result = await get_orchestrator().resume(session_id, approved, edited_schema=edited_schema)
     finally:
         reset_ctx(token)
-        await _dispose_ctx(ctx)
     await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
     if result.action_id and result.action_state:
         await sess_repo.set_sql_action(session_id, result.action_id, result.action_state)

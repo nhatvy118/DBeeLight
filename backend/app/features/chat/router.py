@@ -55,6 +55,7 @@ def _response(result, session_id: str) -> dict:
         "pending_workflow_resume": bool(result.requires_approval),
         "needs_clarification": bool(getattr(result, "needs_clarification", False)),
         "tool_events": _map_tool_events(getattr(result, "tool_events", [])),
+        "cancelled_action_ids": list(getattr(result, "cancelled_action_ids", []) or []),
     }
 
 

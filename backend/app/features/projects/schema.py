@@ -23,6 +23,17 @@ class ExternalProjectCreate(ExternalConnection):
     description: str = ""
 
 
+class ColumnDescription(BaseModel):
+    name: str
+    description: str = ""
+
+
+class TableDescriptions(BaseModel):
+    """User-edited data-dictionary entries for one table (saved after a file import)."""
+    tableDescription: str = ""
+    columns: list[ColumnDescription] = []
+
+
 class ProjectOut(BaseModel):
     id: str
     name: str

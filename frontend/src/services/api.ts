@@ -535,15 +535,49 @@ export async function listSessionFiles(sessionId: string): Promise<SessionFileMe
   return data.files ?? [];
 }
 
+export type ImportedTable = { name: string; columns: string[] };
+
 export type UploadSessionFileResult = {
   file: SessionFileMeta;
+  /** Present for a project_db NEW-table import: the table(s) just created, so the FE can offer
+   *  to describe them (data dictionary). Absent for append / qa / excel. */
+  tables?: ImportedTable[];
 };
+
+export type TableDescriptionSuggestion = {
+  tableDescription: string;
+  columns: { name: string; description: string }[];
+};
+
+/** LLM-suggested descriptions to pre-fill the describe-table form for an imported table. */
+export async function suggestTableDescriptions(projectId: string, table: string): Promise<TableDescriptionSuggestion> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/tables/${encodeURIComponent(table)}/describe-suggest`), {
+    method: 'POST', credentials: 'include',
+  });
+  const data = (await res.json().catch(() => ({}))) as { suggestion?: TableDescriptionSuggestion; detail?: string };
+  if (!res.ok || !data.suggestion) throw new Error(data.detail || 'Failed to suggest descriptions');
+  return data.suggestion;
+}
+
+/** Save user-edited table + column descriptions to the data dictionary (owner-only). */
+export async function saveTableDescriptions(
+  projectId: string, table: string, payload: TableDescriptionSuggestion,
+): Promise<void> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/tables/${encodeURIComponent(table)}/description`), {
+    method: 'PUT', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { detail?: string };
+    throw new Error(data.detail || 'Failed to save descriptions');
+  }
+}
 
 /** Where an uploaded file's data goes (mutually exclusive):
  *  - project_db: imported into the project's real database
- *  - qa:         imported into the session sandbox for SQL Q&A (not persisted to the real DB)
  *  - excel:      kept as a workbook for the Excel tools to read/edit (no SQL import) */
-export type ImportMode = 'project_db' | 'qa' | 'excel';
+export type ImportMode = 'project_db' | 'excel';
 
 function uploadErrorMessage(data: unknown): string {
   if (typeof data !== 'object' || data === null) return 'Failed to upload file';
@@ -609,17 +643,27 @@ export async function listExportFilesInventory(): Promise<ExportFileInventoryRow
   return (data as { files?: ExportFileInventoryRow[] }).files ?? [];
 }
 
+/** Tables in a project's database (owner-only) — used to pick an append target. */
+export async function listProjectTables(projectId: string): Promise<{ name: string; columns: string[] }[]> {
+  const res = await fetch(url(`/api/projects/${encodeURIComponent(projectId)}/tables`), { credentials: 'include' });
+  const data = (await res.json().catch(() => ({}))) as { tables?: { name: string; columns: string[] }[]; detail?: string };
+  if (!res.ok) throw new Error(data.detail || 'Failed to load tables');
+  return data.tables ?? [];
+}
+
 export async function uploadSessionFile(
   sessionId: string,
   file: File,
   importMode: ImportMode,
   projectId: string | null = null,
+  targetTable: string | null = null,
 ): Promise<UploadSessionFileResult> {
   const form = new FormData();
   form.append('file', file);
   form.append('session_id', sessionId);
   form.append('import_mode', importMode);
   if (projectId) form.append('project_id', projectId);
+  if (targetTable) form.append('target_table', targetTable);
   const response = await fetch(url('/api/files/upload'), {
     method: 'POST',
     credentials: 'include',
