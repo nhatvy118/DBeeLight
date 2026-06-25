@@ -666,6 +666,10 @@ export default function MessageList({
                 // matching how read-only queries look.
                 if (state === 'executed') return null;
 
+                // Failed → terminal too: the workflow already ran and is consumed, so re-running
+                // does nothing. The card header shows red "Query failed"; no Execute button.
+                if (state === 'failed') return null;
+
                 if (state === 'cancelled') {
                   return (
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13, fontWeight: 600, color: 'var(--text-muted)', padding: '7px 4px' }}>

@@ -633,6 +633,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               const sqlAction = resolveSqlExecuteAction((res as any).tool_events, pendingResume);
               return {
                 sqlToExecute: sqlAction.sqlToExecute,
+                sqlActionId: readSqlPreview((res as any).tool_events)?.actionId,
                 sqlActionState: sqlAction.sqlActionState,
                 workflowResumePending: pendingResume,
               };
@@ -645,6 +646,18 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             schemaLocked: false,
           },
         ]);
+
+        // Supersede: disable any earlier gated card the backend just cancelled (live, no reload).
+        const cancelledIds = ((res as { cancelled_action_ids?: string[] }).cancelled_action_ids) ?? [];
+        if (cancelledIds.length > 0) {
+          const cset = new Set(cancelledIds);
+          setMessages((prev) => prev.map((m) => {
+            const aid = m.schemaPreview?.actionId ?? m.sqlActionId;
+            return aid && cset.has(aid)
+              ? { ...m, schemaLocked: true, schemaCancelled: true, sqlActionState: 'cancelled' as const }
+              : m;
+          }));
+        }
 
         if (res.session_id) {
           const newSessionId = res.session_id;
@@ -1194,7 +1207,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   const handleExecuteSql = async (aiIndex: number) => {
     const msg = messages[aiIndex];
-    if (!msg || !msg.sqlToExecute || isSending || msg.sqlActionState === 'running' || msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled') return;
+    if (!msg || !msg.sqlToExecute || isSending || msg.sqlActionState === 'running' || msg.sqlActionState === 'executed' || msg.sqlActionState === 'cancelled' || msg.sqlActionState === 'failed') return;
     if (!sessionId) {
       setMessages((prev) => [...prev, { text: 'Error: No session — cannot execute SQL.', isUser: false }]);
       return;

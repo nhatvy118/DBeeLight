@@ -47,6 +47,9 @@ class ChatResult:
     tool_events: list[dict] = field(default_factory=list)
     action_id: str | None = None        # gated-action UUID (create_table / mutation)
     action_state: str | None = None     # 'pending' | 'executed' | 'cancelled' | 'failed'
+    # action_ids of EARLIER gated cards this turn superseded (cancelled), so the FE can disable
+    # their Confirm/Execute buttons live without a reload.
+    cancelled_action_ids: list[str] = field(default_factory=list)
 
 
 def _action_state_from_output(out: dict) -> str | None:
@@ -168,6 +171,21 @@ class Orchestrator:
             await self.excel_backend.refresh()
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not load excel-server tools (%s) — will retry on use.", e)
+
+    async def cancel_pending(self, session_id: str) -> list[str]:
+        """Cancel any gated workflow (create-table / mutation) still awaiting confirmation. Used when
+        the user sends a NEW message instead of confirming, so the new turn supersedes the old one.
+        Returns the action_ids that were cancelled (to mark their cards)."""
+        cancelled: list[str] = []
+        for wf in (self.create_table_wf, self.mutation_wf):
+            try:
+                aid = await wf.cancel(session_id)
+            except Exception as e:  # noqa: BLE001 — never block the new turn on cleanup
+                logger.warning("cancel_pending failed for %s: %s", session_id, e)
+                continue
+            if aid:
+                cancelled.append(aid)
+        return cancelled
 
     async def normalize(self, user_message: str, history: list[dict] | None = None) -> str:
         """Resolve references (against recent history) + translate to English → a standalone,

@@ -118,6 +118,14 @@ async def handle(
     is_first_message = not history
     orch = get_orchestrator()
 
+    # Supersede: a NEW message cancels any gated action still waiting for confirmation, so a stale
+    # "Confirm & create table" / SQL-preview card can't conflict with or corrupt this turn.
+    # (Confirming goes through approve(), not here, so this only fires when the user moved on.)
+    cancelled_action_ids: list[str] = []
+    for cancelled_id in await orch.cancel_pending(session_id):
+        await sess_repo.set_sql_action(session_id, cancelled_id, "cancelled")
+        cancelled_action_ids.append(cancelled_id)
+
     # Normalize the turn once (resolve references + English) → one standalone query used
     # by BOTH the classifier and every downstream route. Uses raw recent history; the
     # (expensive) running summary is computed lazily inside process_query, only for the
@@ -136,7 +144,7 @@ async def handle(
 
     # if off-topic, return result that Chat system does not support
     if intent.route == "off_topic":
-        return ChatResult(response="Sorry, I can only help with database-related questions. Please ask a database-related question.", route=intent.route)
+        return ChatResult(response="Sorry, I can only help with database-related questions. Please ask a database-related question.", route=intent.route, cancelled_action_ids=cancelled_action_ids)
 
     # Write gate: only owners and technical users with EDIT access may change data/schema. Viewers
     # are always read-only; a technical user with a VIEW-only share is read-only too. Refuse up
@@ -152,7 +160,7 @@ async def handle(
                 "questions and build charts, but I can't add, edit or delete anything."
             )
             await sess_repo.add_message(session_id, "assistant", refusal)
-            return ChatResult(response=refusal, route=intent.route)
+            return ChatResult(response=refusal, route=intent.route, cancelled_action_ids=cancelled_action_ids)
 
     # Ambiguous request → ask back, without the cost of building ctx / running the agent.
     if intent.needs_clarification:
@@ -182,6 +190,7 @@ async def handle(
         finally:
             reset_ctx(token)
 
+    result.cancelled_action_ids = cancelled_action_ids  # superseded cards → FE disables them live
     await sess_repo.add_message(session_id, "user", message)
     await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
     if result.action_id and result.action_state:

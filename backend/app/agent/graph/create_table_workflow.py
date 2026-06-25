@@ -457,13 +457,27 @@ class CreateTableWorkflow:
             self._graph = g.compile(checkpointer=await get_async_checkpointer())
         return self._graph
 
+    def _thread_id(self, session_id: str) -> str:
+        return f"{session_id}:create_table"
+
     def _cfg(self, session_id: str) -> RunnableConfig:
-        return {"configurable": {"thread_id": f"{session_id}:create_table"}}
+        return {"configurable": {"thread_id": self._thread_id(session_id)}}
 
     async def pending(self, session_id: str) -> bool:
         graph = await self._compiled()
         snap = await graph.aget_state(self._cfg(session_id))
         return bool(getattr(snap, "next", None))
+
+    async def cancel(self, session_id: str) -> str | None:
+        """Discard a pending interrupt (the user moved on without confirming). Deletes the thread's
+        checkpoint and returns the action_id that was waiting, so the caller can mark its card."""
+        graph = await self._compiled()
+        snap = await graph.aget_state(self._cfg(session_id))
+        if not getattr(snap, "next", None):
+            return None
+        action_id = (snap.values or {}).get("action_id")
+        await (await get_async_checkpointer()).adelete_thread(self._thread_id(session_id))
+        return action_id
 
     async def run(
         self, session_id: str, user_message: str, engine: str, *, resume=None,

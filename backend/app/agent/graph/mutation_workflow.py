@@ -48,6 +48,16 @@ async def _sql_preview(state: AgentState) -> AgentState:
         return {**state, "sql": None,
                 "output": {"type": OUTPUT_ERROR, "message": f"Could not generate valid SQL.\n{err}"}}
 
+    # Guard: a plain "create a new table" must not run on the mutation path (it would skip the
+    # schema editor + data-dictionary capture). The recreate-for-ALTER pattern is allowed because it
+    # DROPs/RENAMEs the original table — is_bare_create_table only flags a create with no DROP/ALTER.
+    if dbtools.is_bare_create_table(sql, engine):
+        return {**state, "sql": None,
+                "output": {"type": OUTPUT_ERROR,
+                           "message": "It looks like you want to create a new table. Please say "
+                                      "“create a table …” so I can open the table designer "
+                                      "(where you set columns and descriptions)."}}
+
     # Ship the SQL + structured affected-rows preview as DATA; the FE renders both (same as the
     # query_result path). The server does NOT format a table here.
     preview = await _affected_rows(sql, engine)
@@ -163,13 +173,27 @@ class MutationWorkflow:
             self._graph = g.compile(checkpointer=await get_async_checkpointer())
         return self._graph
 
+    def _thread_id(self, session_id: str) -> str:
+        return f"{session_id}:mutation"
+
     def _cfg(self, session_id: str) -> RunnableConfig:
-        return {"configurable": {"thread_id": f"{session_id}:mutation"}}
+        return {"configurable": {"thread_id": self._thread_id(session_id)}}
 
     async def pending(self, session_id: str) -> bool:
         graph = await self._compiled()
         snap = await graph.aget_state(self._cfg(session_id))
         return bool(getattr(snap, "next", None))
+
+    async def cancel(self, session_id: str) -> str | None:
+        """Discard a pending interrupt (the user moved on without confirming). Deletes the thread's
+        checkpoint and returns the action_id that was waiting, so the caller can mark its card."""
+        graph = await self._compiled()
+        snap = await graph.aget_state(self._cfg(session_id))
+        if not getattr(snap, "next", None):
+            return None
+        action_id = (snap.values or {}).get("action_id")
+        await (await get_async_checkpointer()).adelete_thread(self._thread_id(session_id))
+        return action_id
 
     async def run(
         self, session_id: str, user_message: str, engine: str, *, resume=None,
