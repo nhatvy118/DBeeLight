@@ -164,6 +164,17 @@ async def handle(
     normalized = await orch.normalize(message, history)
 
     intent = await orch.classify(normalized)
+
+    # Deterministic override: if this session holds an uploaded Excel WORKBOOK — a file kept for the
+    # Excel tools, i.e. uploaded WITHOUT "Save to database" — then it's an "work on this file"
+    # session, so every data turn goes to the Excel agent (read or edit the workbook) instead of the
+    # DB. Files imported to the DB ("Save to database") leave no workbook, so they don't trigger this;
+    # off-topic chit-chat is left untouched. (Q&A-imported files are queried via the normal routes.)
+    if intent.route != "off_topic" and await files_service.excel_file_paths(session_id):
+        intent.route = "excel"
+        intent.needs_clarification = False
+        intent.clarification_question = None
+
     # if off-topic, return result that Chat system does not support
     if intent.route == "off_topic":
         return ChatResult(response="Sorry, I can only help with database-related questions. Please ask a database-related question.", route=intent.route)
