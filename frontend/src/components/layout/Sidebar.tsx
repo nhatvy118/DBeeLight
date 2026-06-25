@@ -6,6 +6,7 @@ import {
   createExternalProject,
   getProjects,
   deleteProject,
+  listSharedProjects,
   url,
   type ExternalConnectionInput,
   type ProjectKind,
@@ -25,6 +26,7 @@ type Project = {
   description?: string;
   createdAt: string;
   kind: ProjectKind;
+  sharedBy?: string | null;
 };
 
 type SidebarProps = {
@@ -259,23 +261,17 @@ export default function Sidebar({ onSessionSelect, onRequestCloseDrawer }: Sideb
     let cancelled = false;
     const loadProjects = async () => {
       try {
-        const res = await getProjects();
+        const [res, shared] = await Promise.all([getProjects(), listSharedProjects().catch(() => [])]);
         if (cancelled) return;
-        if (res.success && res.projects) {
-          const list: Project[] = res.projects.map((p) => ({
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            createdAt: p.created_at ?? new Date().toISOString(),
-            kind: p.kind ?? 'internal',
-          }));
-          setProjects(list);
-          localStorage.setItem('projects', JSON.stringify(list));
-          // Don't set selectedProjectId from localStorage - URL is source of truth
-          // selectedProjectId will be set from URL via AppRoutes
-        } else {
-          setProjects([]);
-        }
+        const owned: Project[] = (res.success && res.projects)
+          ? res.projects.map((p) => ({ id: p.id, name: p.name, description: p.description, createdAt: p.created_at ?? new Date().toISOString(), kind: p.kind ?? 'internal' }))
+          : [];
+        const sharedList: Project[] = shared
+          .filter((s) => !owned.some((o) => o.id === s.id))
+          .map((s) => ({ id: s.id, name: s.name, description: s.description, createdAt: s.shared_at ?? new Date().toISOString(), kind: 'internal' as ProjectKind, sharedBy: s.owner_name || s.owner_email }));
+        const list = [...owned, ...sharedList];
+        setProjects(list);
+        localStorage.setItem('projects', JSON.stringify(list));
       } catch {
         if (!cancelled) setProjects([]);
       }
@@ -398,6 +394,7 @@ export default function Sidebar({ onSessionSelect, onRequestCloseDrawer }: Sideb
             : <Icons.Folder size={17} style={{ color: on ? 'var(--accent-ink)' : 'var(--text-muted)', flexShrink: 0 }} />}
           <span style={{ flex: 1, minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
             <span style={{ fontWeight: on ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name}</span>
+            {project.sharedBy && <span title={`Shared by ${project.sharedBy}`} style={{ flexShrink: 0, fontSize: 10, fontWeight: 600, padding: '1px 5px', borderRadius: 4, background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>Shared</span>}
           </span>
         </button>
         <button
