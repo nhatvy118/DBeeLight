@@ -241,6 +241,13 @@ export default function Sidebar({ onSessionSelect, onRequestCloseDrawer }: Sideb
     return () => window.removeEventListener('popstate', updateFromURL);
   }, []);
 
+  // Let other views (e.g. the Chat "start a project" landing) open the New Project modal.
+  useEffect(() => {
+    const open = () => setIsProjectModalOpen(true);
+    window.addEventListener('open-new-project', open);
+    return () => window.removeEventListener('open-new-project', open);
+  }, []);
+
   // Fetch projects from API for the current user only (not from localStorage)
   useEffect(() => {
     if (!user) {

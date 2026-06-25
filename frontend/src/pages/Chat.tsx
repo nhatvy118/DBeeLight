@@ -1464,11 +1464,16 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const showProjectLanding = selectedProject && !sessionId && messages.length === 0;
 
   // Check if we're in "empty" state: no messages (regardless of project or sessionId)
-  // This includes: 
+  // This includes:
   // - Project selected but no chat history yet (show empty state with project in header)
   // - No project and no chat
   // - New session created but no messages sent yet
   const isEmptyState = messages.length === 0 && !showProjectLanding;
+
+  // No data source: at /chat with no project (and no session) the chat can't query anything
+  // (the backend refuses a project-less turn), so prompt to create a project instead of a
+  // dead-end composer. Viewers always arrive via a shared project URL, so propProjectId is set.
+  const showStartProjectLanding = isEmptyState && !selectedProject && !propProjectId && !sessionId;
 
   const greetHour = new Date().getHours();
   const greeting = greetHour < 12 ? 'Good morning' : greetHour < 18 ? 'Good afternoon' : 'Good evening';
@@ -1749,8 +1754,32 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         </div>
       )}
 
-      {/* Empty state: greeting + composer grouped and centered */}
-      {isEmptyState ? (
+      {/* No project yet: prompt to create one instead of a dead-end composer. */}
+      {showStartProjectLanding ? (
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '40px 24px' }}>
+          <div style={{ width: '100%', maxWidth: 560, margin: '0 auto', textAlign: 'center' }}>
+            <div className="fade-up" style={{ marginBottom: 20, display: 'flex', justifyContent: 'center' }}>
+              <BeeBadge size={56} />
+            </div>
+            <h1 className="fade-up" style={{ fontSize: 32, fontWeight: 800, letterSpacing: '-.025em', lineHeight: 1.15 }}>
+              Let's start a project.
+            </h1>
+            <p className="fade-up" style={{ fontSize: 17, color: 'var(--text-soft)', marginTop: 10, marginBottom: 26, lineHeight: 1.55, animationDelay: '.09s' }}>
+              Create a project to connect a database or upload your data — then ask questions in plain English and get answers as tables and charts.
+            </p>
+            <button
+              type="button"
+              className="btn btn-primary fade-up"
+              style={{ padding: '12px 22px', fontSize: 15, animationDelay: '.15s' }}
+              onClick={() => window.dispatchEvent(new Event('open-new-project'))}
+            >
+              <Icons.FolderPlus size={17} />
+              New project
+            </button>
+          </div>
+        </div>
+      ) : isEmptyState ? (
+        /* Empty state: greeting + composer grouped and centered (new chat inside a project) */
         <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '40px 24px' }}>
           <div style={{ width: '100%', maxWidth: 760, margin: '0 auto' }}>
             <div className="fade-up" style={{ marginBottom: 18 }}>
