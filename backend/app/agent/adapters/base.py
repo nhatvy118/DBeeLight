@@ -15,6 +15,21 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 _SQLGLOT_DIALECT = {"sqlite": "sqlite", "postgresql": "postgres"}
 
 
+def _enable_sqlite_foreign_keys(engine: AsyncEngine) -> None:
+    """Turn ON foreign-key ENFORCEMENT for SQLite. It's OFF by default and is a per-connection
+    setting, so declaring a FK only records it — without this, a bad INSERT/DELETE is NOT rejected
+    and ON DELETE/UPDATE actions never fire. Issued on every new pooled connection, outside any
+    transaction (PRAGMA foreign_keys is a no-op mid-transaction)."""
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_fk_pragma(dbapi_connection, _record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
+
 def _enable_sqlite_transactional_ddl(engine: AsyncEngine) -> None:
     """Make SQLite honour transactions for DDL too (so a multi-statement batch is all-or-nothing).
 
@@ -98,6 +113,7 @@ class DatabaseAdapter(ABC):
     def __init__(self, sqlalchemy_url: str):
         self._engine: AsyncEngine = create_async_engine(sqlalchemy_url, pool_pre_ping=True)
         if self._engine.dialect.name == "sqlite":
+            _enable_sqlite_foreign_keys(self._engine)
             _enable_sqlite_transactional_ddl(self._engine)
 
     async def dispose(self) -> None:
