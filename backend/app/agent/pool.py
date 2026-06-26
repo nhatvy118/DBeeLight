@@ -16,7 +16,7 @@ logger = logging.getLogger("agent.pool")
 
 class ConnectionPool:
     def __init__(self) -> None:
-        # pool key (project_id or "user:<uid>") -> adapter
+        # pool key (project_id) -> adapter
         self._projects: dict[str, DatabaseAdapter] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -26,11 +26,11 @@ class ConnectionPool:
         return self._locks[key]
 
     async def adapter_for(self, key: str, db_url: str) -> DatabaseAdapter:
-        """Adapter for a pooled DB, keyed by project_id or "user:<uid>".
+        """Adapter for a pooled DB, keyed by project_id.
 
         Created on miss, reused on hit. The cache is keyed purely by `key`; it does
         NOT track db_url. Callers MUST invalidate(key) whenever that key's db_url
-        changes (project re-provision, user connect/disconnect) — otherwise this
+        changes (project re-provision, DB connect/disconnect) — otherwise this
         keeps serving the old adapter.
         """
         async with self._lock(key):
@@ -51,7 +51,7 @@ class ConnectionPool:
             await adapter.dispose()
 
     async def invalidate(self, key: str) -> None:
-        """Drop + dispose the adapter for a pool key (project_id or "user:<uid>")."""
+        """Drop + dispose the adapter for a pool key (project_id)."""
         adapter = self._projects.pop(key, None)
         if adapter is not None:
             await adapter.dispose()

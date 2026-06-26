@@ -91,8 +91,7 @@ async def enrich_schema_text(*, mode: str = "write", limit: int = 30) -> str:
     if scope and scoped:
         try:
             tbl_desc, col_desc = await metadata_repo.get_for_scope(scope[0], scope[1], scoped)
-            if scope[0] == "project" and not str(scope[1]).startswith("user:"):
-                db_desc = await proj_repo.get_description_any(scope[1])
+            db_desc = await proj_repo.get_description_any(scope[1])  # scope_id is always a project id
         except Exception as e:  # noqa: BLE001 — enrichment must never break query generation
             logger.warning("schema enrichment lookup failed: %s", e)
 

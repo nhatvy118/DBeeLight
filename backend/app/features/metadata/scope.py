@@ -3,9 +3,8 @@
 Used by BOTH the writer (create_table capture) and the reader (schema discovery enrich),
 so the key is always computed identically and the two sides never drift.
 
-  primary DB table  → ('project', project_id)
-                      project_id is the real project id, or 'user:<user_id>' for the
-                      per-user external connection (see _authorize in chat/service).
+  primary DB table  → ('project', project_id)   (every data source is a project — see
+                      _authorize in chat/service; internal SQLite and external DB alike).
   session/file table → None for now (file scope is deferred; see Phase 5).
 """
 from __future__ import annotations

@@ -79,9 +79,9 @@ async def get_for_scope(
 
 
 async def delete_for_scope(scope_type: str, scope_id: str) -> None:
-    """Drop all descriptions for a scope. Called when an external DB is disconnected (the
-    per-user external scope id is REUSED, so stale descriptions must not leak to the next
-    connected DB) or when a project is deleted."""
+    """Drop all descriptions for a scope. Called when a project's DB is disconnected (the
+    project's scope id is REUSED, so stale descriptions must not leak to the next connected
+    DB) or when a project is deleted."""
     await get_pool().execute(
         "DELETE FROM descriptions WHERE scope_type = $1 AND scope_id = $2",
         scope_type, scope_id,
