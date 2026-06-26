@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Icons } from '../../icons';
 import { toast } from '../Toaster';
@@ -10,14 +10,24 @@ import {
 /** view/edit picker shown for technical teammates (viewers are locked to view). */
 function AccessPicker({ value, onChange }: { value: SharePermission; onChange: (p: SharePermission) => void }) {
   const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
   const opts: { k: SharePermission; label: string; d: string }[] = [
     { k: 'edit', label: 'Can edit', d: 'Query and change this data' },
     { k: 'view', label: 'Can view', d: 'Explore — read only' },
   ];
   const cur = opts.find((o) => o.k === value) || opts[1];
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
   return (
-    <div style={{ position: 'relative' }}>
-      {open && <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 50 }} />}
+    <div ref={ref} style={{ position: 'relative' }}>
       <button type="button" onClick={() => setOpen((o) => !o)} className="focusable"
         style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 9px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)', fontSize: 12, fontWeight: 600, color: 'var(--text-soft)', cursor: 'pointer' }}>
         {cur.label}<Icons.ChevronDown size={13} style={{ color: 'var(--text-faint)' }} />
