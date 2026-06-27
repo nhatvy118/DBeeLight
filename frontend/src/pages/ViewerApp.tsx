@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Icons, BeeBadge } from '../icons';
 import { useAuth } from '../context/AuthContext';
+import { useOnboarding } from '../context/OnboardingContext';
+import StorageModal from '../components/modals/StorageModal';
 import Chat from './Chat';
 import Dashboard from './Dashboard';
 import { url, listSharedProjects, type SharedProject } from '../services/api';
@@ -12,17 +14,21 @@ import { url, listSharedProjects, type SharedProject } from '../services/api';
  */
 export default function ViewerApp() {
   const { user, setUser } = useAuth();
+  const onboarding = useOnboarding();
   const [projects, setProjects] = useState<SharedProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [view, setView] = useState<'chat' | 'dashboard'>('chat');
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [storageOpen, setStorageOpen] = useState(false);
 
   // The URL reflects the open project + view: /chat/:pid(/:sid) or /dashboard/:pid.
   const openProject = (id: string) => { window.history.pushState({}, '', `/chat/${id}`); setOpenId(id); setSessionId(null); setView('chat'); };
   const openDashboard = (id: string) => { window.history.pushState({}, '', `/dashboard/${id}`); setOpenId(id); setView('dashboard'); };
   const goHome = () => { window.history.pushState({}, '', '/chat'); setOpenId(null); setSessionId(null); setView('chat'); };
+  const goAccount = () => { window.history.pushState({}, '', '/account'); window.dispatchEvent(new PopStateEvent('popstate')); };
 
   // Sync state from the URL on mount + back/forward.
   useEffect(() => {
@@ -67,6 +73,21 @@ export default function ViewerApp() {
   const onSession = (sid: string | null) => setSessionId(sid);
   const open = projects.find((p) => p.id === openId) || null;
   const initial = (user?.name || user?.email || '?')[0]?.toUpperCase();
+
+  const menuItem = (icon: ReactNode, label: string, onClick: () => void, danger = false) => (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={() => { setMenuOpen(false); onClick(); }}
+      className="focusable"
+      style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '10px 12px', borderRadius: 'var(--r-sm)', textAlign: 'left', fontSize: 14, fontWeight: 600, color: danger ? 'oklch(0.58 0.19 25)' : 'var(--text-soft)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = danger ? 'oklch(0.95 0.05 25)' : 'var(--surface)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+    >
+      {icon}
+      {label}
+    </button>
+  );
 
   return (
     <div style={{ display: 'flex', height: '100%', background: 'var(--bg)' }}>
@@ -113,16 +134,48 @@ export default function ViewerApp() {
           {!loading && projects.length === 0 && <p style={{ fontSize: 12.5, color: 'var(--text-muted)', padding: '8px 12px' }}>No projects shared with you yet.</p>}
         </div>
 
-        {/* profile + sign out */}
-        <div style={{ borderTop: '1px solid var(--border)', padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 11 }}>
-          <div style={{ width: 36, height: 36, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'linear-gradient(145deg, var(--accent), var(--accent-strong))', color: 'var(--on-accent)', fontWeight: 800 }}>{initial}</div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.name || user?.email}</div>
-            <div style={{ fontSize: 11.5, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 5 }}><Icons.Eye size={12} /> Non-technical</div>
-          </div>
-          <button type="button" onClick={() => void signOut()} title="Sign out" className="focusable" style={{ width: 32, height: 32, borderRadius: 8, display: 'grid', placeItems: 'center', border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}><Icons.Logout size={16} /></button>
+        {/* profile + account menu */}
+        <div style={{ borderTop: '1px solid var(--border)', padding: '12px 14px', position: 'relative' }}>
+          {menuOpen && <div onClick={() => setMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />}
+          {menuOpen && (
+            <div className="card pop-shadow scale-in" role="menu"
+              style={{ position: 'absolute', bottom: 'calc(100% - 4px)', left: 14, right: 14, zIndex: 41, borderRadius: 'var(--r)', padding: 8, transformOrigin: 'bottom' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '8px 10px 12px', borderBottom: '1px solid var(--border)', marginBottom: 6 }}>
+                <div style={{ width: 38, height: 38, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'linear-gradient(145deg, var(--accent), var(--accent-strong))', color: 'var(--on-accent)', fontWeight: 800 }}>{initial}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.name || '—'}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.email || '—'}</div>
+                </div>
+              </div>
+              {menuItem(<Icons.Settings size={18} />, 'Account settings', goAccount)}
+              {menuItem(<Icons.HardDrive size={18} />, 'Storage', () => setStorageOpen(true))}
+              {menuItem(<Icons.Question size={18} />, 'Help & support', () => onboarding.open())}
+              <div style={{ height: 1, background: 'var(--border)', margin: '6px 4px' }} />
+              {menuItem(<Icons.Logout size={18} />, 'Log out', () => void signOut(), true)}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setMenuOpen((o) => !o)}
+            className="focusable"
+            aria-haspopup="true"
+            aria-expanded={menuOpen}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '8px 10px', borderRadius: 'var(--r-sm)', background: menuOpen ? 'var(--surface)' : 'transparent', border: 'none', cursor: 'pointer' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface)'; }}
+            onMouseLeave={(e) => { if (!menuOpen) e.currentTarget.style.background = 'transparent'; }}
+          >
+            <div style={{ width: 36, height: 36, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'linear-gradient(145deg, var(--accent), var(--accent-strong))', color: 'var(--on-accent)', fontWeight: 800 }}>{initial}</div>
+            <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.name || user?.email}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 5 }}><Icons.Eye size={12} /> Non-technical</div>
+            </div>
+            <Icons.ChevronDown size={16} style={{ color: 'var(--text-muted)', transition: 'transform .15s', transform: menuOpen ? 'rotate(180deg)' : 'none' }} />
+          </button>
         </div>
       </aside>
+
+      <StorageModal open={storageOpen} onClose={() => setStorageOpen(false)} />
 
       {/* main — home grid, the read-only chat, or the personal dashboard */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>

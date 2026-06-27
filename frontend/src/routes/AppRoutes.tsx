@@ -108,7 +108,12 @@ export default function AppRoutes({ sessionId, onSessionIdChange }: AppRoutesPro
   }
 
   // Viewers (non-technical) get their own dedicated app — shared projects + read-only chat.
-  if (user.role === 'viewer') return <ViewerApp />;
+  // They can still open the shared Account page (Account settings menu item); every other
+  // path falls back to the viewer app.
+  if (user.role === 'viewer') {
+    if (path === '/account') return <Account />;
+    return <ViewerApp />;
+  }
 
   // Admins manage the workspace only — they have NO chat. Keep them on the dashboard
   // (render it directly + sync the URL, so there's no flash of the chat shell).
