@@ -684,8 +684,8 @@ export async function uploadSessionFile(
     err.detail = (data as { detail?: unknown }).detail;
     throw err;
   }
-  const wrapped = data as { file: SessionFileMeta };
-  return { file: wrapped.file };
+  const wrapped = data as { file: SessionFileMeta; tables?: ImportedTable[] };
+  return { file: wrapped.file, tables: wrapped.tables };
 }
 
 export async function deleteSessionFile(fileId: string): Promise<void> {

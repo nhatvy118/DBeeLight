@@ -62,6 +62,14 @@ function columnIsNumeric(rows: string[][], ci: number): boolean {
   return vals.filter(isNumericValue).length >= Math.ceil(vals.length * 0.7);
 }
 
+function formatCellNumber(cell: string): string {
+  const cleaned = cell.replace(/[$,%\s]/g, '').replace(/^\((.*)\)$/, '-$1');
+  const num = Number(cleaned);
+  if (!Number.isFinite(num)) return cell;
+  if (Number.isInteger(num)) return num.toLocaleString('en-US');
+  return parseFloat(num.toFixed(10)).toLocaleString('en-US');
+}
+
 /* --------------------------- copy button --------------------------- */
 
 function CopyButton({ text, small }: { text: string; small?: boolean }) {
@@ -216,7 +224,7 @@ export function ResultTableCard({ node, data: dataProp }: { node?: any; data?: T
                       className={numericCols[ci] ? 'tabular' : ''}
                       style={{ textAlign: numericCols[ci] ? 'right' : 'left', fontWeight: ci === 0 ? 600 : 400 }}
                     >
-                      {cell}
+                      {numericCols[ci] ? formatCellNumber(cell) : cell}
                     </td>
                   ))}
                 </tr>
