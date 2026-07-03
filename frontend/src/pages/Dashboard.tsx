@@ -135,7 +135,7 @@ export default function Dashboard({ projectId }: DashboardProps) {
             const full = !multi || c.layout !== 'half';
             return (
               <div key={c.id} style={{ gridColumn: full ? '1 / -1' : 'auto', minWidth: 0, position: 'relative' }}>
-                <div style={{ position: 'absolute', top: 22, right: 22, zIndex: 2, display: 'flex', gap: 4 }}>
+                <div style={{ position: 'absolute', top: 28, right: 52, zIndex: 2, display: 'flex', gap: 4 }}>
                   <button type="button" onClick={() => void move(i, -1)} disabled={i === 0} title="Move up" className="btn btn-outline" style={{ padding: '5px 7px' }} aria-label="Move up"><Icons.ChevronDown size={13} style={{ transform: 'rotate(180deg)' }} /></button>
                   <button type="button" onClick={() => void move(i, 1)} disabled={i === charts.length - 1} title="Move down" className="btn btn-outline" style={{ padding: '5px 7px' }} aria-label="Move down"><Icons.ChevronDown size={13} /></button>
                   <button type="button" onClick={() => setEditing(c)} title="Edit SQL" className="btn btn-outline" style={{ padding: '5px 7px' }} aria-label="Edit"><Icons.Code size={14} /></button>

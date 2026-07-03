@@ -302,6 +302,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         return {
           text: msg.role === 'assistant' ? buildAssistantTextFromSqlPreview(cleanedText, sqlPreview) : cleanedText,
           isUser: msg.role === 'user',
+          historical: true,
           attachments: msg.role === 'user' ? readSessionFiles(msg.tool_events) : undefined,
           sqlToExecute,
           sqlActionId,

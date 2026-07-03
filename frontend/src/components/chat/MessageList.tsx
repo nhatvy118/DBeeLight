@@ -120,6 +120,8 @@ export type UiMessage = {
   schemaCancelled?: boolean;
   /** Assistant message is waiting on LangGraph ``interrupt()`` (schema or SQL gate). */
   workflowResumePending?: boolean;
+  /** True for messages loaded from saved history — skips the typing animation. */
+  historical?: boolean;
   /** Vega-Lite chart spec JSON strings emitted by the chart agent (from tool_events).
    *  Multiple specs render as a responsive grid (a mini dashboard). */
   charts?: string[];
@@ -255,6 +257,7 @@ export default function MessageList({
             message={msg.text}
             isUser={msg.isUser}
             attachments={msg.attachments}
+            enableTyping={!msg.historical}
             sqlExecuted={!msg.isUser && msg.sqlActionState === 'executed'}
             sqlFailed={!msg.isUser && msg.sqlActionState === 'failed'}
             onTypingStateChange={
