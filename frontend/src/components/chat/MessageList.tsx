@@ -305,8 +305,8 @@ export default function MessageList({
                       <VegaLiteChart
                         specJson={spec}
                         saved={isSaved}
-                        onSave={recipe ? async () => {
-                          const ok = await onSaveChart?.(recipe);
+                        onSave={recipe ? async (title: string) => {
+                          const ok = await onSaveChart?.({ ...recipe, title: title || recipe.title });
                           if (ok) setSavedChartKeys((s) => new Set(s).add(savedKey));
                           return ok;
                         } : undefined}

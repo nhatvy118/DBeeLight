@@ -77,6 +77,17 @@ export default function Dashboard({ projectId }: DashboardProps) {
     }
   };
 
+  const saveTitle = async (id: string, title: string) => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    setCharts((prev) => prev.map((c) => c.id === id ? { ...c, title: trimmed } : c));
+    try {
+      await updateChart(id, { title: trimmed });
+    } catch {
+      toast.error('Could not update title');
+    }
+  };
+
   const goBack = () => {
     window.history.pushState({}, '', `/chat/${projectId}`);
     window.dispatchEvent(new PopStateEvent('popstate'));
@@ -147,7 +158,14 @@ export default function Dashboard({ projectId }: DashboardProps) {
                     <div style={{ fontSize: 12.5, color: 'var(--danger-ink, #a3372d)' }}>Couldn't render: {c.error}</div>
                   </div>
                 ) : c.spec ? (
-                  <VegaLiteChart specJson={c.spec} />
+                  <VegaLiteChart
+                    specJson={(() => {
+                      try { const s = JSON.parse(c.spec!); delete s.title; return JSON.stringify(s); }
+                      catch { return c.spec!; }
+                    })()}
+                    editableTitle={c.title || ''}
+                    onTitleSave={(t) => void saveTitle(c.id, t)}
+                  />
                 ) : null}
               </div>
             );

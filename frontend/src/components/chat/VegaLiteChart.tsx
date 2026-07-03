@@ -7,10 +7,14 @@ type VegaLiteChartProps = {
   /** Raw JSON string of a Vega-Lite v5 spec, taken from a `generate_chart`
    * tool_event payload (detected by tool name, not message-text markers). */
   specJson: string;
-  /** When provided, the menu shows "Save to dashboard". Resolves true on success. */
-  onSave?: () => boolean | void | Promise<boolean | void>;
+  /** When provided, the menu shows "Save to dashboard". Receives the user-chosen title. */
+  onSave?: (title: string) => boolean | void | Promise<boolean | void>;
   /** Whether this chart is already saved (shows a "Saved" state). */
   saved?: boolean;
+  /** When provided, renders an editable title inside the card (for dashboard use). */
+  editableTitle?: string;
+  /** Called when the user finishes editing the title. */
+  onTitleSave?: (title: string) => void;
 };
 
 /** Read a CSS custom property off :root, falling back when unset/SSR. */
@@ -93,13 +97,17 @@ function useVegaConfig(theme: string) {
 
 /** Renders a Vega-Lite v5 spec inline in chat. Falls back to a code-block
  * style error display when the spec is malformed. */
-export default function VegaLiteChart({ specJson, onSave, saved = false }: VegaLiteChartProps) {
+export default function VegaLiteChart({ specJson, onSave, saved = false, editableTitle, onTitleSave }: VegaLiteChartProps) {
   const { theme } = useTheme();
   const config = useVegaConfig(theme);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [pendingTitle, setPendingTitle] = useState('');
+  const [titleEditing, setTitleEditing] = useState(false);
+  const [titleValue, setTitleValue] = useState(editableTitle ?? '');
 
   const triggerDownload = (href: string, filename: string) => {
     const a = document.createElement('a');
@@ -142,10 +150,18 @@ export default function VegaLiteChart({ specJson, onSave, saved = false }: VegaL
     img.src = svgUrl;
   };
 
-  const handleSave = async () => {
+  const openSaveDialog = () => {
+    if (!onSave || saved) return;
+    const defaultTitle = typeof (spec as any)?.title === 'string' ? (spec as any).title : '';
+    setPendingTitle(defaultTitle);
+    setSaveDialogOpen(true);
+  };
+
+  const confirmSave = async () => {
     if (!onSave || saved || busy) return;
     setBusy(true);
-    try { await onSave(); } finally { setBusy(false); setMenuOpen(false); }
+    try { await onSave(pendingTitle.trim()); }
+    finally { setBusy(false); setSaveDialogOpen(false); setMenuOpen(false); }
   };
 
   // react-vega's `width:"container"` is unreliable inside a CSS grid (it measures
@@ -212,24 +228,76 @@ export default function VegaLiteChart({ specJson, onSave, saved = false }: VegaL
           <Icons.Dots size={16} />
         </button>
         {menuOpen && (
-          <div className="card pop-shadow" style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 3, width: 200, borderRadius: 'var(--r)', padding: 6 }}>
-            {onSave && (
-              <button type="button" onClick={() => void handleSave()} disabled={saved || busy} className="focusable"
-                style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 'var(--r-sm)', border: 'none', background: 'transparent', textAlign: 'left', fontSize: 13.5, fontWeight: 600, cursor: saved ? 'default' : 'pointer', color: saved ? 'var(--text-muted)' : 'var(--text)' }}>
-                {saved ? <><Icons.Check size={16} /> Saved to dashboard</> : <><Icons.Plus size={16} /> {busy ? 'Saving…' : 'Save to dashboard'}</>}
-              </button>
+          <div className="card pop-shadow" style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 3, width: 220, borderRadius: 'var(--r)', padding: 6 }}>
+            {saveDialogOpen ? (
+              <div style={{ padding: '8px 6px 4px' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.05em' }}>Chart name</div>
+                <input
+                  autoFocus
+                  className="field focusable"
+                  value={pendingTitle}
+                  onChange={(e) => setPendingTitle(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void confirmSave(); if (e.key === 'Escape') { setSaveDialogOpen(false); setMenuOpen(false); } }}
+                  placeholder="Enter chart name…"
+                  style={{ width: '100%', fontSize: 13.5, marginBottom: 8 }}
+                />
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button type="button" onClick={() => { setSaveDialogOpen(false); setMenuOpen(false); }} className="btn btn-outline focusable" style={{ flex: 1, fontSize: 13, padding: '6px 0' }}>Cancel</button>
+                  <button type="button" onClick={() => void confirmSave()} disabled={busy} className="btn btn-primary focusable" style={{ flex: 1, fontSize: 13, padding: '6px 0' }}>{busy ? 'Saving…' : 'Save'}</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {onSave && (
+                  <button type="button" onClick={openSaveDialog} disabled={saved} className="focusable"
+                    style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 'var(--r-sm)', border: 'none', background: 'transparent', textAlign: 'left', fontSize: 13.5, fontWeight: 600, cursor: saved ? 'default' : 'pointer', color: saved ? 'var(--text-muted)' : 'var(--text)' }}>
+                    {saved ? <><Icons.Check size={16} /> Saved to dashboard</> : <><Icons.Plus size={16} /> Save to dashboard</>}
+                  </button>
+                )}
+                <button type="button" onClick={() => void download('png')} className="focusable"
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 'var(--r-sm)', border: 'none', background: 'transparent', textAlign: 'left', fontSize: 13.5, fontWeight: 600, cursor: 'pointer', color: 'var(--text)' }}>
+                  <Icons.Download size={16} /> Download PNG
+                </button>
+                <button type="button" onClick={() => void download('svg')} className="focusable"
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 'var(--r-sm)', border: 'none', background: 'transparent', textAlign: 'left', fontSize: 13.5, fontWeight: 600, cursor: 'pointer', color: 'var(--text)' }}>
+                  <Icons.Download size={16} /> Download SVG
+                </button>
+              </>
             )}
-            <button type="button" onClick={() => void download('png')} className="focusable"
-              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 'var(--r-sm)', border: 'none', background: 'transparent', textAlign: 'left', fontSize: 13.5, fontWeight: 600, cursor: 'pointer', color: 'var(--text)' }}>
-              <Icons.Download size={16} /> Download PNG
-            </button>
-            <button type="button" onClick={() => void download('svg')} className="focusable"
-              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 'var(--r-sm)', border: 'none', background: 'transparent', textAlign: 'left', fontSize: 13.5, fontWeight: 600, cursor: 'pointer', color: 'var(--text)' }}>
-              <Icons.Download size={16} /> Download SVG
-            </button>
           </div>
         )}
       </div>
+
+      {editableTitle !== undefined && (
+        <div style={{ marginBottom: 6, paddingRight: 40 }}>
+          {titleEditing ? (
+            <input
+              autoFocus
+              className="field focusable"
+              value={titleValue}
+              onChange={(e) => setTitleValue(e.target.value)}
+              onBlur={() => { setTitleEditing(false); onTitleSave?.(titleValue.trim() || editableTitle); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { setTitleEditing(false); onTitleSave?.(titleValue.trim() || editableTitle); }
+                if (e.key === 'Escape') { setTitleEditing(false); setTitleValue(editableTitle); }
+              }}
+              style={{ fontSize: 20, fontWeight: 700, padding: '2px 8px', width: 'auto', minWidth: 120, maxWidth: '100%' }}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => { setTitleValue(editableTitle); setTitleEditing(true); }}
+              title="Click to edit title"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'transparent', border: 'none', cursor: 'text', padding: '3px 4px', borderRadius: 'var(--r-sm)', color: 'inherit' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            >
+              <span style={{ fontSize: 17, fontWeight: 700 }}>{editableTitle || 'Untitled chart'}</span>
+              <Icons.Pencil size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+            </button>
+          )}
+        </div>
+      )}
 
       <div ref={wrapRef} style={{ width: '100%' }}>
         {width > 0 && (
