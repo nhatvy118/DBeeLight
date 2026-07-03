@@ -3,6 +3,7 @@ import { Icons, BeeBadge } from '../icons';
 import { useAuth } from '../context/AuthContext';
 import { useOnboarding } from '../context/OnboardingContext';
 import StorageModal from '../components/modals/StorageModal';
+import Header from '../components/layout/Header';
 import Chat from './Chat';
 import Dashboard from './Dashboard';
 import { url, listSharedProjects, type SharedProject } from '../services/api';
@@ -179,6 +180,7 @@ export default function ViewerApp() {
 
       {/* main — home grid, the read-only chat, or the personal dashboard */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        <Header />
         {open ? (
           view === 'dashboard'
             ? <Dashboard key={`d:${open.id}`} projectId={open.id} />

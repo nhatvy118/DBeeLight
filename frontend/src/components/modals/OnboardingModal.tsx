@@ -88,8 +88,8 @@ export default function OnboardingModal({ open, onClose }: OnboardingModalProps)
             <Icon size={27} />
           </div>
           <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: m.ink }}>Welcome — you're set up as</div>
-          <h2 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-.02em', marginTop: 4, color: 'var(--text)' }}>{m.label}</h2>
-          <p style={{ fontSize: 14.5, color: 'var(--text-soft)', marginTop: 7, lineHeight: 1.5 }}>{m.desc}</p>
+          <h2 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-.02em', marginTop: 4, color: m.ink }}>{m.label}</h2>
+          <p style={{ fontSize: 14.5, color: m.ink, opacity: 0.72, marginTop: 7, lineHeight: 1.5 }}>{m.desc}</p>
         </div>
 
         {/* role points */}
