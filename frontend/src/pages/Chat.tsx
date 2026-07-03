@@ -198,6 +198,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // Cursor pagination for message history (scroll up to load older).
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const scrollInstantRef = useRef(false);
   const [oldestCursor, setOldestCursor] = useState<string | null>(null);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const isLoadingOlderRef = useRef(false);
@@ -519,6 +520,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         if (info.success) {
           setSessionDb(getDbInfoFromSessionResponse(info));
           const sqlActionStates = getSqlActionStatesFromSessionResponse(info);
+          scrollInstantRef.current = true;
           setMessages(convertMessages(page.messages, sid, sqlActionStates));
           setOldestCursor(page.next_cursor);
           setHasMoreMessages(page.has_more);
@@ -556,7 +558,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   }, [propSessionId]);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const behavior = scrollInstantRef.current ? ('instant' as ScrollBehavior) : 'smooth';
+    scrollInstantRef.current = false;
+    messagesEndRef.current?.scrollIntoView({ behavior });
   };
 
   useEffect(() => {
@@ -1413,6 +1417,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         if (info.success) {
           setSessionDb(getDbInfoFromSessionResponse(info));
           const sqlActionStates = getSqlActionStatesFromSessionResponse(info);
+          scrollInstantRef.current = true;
           setMessages(convertMessages(page.messages, sid, sqlActionStates));
           setOldestCursor(page.next_cursor);
           setHasMoreMessages(page.has_more);

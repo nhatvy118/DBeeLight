@@ -292,7 +292,7 @@ export default function VegaLiteChart({ specJson, onSave, saved = false, editabl
               onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
             >
-              <span style={{ fontSize: 17, fontWeight: 700 }}>{editableTitle || 'Untitled chart'}</span>
+              <span style={{ fontSize: 20, fontWeight: 700 }}>{editableTitle || 'Untitled chart'}</span>
               <Icons.Pencil size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
             </button>
           )}
