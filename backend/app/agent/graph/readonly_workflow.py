@@ -39,7 +39,7 @@ async def _query_execution(state: AgentState) -> AgentState:
     sql, err, _ = await generate_sql(state.get("user_message", ""), schema, engine, mode="read")
     if err:
         return {**state, "sql": sql,
-                "output": {"type": OUTPUT_ERROR, "message": f"Could not generate a valid SELECT.\n{err}"}}
+                "output": {"type": OUTPUT_ERROR, "message": f"I couldn't answer that from your data.\n{err}"}}
 
     try:
         res = await dbtools.run(sql)

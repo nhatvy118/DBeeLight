@@ -46,7 +46,7 @@ async def _sql_preview(state: AgentState) -> AgentState:
     sql, err, kind = await generate_sql(state.get("user_message", ""), schema, engine, mode="write")
     if err:
         return {**state, "sql": None,
-                "output": {"type": OUTPUT_ERROR, "message": f"Could not generate valid SQL.\n{err}"}}
+                "output": {"type": OUTPUT_ERROR, "message": f"I couldn't turn that request into a database change.\n{err}"}}
 
     # Guard: a plain "create a new table" must not run on the mutation path (it would skip the
     # schema editor + data-dictionary capture). The recreate-for-ALTER pattern is allowed because it

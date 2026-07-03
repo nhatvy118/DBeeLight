@@ -106,7 +106,7 @@ def _validate_encoding(encoding: object, columns: list[str]) -> str | None:
 async def generate_chart(
     sql: str, mark: str, encoding: dict, transform: list | None = None,
     title: str = "", layout: str = "",
-) -> str:
+) -> str | ToolOutput:
     db = get_db()
     adapter = db.primary
     if adapter is None:

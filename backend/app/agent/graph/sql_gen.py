@@ -8,14 +8,14 @@ import logging
 import re
 from typing import Any, Literal, cast
 
-from app.agent.graph.dbtools import is_read_only, verify_with_explain, verify_for_mutation
+from app.agent.graph.dbtools import classify_access, verify_with_explain, verify_for_mutation
 from app.agent.llm import get_llm
 from app.config import get_settings
 
 logger = logging.getLogger("agent.graph.sqlgen")
 
 Mode = Literal["read", "write"]
-_MAX_ATTEMPTS = 3
+_MAX_ATTEMPTS = 5
 
 
 def strip_fences(text: str) -> str:
@@ -27,9 +27,9 @@ def strip_fences(text: str) -> str:
 async def generate_sql(
     user_message: str, schema: str, engine: str, *, mode: Mode
 ) -> tuple[str, str | None, str]:
-    """Generate SQL via the LLM with a verify+repair loop (up to 3 tries).
+    """Generate SQL via the LLM with a verify+repair loop (up to _MAX_ATTEMPTS tries).
 
-    mode="read"  → a single read query (is_read_only + EXPLAIN).
+    mode="read"  → a single read query (classify_access + EXPLAIN).
     mode="write" → one OR MORE write statements (verify_for_mutation: classify_access + EXPLAIN,
                    rejects SELECT). Multiple statements run atomically (adapter.execute is one tx).
 
@@ -72,8 +72,17 @@ async def generate_sql(
             model=get_settings().llm_model, messages=cast(Any, msgs), temperature=0
         )
         sql = strip_fences(resp.choices[0].message.content or "")
-        if read:
-            if not is_read_only(sql, engine):
+        if (info := classify_access(sql, engine)).access == "invalid":
+            # Both modes: no usable SQL (empty per the grounding rule, or prose/unparseable).
+            # If it's still invalid after all retries, the final error reports the question
+            # as not relevant to the connected database.
+            logger.warning("no usable SQL from model (mode=%s): %r", mode, sql)
+            err = ("Your question doesn't seem to match the data in this database — I couldn't "
+                   "find the tables or columns it would need. Try asking about the data the "
+                   "database actually contains, or rephrase with different names.")
+        elif read:
+            if info.access != "read_only":
+                logger.warning("read SQL rejected as write: %r", sql)
                 err = "The read-only path only allows read queries (no INSERT/UPDATE/DELETE/DDL)."
             else:
                 ok, explain_err = await verify_with_explain(sql)
@@ -85,10 +94,18 @@ async def generate_sql(
             if ok:
                 return sql, None, kind
         # Correction goes back as a USER turn (feedback on the assistant's own prior answer) —
-        # more reliable than stacking a second system message mid-conversation.
+        # more reliable than stacking a second system message mid-conversation. For an empty
+        # answer, do NOT demand "corrected SQL" (that would pressure the model to hallucinate
+        # against the grounding rule) — ask it to re-check the schema and allow empty again.
+        if info.access == "invalid":
+            correction = ("You returned no usable SQL. Re-check the schema for tables/columns "
+                          "that match the request (names may differ from the question's wording) "
+                          "and return only the SQL. If there is truly no match, return nothing.")
+        else:
+            correction = (f"That SQL didn't pass validation. Error: {err}\n"
+                          "Fix it and return only the corrected SQL.")
         msgs += [
             {"role": "assistant", "content": sql},
-            {"role": "user", "content": f"That SQL didn't pass validation. Error: {err}\n"
-                                        "Fix it and return only the corrected SQL."},
+            {"role": "user", "content": correction},
         ]
     return sql, (err or "Could not generate valid SQL"), kind
