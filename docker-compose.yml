@@ -1,4 +1,4 @@
-# Backend stack — postgres + backend API.
+# Backend stack — postgres + excel-server (MCP) + backend API.
 # The frontend is deployed separately (not part of this compose).
 #
 # Usage:
@@ -38,6 +38,28 @@ services:
       timeout: 5s
       retries: 10
 
+  excel-server:
+    <<: *common
+    build:
+      context: ./backend/excel_server
+    container_name: dbeelight-excel
+    environment:
+      # Dockerfile already sets FASTMCP_HOST/PORT (0.0.0.0:8931).
+      EXCEL_FILES_PATH: /data/uploads
+    volumes:
+      # MUST be the same volume the backend mounts at /app/_data/uploads —
+      # the backend passes Excel tools paths relative to the uploads dir
+      # (<session>/<file>), so both containers need the same underlying data.
+      - app_file_handle:/data/uploads
+    # No ports: the MCP server has no auth; only the backend reaches it over
+    # the compose network at http://excel-server:8931/mcp.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; socket.create_connection(('localhost',8931),3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   backend:
     <<: *common
     image: ghcr.io/nhatvy118/dbeelight-api:${API_IMAGE_TAG:-latest}
@@ -50,10 +72,15 @@ services:
     environment:
       # NOTE: the app reads DATABASE_URL (app/config.py). Must match POSTGRES_DB above.
       DATABASE_URL: postgresql://${POSTGRES_USER:-dbeelight}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dbeelight_app}?sslmode=disable
+      # Overrides backend/.env (which points at localhost for non-docker dev);
+      # `environment:` takes precedence over `env_file:`.
+      EXCEL_MCP_URL: http://excel-server:8931/mcp
     ports:
       - "127.0.0.1:5001:5001"
     depends_on:
       postgres:
+        condition: service_healthy
+      excel-server:
         condition: service_healthy
     volumes:
       # WORKDIR=/app, DATA_ROOT=./_data → runtime data lives under /app/_data.
