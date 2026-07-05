@@ -168,20 +168,15 @@ export function CodeBlockCard({
 /* --------------------------- result table --------------------------- */
 
 function downloadExcel(data: TableData) {
-  const esc = (s: string) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const head = `<tr>${data.columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>`;
-  const body = data.rows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('');
-  const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"></head><body><table border="1">${head}${body}</table></body></html>`;
-  const blob = new Blob(['﻿', html], { type: 'application/vnd.ms-excel' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'export.xls';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  import('xlsx').then((XLSX) => {
+    const ws = XLSX.utils.aoa_to_sheet([data.columns, ...data.rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Results');
+    XLSX.writeFile(wb, 'export.xlsx');
+  });
 }
+
+const DISPLAY_ROW_LIMIT = 50;
 
 export function ResultTableCard({ node, data: dataProp }: { node?: any; data?: TableData }) {
   // Structured data (from a query_result event) is preferred; otherwise fall back to extracting
@@ -190,6 +185,9 @@ export function ResultTableCard({ node, data: dataProp }: { node?: any; data?: T
 
   if (!data.columns.length && !data.rows.length) return null;
 
+  const totalRows = data.rows.length;
+  const truncated = totalRows > DISPLAY_ROW_LIMIT;
+  const displayRows = truncated ? data.rows.slice(0, DISPLAY_ROW_LIMIT) : data.rows;
   const numericCols = data.columns.map((_, ci) => columnIsNumeric(data.rows, ci));
 
   return (
@@ -216,7 +214,7 @@ export function ResultTableCard({ node, data: dataProp }: { node?: any; data?: T
               </tr>
             </thead>
             <tbody>
-              {data.rows.map((r, ri) => (
+              {displayRows.map((r, ri) => (
                 <tr key={ri}>
                   {r.map((cell, ci) => (
                     <td
@@ -236,7 +234,9 @@ export function ResultTableCard({ node, data: dataProp }: { node?: any; data?: T
 
       <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--text-muted)' }}>
         <Icons.Info size={14} />
-        {`Returned ${data.rows.length} ${data.rows.length === 1 ? 'row' : 'rows'}`}
+        {truncated
+          ? `Showing ${DISPLAY_ROW_LIMIT} of ${totalRows} rows — export to Excel to see all`
+          : `Returned ${totalRows} ${totalRows === 1 ? 'row' : 'rows'}`}
       </div>
     </div>
   );
