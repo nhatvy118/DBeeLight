@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -56,12 +57,19 @@ def _too_large_detail(filename: str, import_mode: str) -> str:
     return "File too large (max 200 MB)"
 
 
+_TMP_EXT_SAFE = re.compile(r"[^a-z0-9.]")
+
+
 async def _spool_to_disk(file: UploadFile, limit: int, import_mode: str) -> Path:
     """Stream the upload to a temp file, never holding more than one chunk in RAM.
     Raises 413 (and removes the partial file) as soon as `limit` is exceeded.
-    Caller is responsible for unlinking the returned path when done."""
+    Caller is responsible for unlinking the returned path when done.
+
+    The temp file KEEPS the upload's real extension — openpyxl (and pandas' engine
+    sniffing) refuse to open a spreadsheet whose filename has the wrong suffix."""
     total = 0
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".upload")
+    ext = _TMP_EXT_SAFE.sub("", Path(file.filename or "").suffix.lower())[:12]
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext or ".upload")
     try:
         while chunk := await file.read(_CHUNK):
             total += len(chunk)

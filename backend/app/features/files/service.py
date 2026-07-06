@@ -489,11 +489,16 @@ async def _import_xlsx_streaming(filename: str, path: Path, adapter) -> dict:
     import pandas as pd  # lazy
 
     _check_xlsx_streamable(path)
+    # A file HANDLE, not the path: openpyxl refuses paths with the "wrong" extension
+    # (the spooled upload may carry a temp suffix); content is what matters.
+    fh = path.open("rb")
     try:
-        wb = await asyncio.to_thread(load_workbook, path, read_only=True, data_only=True)
+        wb = await asyncio.to_thread(load_workbook, fh, read_only=True, data_only=True)
     except FileImportError:
+        fh.close()
         raise
     except Exception as e:  # noqa: BLE001
+        fh.close()
         raise FileImportError(f"Could not read spreadsheet ({e})") from e
 
     try:
@@ -560,6 +565,7 @@ async def _import_xlsx_streaming(filename: str, path: Path, adapter) -> dict:
             raise FileImportError(f"Import failed: {e}") from e
     finally:
         wb.close()
+        fh.close()
 
     return {
         "id": str(uuid.uuid4()),  # synthesized: nothing persisted in `files`
@@ -667,9 +673,11 @@ async def _append_to_project_table(
         from openpyxl import load_workbook
 
         _check_xlsx_streamable(path)
+        fh = path.open("rb")  # file HANDLE — extension-agnostic (see _import_xlsx_streaming)
         try:
-            wb = await asyncio.to_thread(load_workbook, path, read_only=True, data_only=True)
+            wb = await asyncio.to_thread(load_workbook, fh, read_only=True, data_only=True)
         except Exception as e:  # noqa: BLE001
+            fh.close()
             raise FileImportError(f"Could not read spreadsheet ({e})") from e
         try:
             _reset_ws_dimensions(wb)
@@ -711,6 +719,7 @@ async def _append_to_project_table(
                     break
         finally:
             wb.close()
+            fh.close()
     else:  # legacy Excel-family: whole-workbook load (router caps at 30 MB), off the event loop
         tables = await asyncio.to_thread(_read_tables, ext, path)
         if len(tables) > 1:
