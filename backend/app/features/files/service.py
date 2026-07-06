@@ -331,6 +331,72 @@ async def _import_to_project_db(
     }
 
 
+_CSV_CHUNK_ROWS = 50_000  # ~50k rows per DB round-trip keeps peak RAM at tens of MB
+
+
+async def _import_csv_streaming(filename: str, path: Path, ext: str, adapter) -> dict:
+    """Stream a delimited file into a NEW project table without ever loading the
+    whole file: pandas reads `_CSV_CHUNK_ROWS` at a time (in a worker thread so the
+    event loop stays free) and each chunk is appended to the table. On a mid-stream
+    failure the half-written table is dropped — no partial imports survive."""
+    import pandas as pd  # lazy
+
+    table = _project_table_name(filename)
+    if table in set((await adapter.get_schema()).keys()):
+        raise FileImportError(
+            f"Table already exists in the database: {table}. "
+            "Rename the file or drop the existing table first."
+        )
+
+    kwargs = _sniff_csv(path, ext)
+    reader = pd.read_csv(path, chunksize=_CSV_CHUNK_ROWS, **kwargs)
+
+    def _next_chunk():
+        try:
+            return next(reader)
+        except StopIteration:
+            return None
+
+    columns: list[str] = []
+    total_rows = 0
+    if_exists = "fail"  # first chunk creates the table; ValueError = lost a creation race
+    try:
+        while (chunk := await asyncio.to_thread(_next_chunk)) is not None:
+            df = _sanitize_columns(chunk)  # same headers every chunk → same names
+            if not columns:
+                columns = [str(c) for c in df.columns]
+            try:
+                await adapter.import_dataframe(table, df, if_exists=if_exists)
+            except ValueError as e:
+                raise FileImportError(f"Table '{table}' already exists.") from e
+            if_exists = "append"
+            total_rows += len(df)
+    except FileImportError:
+        raise
+    except Exception as e:  # noqa: BLE001 — clean up the partial table, surface a clean reason
+        if total_rows or if_exists == "append":
+            try:
+                await adapter.execute(f'DROP TABLE IF EXISTS "{table}"')
+            except Exception:  # noqa: BLE001
+                logger.warning("could not drop partial table %s", table)
+        raise FileImportError(f"Import failed after {total_rows} rows: {e}") from e
+    finally:
+        close = getattr(reader, "close", None)
+        if close:
+            close()
+
+    if total_rows == 0 and not columns:
+        raise FileImportError("File contains no rows")
+    return {
+        "id": str(uuid.uuid4()),  # synthesized: nothing persisted in `files`
+        "filename": filename,
+        "size_bytes": path.stat().st_size,
+        "created_at": None,
+        # New project tables → the FE offers a "describe this table" step (data dictionary).
+        "tables": [{"name": table, "columns": columns}],
+    }
+
+
 def _align_to_table(df, table_columns: list) -> tuple:
     """Match the uploaded DataFrame's columns to an existing table's columns by name (flexible
     import). Returns (aligned_df, missing_required) where:
