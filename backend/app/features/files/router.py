@@ -1,6 +1,7 @@
 """Files router — matches the FE contract (SessionFileMeta, {file}/{files} envelopes)."""
 from __future__ import annotations
 
+import logging
 import mimetypes
 import tempfile
 from datetime import datetime
@@ -17,6 +18,7 @@ from app.features.projects import service as proj_service
 from app.features.sessions import repository as sess_repo
 
 router = APIRouter(prefix="/api/files", tags=["files"])
+logger = logging.getLogger("files")
 
 _QUOTA_BYTES = 200 * 1024 * 1024      # 200 MB — total storage quota + per-upload cap for streamed imports
 _EXCEL_MODE_MAX = 1 * 1024 * 1024     # 1 MB — mode "excel": the workbook feeds the LLM/excel-server context
@@ -64,6 +66,7 @@ async def _spool_to_disk(file: UploadFile, limit: int, import_mode: str) -> Path
         while chunk := await file.read(_CHUNK):
             total += len(chunk)
             if total > limit:
+                logger.warning("upload rejected 413: %r mode=%s exceeded %d bytes", file.filename, import_mode, limit)
                 raise HTTPException(status_code=413, detail=_too_large_detail(file.filename or "", import_mode))
             tmp.write(chunk)
     except BaseException:
@@ -140,6 +143,7 @@ async def upload(
                 target_table=(target_table or None),
             )
         except service.FileImportError as e:
+            logger.warning("upload import failed 400: %r mode=%s — %s", file.filename, import_mode, e)
             raise HTTPException(status_code=400, detail=str(e)) from e
     finally:
         tmp_path.unlink(missing_ok=True)  # temp upload never outlives the request

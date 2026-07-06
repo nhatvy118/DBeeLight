@@ -376,6 +376,7 @@ async def _import_csv_streaming(filename: str, path: Path, ext: str, adapter) ->
                 raise FileImportError(f"Table '{table}' already exists.") from e
             if_exists = "append"
             total_rows += len(df)
+            logger.info("csv streaming %r → %s: %d rows so far", filename, table, total_rows)
     except FileImportError:
         raise
     except Exception as e:  # noqa: BLE001 — clean up the partial table, surface a clean reason
@@ -392,6 +393,7 @@ async def _import_csv_streaming(filename: str, path: Path, ext: str, adapter) ->
 
     if total_rows == 0 and not columns:
         raise FileImportError("File contains no rows")
+    logger.info("csv streaming %r done: %d rows → table %s", filename, total_rows, table)
     return {
         "id": str(uuid.uuid4()),  # synthesized: nothing persisted in `files`
         "filename": filename,
@@ -545,6 +547,7 @@ async def _import_xlsx_streaming(filename: str, path: Path, adapter) -> dict:
                         break
                 created.append({"name": table, "columns": cols})
                 cur_created = None
+                logger.info("xlsx streaming %r done sheet %r: %d rows → table %s", filename, name, total, table)
         except BaseException as e:
             partial = [c["name"] for c in created] + ([cur_created] if cur_created else [])
             for t in partial:
@@ -754,6 +757,7 @@ async def _save_for_excel(user_id: str, session_id: str, filename: str, path: Pa
     else:
         out_bytes = await asyncio.to_thread(_to_xlsx_bytes, ext, path)
         disk_path.write_bytes(out_bytes)
+    logger.info("excel save done: %r → %s (%d bytes)", filename, disk_path.name, disk_path.stat().st_size)
     return await repo.insert_file(user_id, session_id, out_name, str(disk_path), disk_path.stat().st_size)
 
 
