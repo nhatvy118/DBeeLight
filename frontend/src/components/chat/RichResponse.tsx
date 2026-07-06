@@ -172,7 +172,16 @@ function downloadExcel(data: TableData) {
     const ws = XLSX.utils.aoa_to_sheet([data.columns, ...data.rows]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Results');
-    XLSX.writeFile(wb, 'export.xlsx');
+    const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'export.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   });
 }
 

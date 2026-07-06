@@ -177,7 +177,7 @@ export default function ShareProjectModal({ project, onClose }: { project: { id:
 
         {/* current access */}
         <label className="field-label" style={{ marginTop: 18 }}>People with access ({shares.length})</label>
-        <div className="card" style={{ overflow: 'hidden', maxHeight: 180, overflowY: 'auto' }}>
+        <div className="card" style={{ overflow: 'hidden', minHeight: 200, maxHeight: 280, overflowY: 'auto' }}>
           {shares.length === 0 ? (
             <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>Not shared with anyone yet.</div>
           ) : shares.map((s, i) => (
