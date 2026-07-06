@@ -94,15 +94,13 @@ async def upload(
     if import_mode not in _IMPORT_MODES:
         raise HTTPException(status_code=400, detail=f"Invalid import_mode (expected one of {_IMPORT_MODES})")
     tmp_path = await _spool_to_disk(file, _upload_limit(file.filename or ""))
-    content = tmp_path.read_bytes()  # TEMPORARY bridge — removed when service takes a Path
-    tmp_path.unlink(missing_ok=True)
 
     # Cumulative quota: per-file size was capped above; also reject when the user's TOTAL stored
     # bytes would exceed the limit. Only 'excel' persists into `files` (project_db lives in the
     # user's own DB and is not counted as our storage).
     if import_mode == "excel":
         used, _ = await repo.user_storage(user_id)
-        if used + len(content) > _QUOTA_BYTES:
+        if used + tmp_path.stat().st_size > _QUOTA_BYTES:
             raise HTTPException(
                 status_code=413,
                 detail="Storage quota exceeded (200 MB total). Delete some files first.",
@@ -127,7 +125,7 @@ async def upload(
 
     try:
         rec = await service.save_and_import(
-            user_id, session_id, file.filename or "upload", content,
+            user_id, session_id, file.filename or "upload", tmp_path,
             mode=import_mode, project_id=pid, project_db_url=project_db_url,
             target_table=(target_table or None),
         )

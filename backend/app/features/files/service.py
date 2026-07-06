@@ -11,6 +11,7 @@ import asyncio
 import csv
 import logging
 import re
+import shutil
 import uuid
 from io import BytesIO
 from pathlib import Path
@@ -91,23 +92,29 @@ def _looks_european(sample: str) -> bool:
     return bool(re.search(r"\d+,\d{1,2}(?:[;\s]|$)", sample))
 
 
-def _read_csv_smart(content: bytes, ext: str):
-    """CSV/TSV/TXT with encoding + delimiter + decimal sniffing."""
-    import pandas as pd  # lazy
+_SNIFF_BYTES = 65536  # sniff encoding/delimiter/decimal from the first 64 KB only
 
-    if content.startswith(b"\xef\xbb\xbf"):
+
+def _sniff_csv(path: Path, ext: str) -> dict:
+    """Detect encoding + delimiter + decimal style from the head of the file and
+    return kwargs for pd.read_csv. Sniffing a 64 KB sample keeps RAM flat no
+    matter how large the file is."""
+    with path.open("rb") as fh:
+        head = fh.read(_SNIFF_BYTES)
+
+    if head.startswith(b"\xef\xbb\xbf"):
         encoding = "utf-8-sig"
     else:
         encoding = "latin-1"
         for enc in ("utf-8", "cp1258", "latin-1"):
             try:
-                content.decode(enc)
+                head.decode(enc)
                 encoding = enc
                 break
             except UnicodeDecodeError:
                 continue
 
-    sample = content[:8192].decode(encoding, errors="replace")
+    sample = head[:8192].decode(encoding, errors="replace")
     if ext == ".txt" and not any(d in sample for d in (",", ";", "\t")):
         raise FileImportError("Text file is not delimited — cannot import as a table")
     try:
@@ -117,11 +124,20 @@ def _read_csv_smart(content: bytes, ext: str):
 
     decimal = "," if sep == ";" and _looks_european(sample) else "."
     thousands = "." if decimal == "," else ","
-    return pd.read_csv(BytesIO(content), sep=sep, encoding=encoding, decimal=decimal, thousands=thousands)
+    return {"sep": sep, "encoding": encoding, "decimal": decimal, "thousands": thousands}
 
 
-def _read_excel_sheets(content: bytes) -> dict:
-    """All sheets as {name: df}. calamine first (xlsx/xls/xlsb/ods), then pandas default."""
+def _read_csv_full(path: Path, ext: str):
+    """Whole-file CSV read (small files / xlsx conversion). Streaming imports use
+    _sniff_csv + pd.read_csv(chunksize=...) directly — see _import_csv_streaming."""
+    import pandas as pd  # lazy
+
+    return pd.read_csv(path, **_sniff_csv(path, ext))
+
+
+def _read_excel_sheets(path: Path) -> dict:
+    """All sheets as {name: df}. calamine first (xlsx/xls/xlsb/ods), then pandas default.
+    NOTE: loads the whole workbook — callers must enforce the Excel size cap first."""
     import pandas as pd  # lazy
 
     last_err: Exception | None = None
@@ -130,21 +146,21 @@ def _read_excel_sheets(content: bytes) -> dict:
             kwargs: dict = {"sheet_name": None}
             if engine:
                 kwargs["engine"] = engine
-            return pd.read_excel(BytesIO(content), **kwargs)
+            return pd.read_excel(path, **kwargs)
         except Exception as e:  # noqa: BLE001
             last_err = e
             logger.warning("excel read (engine=%s) failed: %s", engine, e)
     raise FileImportError(f"Could not read spreadsheet ({last_err})")
 
 
-def _read_tables(ext: str, content: bytes) -> dict:
-    """Parse tabular bytes into {sheet_label_or_None: DataFrame}. Delimited / single-sheet
+def _read_tables(ext: str, path: Path) -> dict:
+    """Parse a tabular FILE into {sheet_label_or_None: DataFrame}. Delimited / single-sheet
     workbooks → key None (table name carries no sheet suffix); a multi-sheet workbook →
-    one entry per sheet (each becomes its own table)."""
+    one entry per sheet (each becomes its own table). Reads from disk, not a bytes blob."""
     if ext in _DELIMITED_EXTS:
-        return {None: _sanitize_columns(_read_csv_smart(content, ext))}
+        return {None: _sanitize_columns(_read_csv_full(path, ext))}
     if ext in _EXCEL_EXTS:
-        sheets = _read_excel_sheets(content)
+        sheets = _read_excel_sheets(path)
         usable = {
             str(name): _sanitize_columns(df)
             for name, df in sheets.items()
@@ -158,7 +174,7 @@ def _read_tables(ext: str, content: bytes) -> dict:
     raise FileImportError(f"Unsupported file type: {ext}")
 
 
-def _to_xlsx_bytes(ext: str, content: bytes) -> bytes:
+def _to_xlsx_bytes(ext: str, path: Path) -> bytes:
     """Convert a tabular file to .xlsx bytes so the (xlsx-only) excel-server can read it.
     Delimited → one sheet; Excel-family → every sheet preserved (formulas are not).
 
@@ -168,9 +184,9 @@ def _to_xlsx_bytes(ext: str, content: bytes) -> bytes:
     from openpyxl.utils.dataframe import dataframe_to_rows
 
     if ext in _DELIMITED_EXTS:
-        sheets = {"Sheet1": _read_csv_smart(content, ext)}
+        sheets = {"Sheet1": _read_csv_full(path, ext)}
     else:
-        sheets = _read_excel_sheets(content)
+        sheets = _read_excel_sheets(path)
 
     wb = Workbook()
     default_ws = wb.active  # may be None per the type stubs
@@ -246,30 +262,31 @@ async def save_and_import(
     user_id: str,
     session_id: str,
     filename: str,
-    content: bytes,
+    path: Path,
     *,
     mode: str,
     project_id: str | None = None,
     project_db_url: str | None = None,
     target_table: str | None = None,
 ) -> dict:
-    """Single-purpose import per `mode`. Any failure raises FileImportError → 400:
+    """Single-purpose import per `mode`. `path` is the spooled upload on disk (the router
+    owns and deletes it). Any failure raises FileImportError → 400:
     - "project_db": import into the project DB. By default a NEW table (file-named); when
       `target_table` is given, APPEND the rows into that existing table instead.
     - "excel":      keep the original on the shared volume for the excel-server (no SQL import).
     """
-    logger.info("→ save_and_import(user_id=%r session_id=%r filename=%r mode=%r project_id=%r target_table=%r)", user_id, session_id, filename, mode, project_id, target_table)  # autolog
+    logger.info("→ save_and_import(user_id=%r session_id=%r filename=%r mode=%r project_id=%r target_table=%r size=%d)", user_id, session_id, filename, mode, project_id, target_table, path.stat().st_size)  # autolog
     if mode == "project_db":
         if target_table:
-            return await _append_to_project_table(filename, content, project_id, project_db_url, target_table)
-        return await _import_to_project_db(filename, content, project_id, project_db_url)
+            return await _append_to_project_table(filename, path, project_id, project_db_url, target_table)
+        return await _import_to_project_db(filename, path, project_id, project_db_url)
     if mode == "excel":
-        return await _save_for_excel(user_id, session_id, filename, content)
+        return await _save_for_excel(user_id, session_id, filename, path)
     raise FileImportError(f"Unknown import mode: {mode!r}")
 
 
 async def _import_to_project_db(
-    filename: str, content: bytes, project_id: str | None, project_db_url: str | None
+    filename: str, path: Path, project_id: str | None, project_db_url: str | None
 ) -> dict:
     """Import into the project DB → a real project table (queried via the pooled primary
     adapter, so chat sees it immediately). Nothing on disk, no `files` row — synthesized meta."""
@@ -278,10 +295,15 @@ async def _import_to_project_db(
     ext = Path(filename).suffix.lower()
     if ext not in _TABULAR_EXTS:
         raise FileImportError("Only CSV/Excel files can be imported into the database")
-    tables = _read_tables(ext, content)  # one entry per sheet (multi-sheet → multiple tables)
     from app.agent.pool import get_connection_pool
 
     adapter = await get_connection_pool().adapter_for(project_id, project_db_url)
+
+    if ext in _DELIMITED_EXTS:  # CSV/TSV/TXT stream — flat RAM at any size
+        return await _import_csv_streaming(filename, path, ext, adapter)
+
+    # Excel-family: whole-workbook load (router caps these at 30 MB), off the event loop.
+    tables = await asyncio.to_thread(_read_tables, ext, path)
     # Project tables keep a clean, file-derived name (no t_). Refuse to clobber an existing table —
     # the user must rename the file or drop the table first (no silent overwrite of real data).
     targets = {label: _project_table_name(filename, label) for label in tables}
@@ -302,7 +324,7 @@ async def _import_to_project_db(
     return {
         "id": str(uuid.uuid4()),  # synthesized: nothing persisted in `files`
         "filename": filename,
-        "size_bytes": len(content),
+        "size_bytes": path.stat().st_size,
         "created_at": None,
         # New project tables → the FE offers a "describe this table" step (data dictionary).
         "tables": created,
@@ -333,24 +355,21 @@ def _align_to_table(df, table_columns: list) -> tuple:
 
 
 async def _append_to_project_table(
-    filename: str, content: bytes, project_id: str | None, project_db_url: str | None,
+    filename: str, path: Path, project_id: str | None, project_db_url: str | None,
     target_table: str,
 ) -> dict:
     """Append a file's rows INTO an existing project table (flexible column matching). Columns
     are matched to the target by name; extras are ignored and omitted columns fall back to the
-    DB's default/NULL/auto-increment. Raises FileImportError on any problem (→ 400)."""
+    DB's default/NULL/auto-increment. CSV streams in chunks; Excel loads whole (router-capped).
+    Raises FileImportError on any problem (→ 400).
+
+    NOTE: appends are NOT rolled back on a mid-stream failure — the target table pre-existed
+    with real data, so dropping it would be worse than leaving partially-appended rows."""
     if not (project_id and project_db_url):
         raise FileImportError("No project database to import into")
     ext = Path(filename).suffix.lower()
     if ext not in _TABULAR_EXTS:
         raise FileImportError("Only CSV/Excel files can be imported into the database")
-    tables = _read_tables(ext, content)
-    if len(tables) > 1:
-        raise FileImportError(
-            "This file has multiple sheets — appending supports a single table. "
-            "Split the sheets or import as a new table instead."
-        )
-    df = next(iter(tables.values()))
 
     from app.agent.pool import get_connection_pool
     adapter = await get_connection_pool().adapter_for(project_id, project_db_url)
@@ -358,44 +377,84 @@ async def _append_to_project_table(
     if target_table not in schema:
         raise FileImportError(f"Table '{target_table}' doesn't exist in the database.")
 
-    aligned, missing_required = _align_to_table(df, schema[target_table])
-    if aligned.shape[1] == 0:
-        raise FileImportError(
-            f"None of the file's columns match the columns of '{target_table}'. "
-            "Check the headers or import as a new table."
-        )
-    if missing_required:
-        raise FileImportError(
-            f"The file is missing required column(s) of '{target_table}': "
-            f"{', '.join(missing_required)}."
-        )
-    try:
-        await adapter.import_dataframe(target_table, aligned, if_exists="append")
-    except Exception as e:  # noqa: BLE001 — surface a clean reason, not the raw driver text
-        from app.agent.graph import dbtools
-        raise FileImportError(
-            f"Couldn’t append to '{target_table}': {dbtools.clean_db_error(str(e))}."
-        ) from e
+    def _validate(aligned, missing_required):
+        if aligned.shape[1] == 0:
+            raise FileImportError(
+                f"None of the file's columns match the columns of '{target_table}'. "
+                "Check the headers or import as a new table."
+            )
+        if missing_required:
+            raise FileImportError(
+                f"The file is missing required column(s) of '{target_table}': "
+                f"{', '.join(missing_required)}."
+            )
+
+    if ext in _DELIMITED_EXTS:  # CSV/TSV/TXT — stream in chunks, flat RAM
+        import pandas as pd  # lazy
+
+        reader = pd.read_csv(path, chunksize=_CSV_CHUNK_ROWS, **_sniff_csv(path, ext))
+
+        def _next_chunk():
+            try:
+                return next(reader)
+            except StopIteration:
+                return None
+
+        checked = False
+        try:
+            while (chunk := await asyncio.to_thread(_next_chunk)) is not None:
+                aligned, missing_required = _align_to_table(
+                    _sanitize_columns(chunk), schema[target_table]
+                )
+                if not checked:  # headers identical every chunk → validate once
+                    _validate(aligned, missing_required)
+                    checked = True
+                await adapter.import_dataframe(target_table, aligned, if_exists="append")
+        except FileImportError:
+            raise
+        except Exception as e:  # noqa: BLE001 — surface a clean reason, not the raw driver text
+            from app.agent.graph import dbtools
+            raise FileImportError(
+                f"Couldn’t append to '{target_table}': {dbtools.clean_db_error(str(e))}."
+            ) from e
+        finally:
+            close = getattr(reader, "close", None)
+            if close:
+                close()
+    else:  # Excel-family: whole-workbook load (router caps at 30 MB), off the event loop
+        tables = await asyncio.to_thread(_read_tables, ext, path)
+        if len(tables) > 1:
+            raise FileImportError(
+                "This file has multiple sheets — appending supports a single table. "
+                "Split the sheets or import as a new table instead."
+            )
+        df = next(iter(tables.values()))
+        aligned, missing_required = _align_to_table(df, schema[target_table])
+        _validate(aligned, missing_required)
+        try:
+            await adapter.import_dataframe(target_table, aligned, if_exists="append")
+        except Exception as e:  # noqa: BLE001 — surface a clean reason, not the raw driver text
+            from app.agent.graph import dbtools
+            raise FileImportError(
+                f"Couldn’t append to '{target_table}': {dbtools.clean_db_error(str(e))}."
+            ) from e
     return {
         "id": str(uuid.uuid4()),  # synthesized: nothing persisted in `files`
         "filename": filename,
-        "size_bytes": len(content),
+        "size_bytes": path.stat().st_size,
         "created_at": None,
     }
 
 
-async def _save_for_excel(user_id: str, session_id: str, filename: str, content: bytes) -> dict:
+async def _save_for_excel(user_id: str, session_id: str, filename: str, path: Path) -> dict:
     """Keep a workbook on the shared volume so the excel-server (xlsx-only) can read/edit it.
-    Native .xlsx is stored as-is (preserves sheets/formulas); other tabular formats are
-    converted to .xlsx. No SQL import — recorded as a `files` row with only the disk path."""
+    Native .xlsx is COPIED as-is (never parsed — preserves sheets/formulas, zero RAM); other
+    tabular formats are converted to .xlsx (whole-load, router-capped at 30 MB). No SQL
+    import — recorded as a `files` row with only the disk path."""
     ext = Path(filename).suffix.lower()
     if ext not in _EXCEL_EDITABLE:
         raise FileImportError("This file type can't be opened as an Excel workbook")
-    if ext == ".xlsx":
-        out_name, out_bytes = _safe_filename(filename, suffix=".xlsx"), content
-    else:
-        out_name = _safe_filename(filename, suffix=".xlsx")
-        out_bytes = await asyncio.to_thread(_to_xlsx_bytes, ext, content)
+    out_name = _safe_filename(filename, suffix=".xlsx")
     uploads = (Path(get_settings().data_root) / "uploads" / session_id).resolve()
     uploads.mkdir(parents=True, exist_ok=True)
     disk_path = (uploads / out_name).resolve()
@@ -403,8 +462,12 @@ async def _save_for_excel(user_id: str, session_id: str, filename: str, content:
     # against a crafted filename that survived sanitisation).
     if uploads not in disk_path.parents:
         raise FileImportError("Invalid file name")
-    disk_path.write_bytes(out_bytes)
-    return await repo.insert_file(user_id, session_id, out_name, str(disk_path), len(out_bytes))
+    if ext == ".xlsx":
+        await asyncio.to_thread(shutil.copyfile, path, disk_path)  # stored as-is, never parsed
+    else:
+        out_bytes = await asyncio.to_thread(_to_xlsx_bytes, ext, path)
+        disk_path.write_bytes(out_bytes)
+    return await repo.insert_file(user_id, session_id, out_name, str(disk_path), disk_path.stat().st_size)
 
 
 async def delete_file(user_id: str, file_id: str) -> bool:
