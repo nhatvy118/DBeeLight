@@ -65,3 +65,18 @@ async def test_save_for_excel_xlsx_is_copied_not_parsed(tmp_path, monkeypatch):
     stored = tmp_path / "data" / "uploads" / "s1" / "book.xlsx"
     assert stored.exists() and stored.read_bytes() == src.read_bytes()
     assert rec["size_bytes"] == src.stat().st_size
+
+
+async def test_no_sync_read_tables_call_in_import_paths():
+    """_read_tables blocks for seconds on big files — every call in async import
+    paths must go through asyncio.to_thread. Guard against regression by source
+    inspection (cheap and honest: the behavioral difference needs a 100MB file)."""
+    import inspect
+
+    src = inspect.getsource(service)
+    for line in src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or "def _read_tables" in stripped:
+            continue
+        if "_read_tables(" in stripped and "to_thread" not in stripped:
+            raise AssertionError(f"sync _read_tables call found: {stripped}")
