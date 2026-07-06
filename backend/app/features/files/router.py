@@ -94,43 +94,45 @@ async def upload(
     if import_mode not in _IMPORT_MODES:
         raise HTTPException(status_code=400, detail=f"Invalid import_mode (expected one of {_IMPORT_MODES})")
     tmp_path = await _spool_to_disk(file, _upload_limit(file.filename or ""))
-
-    # Cumulative quota: per-file size was capped above; also reject when the user's TOTAL stored
-    # bytes would exceed the limit. Only 'excel' persists into `files` (project_db lives in the
-    # user's own DB and is not counted as our storage).
-    if import_mode == "excel":
-        used, _ = await repo.user_storage(user_id)
-        if used + tmp_path.stat().st_size > _QUOTA_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail="Storage quota exceeded (200 MB total). Delete some files first.",
-            )
-
-    # project_db needs the project's resolved DSN (ownership-checked); other modes don't.
-    project_db_url: str | None = None
-    pid = project_id or sess.get("project_id")
-    if import_mode == "project_db":
-        # Viewers (non-technical) may upload + EDIT Excel files, but never import into a database.
-        me = await auth_repo.get_user(user_id)
-        if (me or {}).get("role") == "viewer":
-            raise HTTPException(
-                status_code=403,
-                detail="Viewers can edit Excel files, but can't import data into the database.",
-            )
-        if not pid:
-            raise HTTPException(status_code=400, detail="No project to import into")
-        project_db_url = await proj_service.resolve_db_url(pid, user_id)
-        if not project_db_url:
-            raise HTTPException(status_code=400, detail="Project has no database connected")
-
     try:
-        rec = await service.save_and_import(
-            user_id, session_id, file.filename or "upload", tmp_path,
-            mode=import_mode, project_id=pid, project_db_url=project_db_url,
-            target_table=(target_table or None),
-        )
-    except service.FileImportError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        # Cumulative quota: per-file size was capped above; also reject when the user's TOTAL
+        # stored bytes would exceed the limit. Only 'excel' persists into `files` (project_db
+        # lives in the user's own DB and is not counted as our storage).
+        if import_mode == "excel":
+            used, _ = await repo.user_storage(user_id)
+            if used + tmp_path.stat().st_size > _QUOTA_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Storage quota exceeded (200 MB total). Delete some files first.",
+                )
+
+        # project_db needs the project's resolved DSN (ownership-checked); other modes don't.
+        project_db_url: str | None = None
+        pid = project_id or sess.get("project_id")
+        if import_mode == "project_db":
+            # Viewers (non-technical) may upload + EDIT Excel files, but never import into a DB.
+            me = await auth_repo.get_user(user_id)
+            if (me or {}).get("role") == "viewer":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Viewers can edit Excel files, but can't import data into the database.",
+                )
+            if not pid:
+                raise HTTPException(status_code=400, detail="No project to import into")
+            project_db_url = await proj_service.resolve_db_url(pid, user_id)
+            if not project_db_url:
+                raise HTTPException(status_code=400, detail="Project has no database connected")
+
+        try:
+            rec = await service.save_and_import(
+                user_id, session_id, file.filename or "upload", tmp_path,
+                mode=import_mode, project_id=pid, project_db_url=project_db_url,
+                target_table=(target_table or None),
+            )
+        except service.FileImportError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+    finally:
+        tmp_path.unlink(missing_ok=True)  # temp upload never outlives the request
     resp: dict = {"file": _meta(rec)}
     if rec.get("tables"):  # project_db new-table import → let the FE prompt for descriptions
         resp["tables"] = rec["tables"]
