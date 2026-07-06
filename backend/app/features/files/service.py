@@ -428,11 +428,27 @@ def _check_xlsx_streamable(path: Path) -> None:
 
 def _xlsx_header_row(ws) -> tuple[int, list] | None:
     """(row_index, raw_values) of the first non-empty row of a read-only worksheet —
-    the header (mirrors pandas, which skips leading blank rows). None = empty sheet."""
+    the header (mirrors pandas, which skips leading blank rows). None = empty sheet.
+
+    MUST be called after ws.reset_dimensions(): some writers declare a bogus dimension
+    (up to A1:XFD1048576) and openpyxl would otherwise yield millions of empty rows of
+    16384 Nones each — which looks like a hang. reset_dimensions() makes iteration
+    follow the sheet's ACTUAL content instead of the declared bounds."""
     for idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
         if any(v is not None and str(v).strip() != "" for v in row):
-            return idx, list(row)
+            raw = list(row)
+            while raw and raw[-1] is None:  # styled-but-empty trailing cells
+                raw.pop()
+            return (idx, raw) if raw else None
     return None
+
+
+def _reset_ws_dimensions(wb) -> None:
+    """Ignore each sheet's declared dimension (writers lie — see _xlsx_header_row)."""
+    for ws in wb.worksheets:
+        reset = getattr(ws, "reset_dimensions", None)
+        if reset:
+            reset()
 
 
 def _xlsx_columns(raw_header: list) -> list[str]:
@@ -479,6 +495,7 @@ async def _import_xlsx_streaming(filename: str, path: Path, adapter) -> dict:
         raise FileImportError(f"Could not read spreadsheet ({e})") from e
 
     try:
+        _reset_ws_dimensions(wb)
         # Pre-pass: header row of every sheet (cheap — parses only the top of each sheet).
         headers: dict[str, tuple[int, list]] = {}
         for ws in wb.worksheets:
@@ -487,6 +504,7 @@ async def _import_xlsx_streaming(filename: str, path: Path, adapter) -> dict:
                 headers[str(ws.title)] = found
         if not headers:
             raise FileImportError("Spreadsheet has no readable sheets")
+        logger.info("xlsx streaming %r: %d usable sheet(s): %s", filename, len(headers), list(headers))
 
         # Same naming rules as the whole-load path: single sheet → file-derived name,
         # multi-sheet → per-sheet suffix. Refuse to clobber existing tables (checked
@@ -510,6 +528,7 @@ async def _import_xlsx_streaming(filename: str, path: Path, adapter) -> dict:
                 rows_iter = wb[name].iter_rows(min_row=hdr_idx + 1, values_only=True)
                 if_exists = "fail"  # first chunk creates the table; ValueError = creation race
                 cur_created = None
+                total = 0
                 while True:
                     rows = await asyncio.to_thread(_pull_xlsx_chunk, rows_iter, len(cols), _CSV_CHUNK_ROWS)
                     df = pd.DataFrame(rows, columns=cols)
@@ -520,6 +539,8 @@ async def _import_xlsx_streaming(filename: str, path: Path, adapter) -> dict:
                     if if_exists == "fail":
                         cur_created = table
                     if_exists = "append"
+                    total += len(rows)
+                    logger.info("xlsx streaming %r → %s: %d rows so far", filename, table, total)
                     if len(rows) < _CSV_CHUNK_ROWS:
                         break
                 created.append({"name": table, "columns": cols})
@@ -648,6 +669,7 @@ async def _append_to_project_table(
         except Exception as e:  # noqa: BLE001
             raise FileImportError(f"Could not read spreadsheet ({e})") from e
         try:
+            _reset_ws_dimensions(wb)
             usable: list[tuple[str, tuple[int, list]]] = []
             for ws in wb.worksheets:
                 found = await asyncio.to_thread(_xlsx_header_row, ws)
@@ -664,6 +686,7 @@ async def _append_to_project_table(
             cols = _xlsx_columns(raw_header)
             rows_iter = wb[name].iter_rows(min_row=hdr_idx + 1, values_only=True)
             checked = False
+            total = 0
             while True:
                 rows = await asyncio.to_thread(_pull_xlsx_chunk, rows_iter, len(cols), _CSV_CHUNK_ROWS)
                 df = pd.DataFrame(rows, columns=cols)
@@ -679,6 +702,8 @@ async def _append_to_project_table(
                         raise FileImportError(
                             f"Couldn’t append to '{target_table}': {dbtools.clean_db_error(str(e))}."
                         ) from e
+                total += len(rows)
+                logger.info("xlsx append %r → %s: %d rows so far", filename, target_table, total)
                 if len(rows) < _CSV_CHUNK_ROWS:
                     break
         finally:
