@@ -604,14 +604,53 @@ export async function getFilesQuota(): Promise<FileQuotaInfo> {
   if (!response.ok) {
     throw new Error((data as { detail?: string }).detail || 'Failed to load storage quota');
   }
-  const w = data as FileQuotaInfo;
+  // Backend returns {used_bytes, limit_bytes, file_count}; derive the rest so the UI
+  // never falls back to a stale hardcoded limit.
+  const w = data as Partial<FileQuotaInfo>;
+  const used = w.used_bytes ?? 0;
+  const limit = w.limit_bytes ?? 0;
   return {
-    used_bytes: w.used_bytes,
-    limit_bytes: w.limit_bytes,
-    remaining_bytes: w.remaining_bytes,
-    import_used_bytes: w.import_used_bytes ?? w.used_bytes,
+    used_bytes: used,
+    limit_bytes: limit,
+    remaining_bytes: w.remaining_bytes ?? Math.max(0, limit - used),
+    import_used_bytes: w.import_used_bytes ?? used,
     export_used_bytes: w.export_used_bytes ?? 0,
   };
+}
+
+// ---- Client-side upload validation (mirrors backend caps in files/router.py) ----
+// BE remains the source of truth (413); these checks only fail fast for better UX.
+
+/** Legacy Excel formats can't be stream-parsed server-side → much lower DB-import cap
+ *  (xlsx/xlsm and CSV/TSV/TXT stream, so they get the full 200 MB for DB imports). */
+const LEGACY_EXCEL_UPLOAD_EXTS = /\.(xls|xlsb|ods|xltx|xltm)$/i;
+export const EXCEL_MODE_MAX_BYTES = 1 * 1024 * 1024;       // 1 MB — mode "excel" (LLM context)
+export const LEGACY_EXCEL_DB_MAX_BYTES = 30 * 1024 * 1024; // 30 MB — legacy Excel into DB
+export const FILE_UPLOAD_MAX_BYTES = 200 * 1024 * 1024;    // 200 MB — streamed DB imports
+
+/** Returns an error message when the file exceeds its per-file cap, else null.
+ *  At staging time the import mode isn't chosen yet → checks against the MOST permissive
+ *  mode for the extension (never blocks a file some mode would accept); pass `importMode`
+ *  at upload time for the exact per-mode check. */
+export function validateUploadFileSize(file: File, importMode?: ImportMode): string | null {
+  const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+  if (importMode === 'excel') {
+    if (file.size <= EXCEL_MODE_MAX_BYTES) return null;
+    return (
+      `"${file.name}" is ${sizeMb} MB — files opened as workbooks in chat are limited to 1 MB. ` +
+      `To analyze a big dataset, import it into the database instead.`
+    );
+  }
+  const isLegacyExcel = LEGACY_EXCEL_UPLOAD_EXTS.test(file.name);
+  const limit = isLegacyExcel ? LEGACY_EXCEL_DB_MAX_BYTES : FILE_UPLOAD_MAX_BYTES;
+  if (file.size <= limit) return null;
+  if (isLegacyExcel) {
+    return (
+      `"${file.name}" is ${sizeMb} MB — this Excel format is limited to 30 MB for database imports. ` +
+      `For big datasets, "Save As" .xlsx or CSV, then upload that (up to 200 MB).`
+    );
+  }
+  return `"${file.name}" is ${sizeMb} MB — the upload limit is 200 MB.`;
 }
 
 export type UserFileInventoryRow = {

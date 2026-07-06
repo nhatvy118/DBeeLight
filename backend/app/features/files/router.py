@@ -18,33 +18,43 @@ from app.features.sessions import repository as sess_repo
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
-_QUOTA_BYTES = 200 * 1024 * 1024  # 200 MB — per-upload cap for streamable formats + total quota
-_EXCEL_MAX = 30 * 1024 * 1024     # 30 MB — Excel-family cap: xlsx decompresses to 20-50x in RAM
-_CHUNK = 1024 * 1024              # 1 MB read window
+_QUOTA_BYTES = 200 * 1024 * 1024      # 200 MB — total storage quota + per-upload cap for streamed imports
+_EXCEL_MODE_MAX = 1 * 1024 * 1024     # 1 MB — mode "excel": the workbook feeds the LLM/excel-server context
+_LEGACY_EXCEL_MAX = 30 * 1024 * 1024  # 30 MB — xls/xlsb/ods can't stream-parse: whole workbook lands in RAM
+_CHUNK = 1024 * 1024                  # 1 MB read window
 
-# Mirrors service._EXCEL_EXTS — formats that must be fully loaded to parse.
-_EXCEL_SUFFIXES = (".xlsx", ".xlsm", ".xls", ".xlsb", ".ods", ".xltx", ".xltm")
+# Mirrors service's split: xlsx/xlsm stream via openpyxl read-only; the rest must fully load.
+_LEGACY_EXCEL_SUFFIXES = (".xls", ".xlsb", ".ods", ".xltx", ".xltm")
 
 
-def _upload_limit(filename: str) -> int:
-    """Excel-family files get a much lower cap: the format can't be stream-parsed,
-    so the whole (compressed!) workbook lands in RAM as a DataFrame."""
+def _upload_limit(filename: str, import_mode: str) -> int:
+    """Per-upload cap depends on WHAT we do with the file, not just its format:
+    - mode "excel": the workbook is read/edited by the LLM → tiny cap (context size);
+    - mode "project_db": delimited + xlsx/xlsm imports STREAM (flat RAM) → full cap,
+      legacy Excel formats must be fully loaded to parse → low cap."""
+    if import_mode == "excel":
+        return _EXCEL_MODE_MAX
     ext = Path(filename or "").suffix.lower()
-    return _EXCEL_MAX if ext in _EXCEL_SUFFIXES else _QUOTA_BYTES
+    return _LEGACY_EXCEL_MAX if ext in _LEGACY_EXCEL_SUFFIXES else _QUOTA_BYTES
 
 
-def _too_large_detail(filename: str) -> str:
-    ext = Path(filename or "").suffix.lower()
-    if ext in _EXCEL_SUFFIXES:
+def _too_large_detail(filename: str, import_mode: str) -> str:
+    if import_mode == "excel":
         return (
-            "Excel file too large (max 30 MB). For big datasets, open the file in "
-            "Excel and 'Save As' CSV, then upload the CSV — CSV imports stream "
+            "File too large to open as a workbook in chat (max 1 MB). "
+            "To analyze a big dataset, import it into the database instead."
+        )
+    ext = Path(filename or "").suffix.lower()
+    if ext in _LEGACY_EXCEL_SUFFIXES:
+        return (
+            "This Excel format is limited to 30 MB. For big datasets, open the file and "
+            "'Save As' .xlsx or CSV, then upload that — those imports stream "
             "without a size penalty (up to 200 MB)."
         )
     return "File too large (max 200 MB)"
 
 
-async def _spool_to_disk(file: UploadFile, limit: int) -> Path:
+async def _spool_to_disk(file: UploadFile, limit: int, import_mode: str) -> Path:
     """Stream the upload to a temp file, never holding more than one chunk in RAM.
     Raises 413 (and removes the partial file) as soon as `limit` is exceeded.
     Caller is responsible for unlinking the returned path when done."""
@@ -54,7 +64,7 @@ async def _spool_to_disk(file: UploadFile, limit: int) -> Path:
         while chunk := await file.read(_CHUNK):
             total += len(chunk)
             if total > limit:
-                raise HTTPException(status_code=413, detail=_too_large_detail(file.filename or ""))
+                raise HTTPException(status_code=413, detail=_too_large_detail(file.filename or "", import_mode))
             tmp.write(chunk)
     except BaseException:
         tmp.close()
@@ -93,7 +103,7 @@ async def upload(
         raise HTTPException(status_code=404, detail="Session not found / not yours")
     if import_mode not in _IMPORT_MODES:
         raise HTTPException(status_code=400, detail=f"Invalid import_mode (expected one of {_IMPORT_MODES})")
-    tmp_path = await _spool_to_disk(file, _upload_limit(file.filename or ""))
+    tmp_path = await _spool_to_disk(file, _upload_limit(file.filename or "", import_mode), import_mode)
     try:
         # Cumulative quota: per-file size was capped above; also reject when the user's TOTAL
         # stored bytes would exceed the limit. Only 'excel' persists into `files` (project_db

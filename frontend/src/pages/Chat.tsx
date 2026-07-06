@@ -16,6 +16,8 @@ import {
   listUserFilesInventory,
   listSessionFiles,
   uploadSessionFile,
+  getFilesQuota,
+  validateUploadFileSize,
   downloadStoredSessionFile,
   saveChart,
   listProjectTables,
@@ -374,17 +376,27 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   };
 
   const showStorageQuotaToast = async () => {
+    // Pull the real limit from the API — the FE must never hardcode the quota.
+    let limitLabel = 'Storage limit reached';
+    try {
+      const q = await getFilesQuota();
+      if (q.limit_bytes > 0) {
+        limitLabel = `Storage limit reached (${Math.round(q.limit_bytes / (1024 * 1024))} MB total)`;
+      }
+    } catch {
+      /* keep generic label */
+    }
     try {
       const inv = await listUserFilesInventory();
       const lines = inv.slice(0, 12).map(
         (r) => `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — session ${r.session_id.slice(0, 8)}…`,
       );
       toast.error(
-        'Storage limit reached (5 GB). Delete some files and try again.\n\n' +
+        `${limitLabel}. Delete some files and try again.\n\n` +
           (lines.length ? `Recent files:\n${lines.join('\n')}` : ''),
       );
     } catch {
-      toast.error('Storage limit reached (5 GB). Delete some files and try again.');
+      toast.error(`${limitLabel}. Delete some files and try again.`);
     }
   };
 
@@ -395,6 +407,31 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     targetTable: string | null = null,
   ): Promise<{ id: string; filename: string }[]> => {
     if (filesToUpload.length === 0) return [];
+
+    // Now that the mode is known, re-check per-file caps exactly (staging only checked
+    // the most permissive mode — e.g. a 5 MB xlsx passes staging but not 'excel' mode).
+    const oversized = filesToUpload.filter((f) => validateUploadFileSize(f.file, importMode));
+    if (oversized.length > 0) {
+      oversized.forEach((f) => toast.error(validateUploadFileSize(f.file, importMode)!));
+      filesToUpload = filesToUpload.filter((f) => !oversized.includes(f));
+      if (filesToUpload.length === 0) return [];
+    }
+
+    // Pre-flight quota check ('excel' mode only — project_db imports live in the user's
+    // own DB and don't count against storage). BE re-checks (413); this just fails fast
+    // before wasting the transfer.
+    if (importMode === 'excel') {
+      try {
+        const q = await getFilesQuota();
+        const incoming = filesToUpload.reduce((sum, f) => sum + f.file.size, 0);
+        if (q.limit_bytes > 0 && q.used_bytes + incoming > q.limit_bytes) {
+          await showStorageQuotaToast();
+          return [];
+        }
+      } catch {
+        /* quota endpoint unavailable → let the upload proceed; BE still enforces */
+      }
+    }
 
     setIsUploadingFile(true);
     setFileUploadProgress({ done: 0, total: filesToUpload.length, filename: filesToUpload[0].filename });
@@ -448,7 +485,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         }
 
         const e = result.reason as Error & { code?: string };
-        if (e.code === 'storage_quota_exceeded' || /5\s*GB|storage limit/i.test(e.message || '')) {
+        if (e.code === 'storage_quota_exceeded' || /storage (quota|limit)/i.test(e.message || '')) {
           if (!quotaToastShown) {
             quotaToastShown = true;
             await showStorageQuotaToast();
@@ -496,6 +533,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   /** Stage file locally — upload on Send sends the original file (Excel kept for formatting + SQL import on BE). */
   const stageFileForUpload = (file: File) => {
+    // Fail fast on the per-file cap (mirrors BE 413) — no point uploading a file
+    // the server will reject after the transfer.
+    const sizeError = validateUploadFileSize(file);
+    if (sizeError) {
+      toast.error(sizeError);
+      return;
+    }
     const localId = `staged-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setStagedFiles((prev) => [...prev, { localId, file, filename: file.name }]);
   };
@@ -727,7 +771,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     { icon: React.ReactNode; bg: string; color: string; title: string; desc: string }
   > = {
     project_db: { icon: <Icons.Database size={17} />, bg: 'var(--green-soft)', color: 'var(--green-ink)', title: 'Save to database', desc: "Store this file's data in your project database so you can query it anytime." },
-    excel: { icon: <Icons.Pencil size={17} />, bg: 'var(--accent-soft)', color: 'var(--accent-ink)', title: 'Edit in Excel', desc: 'Let the assistant open and edit this workbook with the Excel tools.' },
+    excel: { icon: <Icons.Pencil size={17} />, bg: 'var(--accent-soft)', color: 'var(--accent-ink)', title: 'Edit in Excel', desc: 'Let the assistant open and edit this workbook with the Excel tools (files up to 1 MB).' },
   };
 
   /** Which destinations make sense for the staged batch. All tabular formats (CSV/TSV/XLS/XLSX)

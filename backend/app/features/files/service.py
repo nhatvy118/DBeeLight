@@ -24,6 +24,9 @@ logger = logging.getLogger("files")
 # Delimited text (CSV/TSV/delimited TXT) + the Excel-family formats calamine/openpyxl/xlrd read.
 _DELIMITED_EXTS = (".csv", ".tsv", ".txt")
 _EXCEL_EXTS = (".xlsx", ".xlsm", ".xls", ".xlsb", ".ods", ".xltx", ".xltm")
+# Of the Excel family, only zip-XML workbooks stream via openpyxl read-only (DB imports);
+# the rest must be fully loaded to parse (router caps those at 30 MB).
+_STREAM_XLSX_EXTS = (".xlsx", ".xlsm")
 _TABULAR_EXTS = _DELIMITED_EXTS + _EXCEL_EXTS
 # Anything tabular can be served to the Excel tools (converted to .xlsx if not already).
 _EXCEL_EDITABLE = _TABULAR_EXTS
@@ -301,8 +304,10 @@ async def _import_to_project_db(
 
     if ext in _DELIMITED_EXTS:  # CSV/TSV/TXT stream — flat RAM at any size
         return await _import_csv_streaming(filename, path, ext, adapter)
+    if ext in _STREAM_XLSX_EXTS:  # xlsx/xlsm stream via openpyxl read-only — flat RAM
+        return await _import_xlsx_streaming(filename, path, adapter)
 
-    # Excel-family: whole-workbook load (router caps these at 30 MB), off the event loop.
+    # Legacy Excel-family: whole-workbook load (router caps these at 30 MB), off the event loop.
     tables = await asyncio.to_thread(_read_tables, ext, path)
     # Project tables keep a clean, file-derived name (no t_). Refuse to clobber an existing table —
     # the user must rename the file or drop the table first (no silent overwrite of real data).
@@ -397,6 +402,151 @@ async def _import_csv_streaming(filename: str, path: Path, ext: str, adapter) ->
     }
 
 
+_SHARED_STRINGS_MAX = 64 * 1024 * 1024  # 64 MB uncompressed — the one xlsx part that can't stream
+
+
+def _check_xlsx_streamable(path: Path) -> None:
+    """xlsx streams row-by-row EXCEPT shared strings (the workbook's unique text), which
+    openpyxl must hold fully in RAM. The zip directory declares that part's uncompressed
+    size — reject text-heavy monsters in a few ms, before any parsing."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as z:
+            try:
+                info = z.getinfo("xl/sharedStrings.xml")
+            except KeyError:
+                return  # numeric-only workbook — nothing big to hold in RAM
+            if info.file_size > _SHARED_STRINGS_MAX:
+                raise FileImportError(
+                    "This workbook contains too much unique text to import safely. "
+                    "Export the data as CSV and upload that instead."
+                )
+    except zipfile.BadZipFile as e:
+        raise FileImportError("Not a valid Excel (.xlsx) file") from e
+
+
+def _xlsx_header_row(ws) -> tuple[int, list] | None:
+    """(row_index, raw_values) of the first non-empty row of a read-only worksheet —
+    the header (mirrors pandas, which skips leading blank rows). None = empty sheet."""
+    for idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+        if any(v is not None and str(v).strip() != "" for v in row):
+            return idx, list(row)
+    return None
+
+
+def _xlsx_columns(raw_header: list) -> list[str]:
+    """Sanitized, de-duplicated column names from a raw header row (same rules as the
+    whole-load path, so streamed and non-streamed imports name columns identically)."""
+    import pandas as pd  # lazy
+
+    return [str(c) for c in _sanitize_columns(pd.DataFrame(columns=raw_header)).columns]
+
+
+def _pull_xlsx_chunk(rows_iter, width: int, limit: int) -> list[list]:
+    """Up to `limit` data rows from a read-only sheet iterator, normalized to `width`
+    cells (extra cells dropped, short rows padded). Fully-empty rows are skipped.
+    Runs in a worker thread — this is the blocking XML-parsing part."""
+    out: list[list] = []
+    for row in rows_iter:
+        if all(v is None for v in row):
+            continue
+        r = list(row[:width])
+        if len(r) < width:
+            r += [None] * (width - len(r))
+        out.append(r)
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def _import_xlsx_streaming(filename: str, path: Path, adapter) -> dict:
+    """Stream an .xlsx/.xlsm workbook into NEW project table(s): openpyxl's read-only
+    mode SAX-parses rows forward, so peak RAM is one 50k-row chunk + shared strings
+    (capped by _check_xlsx_streamable) — never the whole workbook. Mirrors
+    _import_csv_streaming: on a mid-stream failure every table THIS import created is
+    dropped (a table lost to a concurrent-creation race is not ours to drop)."""
+    from openpyxl import load_workbook
+
+    import pandas as pd  # lazy
+
+    _check_xlsx_streamable(path)
+    try:
+        wb = await asyncio.to_thread(load_workbook, path, read_only=True, data_only=True)
+    except FileImportError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise FileImportError(f"Could not read spreadsheet ({e})") from e
+
+    try:
+        # Pre-pass: header row of every sheet (cheap — parses only the top of each sheet).
+        headers: dict[str, tuple[int, list]] = {}
+        for ws in wb.worksheets:
+            found = await asyncio.to_thread(_xlsx_header_row, ws)
+            if found is not None:
+                headers[str(ws.title)] = found
+        if not headers:
+            raise FileImportError("Spreadsheet has no readable sheets")
+
+        # Same naming rules as the whole-load path: single sheet → file-derived name,
+        # multi-sheet → per-sheet suffix. Refuse to clobber existing tables (checked
+        # for ALL sheets up front, so a multi-sheet import is all-or-nothing).
+        single = len(headers) == 1
+        targets = {name: _project_table_name(filename, None if single else name) for name in headers}
+        existing = set((await adapter.get_schema()).keys())
+        clash = sorted({t for t in targets.values() if t in existing})
+        if clash:
+            raise FileImportError(
+                f"Table already exists in the database: {', '.join(clash)}. "
+                "Rename the file or drop the existing table first."
+            )
+
+        created: list[dict] = []
+        cur_created: str | None = None
+        try:
+            for name, (hdr_idx, raw_header) in headers.items():
+                table = targets[name]
+                cols = _xlsx_columns(raw_header)
+                rows_iter = wb[name].iter_rows(min_row=hdr_idx + 1, values_only=True)
+                if_exists = "fail"  # first chunk creates the table; ValueError = creation race
+                cur_created = None
+                while True:
+                    rows = await asyncio.to_thread(_pull_xlsx_chunk, rows_iter, len(cols), _CSV_CHUNK_ROWS)
+                    df = pd.DataFrame(rows, columns=cols)
+                    try:
+                        await adapter.import_dataframe(table, df, if_exists=if_exists)
+                    except ValueError as e:  # raced — the existing table is NOT ours to drop
+                        raise FileImportError(f"Table '{table}' already exists.") from e
+                    if if_exists == "fail":
+                        cur_created = table
+                    if_exists = "append"
+                    if len(rows) < _CSV_CHUNK_ROWS:
+                        break
+                created.append({"name": table, "columns": cols})
+                cur_created = None
+        except BaseException as e:
+            partial = [c["name"] for c in created] + ([cur_created] if cur_created else [])
+            for t in partial:
+                try:
+                    await adapter.execute(f'DROP TABLE IF EXISTS "{t}"')
+                except Exception:  # noqa: BLE001
+                    logger.warning("could not drop partial table %s", t)
+            if isinstance(e, FileImportError):
+                raise
+            raise FileImportError(f"Import failed: {e}") from e
+    finally:
+        wb.close()
+
+    return {
+        "id": str(uuid.uuid4()),  # synthesized: nothing persisted in `files`
+        "filename": filename,
+        "size_bytes": path.stat().st_size,
+        "created_at": None,
+        # New project tables → the FE offers a "describe this table" step (data dictionary).
+        "tables": created,
+    }
+
+
 def _align_to_table(df, table_columns: list) -> tuple:
     """Match the uploaded DataFrame's columns to an existing table's columns by name (flexible
     import). Returns (aligned_df, missing_required) where:
@@ -487,7 +637,53 @@ async def _append_to_project_table(
             close = getattr(reader, "close", None)
             if close:
                 close()
-    else:  # Excel-family: whole-workbook load (router caps at 30 MB), off the event loop
+    elif ext in _STREAM_XLSX_EXTS:  # xlsx/xlsm — stream in chunks, flat RAM
+        import pandas as pd  # lazy
+
+        from openpyxl import load_workbook
+
+        _check_xlsx_streamable(path)
+        try:
+            wb = await asyncio.to_thread(load_workbook, path, read_only=True, data_only=True)
+        except Exception as e:  # noqa: BLE001
+            raise FileImportError(f"Could not read spreadsheet ({e})") from e
+        try:
+            usable: list[tuple[str, tuple[int, list]]] = []
+            for ws in wb.worksheets:
+                found = await asyncio.to_thread(_xlsx_header_row, ws)
+                if found is not None:
+                    usable.append((str(ws.title), found))
+            if not usable:
+                raise FileImportError("Spreadsheet has no readable sheets")
+            if len(usable) > 1:
+                raise FileImportError(
+                    "This file has multiple sheets — appending supports a single table. "
+                    "Split the sheets or import as a new table instead."
+                )
+            name, (hdr_idx, raw_header) = usable[0]
+            cols = _xlsx_columns(raw_header)
+            rows_iter = wb[name].iter_rows(min_row=hdr_idx + 1, values_only=True)
+            checked = False
+            while True:
+                rows = await asyncio.to_thread(_pull_xlsx_chunk, rows_iter, len(cols), _CSV_CHUNK_ROWS)
+                df = pd.DataFrame(rows, columns=cols)
+                aligned, missing_required = _align_to_table(df, schema[target_table])
+                if not checked:  # same header every chunk → validate once
+                    _validate(aligned, missing_required)
+                    checked = True
+                if len(aligned):
+                    try:
+                        await adapter.import_dataframe(target_table, aligned, if_exists="append")
+                    except Exception as e:  # noqa: BLE001 — surface a clean reason
+                        from app.agent.graph import dbtools
+                        raise FileImportError(
+                            f"Couldn’t append to '{target_table}': {dbtools.clean_db_error(str(e))}."
+                        ) from e
+                if len(rows) < _CSV_CHUNK_ROWS:
+                    break
+        finally:
+            wb.close()
+    else:  # legacy Excel-family: whole-workbook load (router caps at 30 MB), off the event loop
         tables = await asyncio.to_thread(_read_tables, ext, path)
         if len(tables) > 1:
             raise FileImportError(

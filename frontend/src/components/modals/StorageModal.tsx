@@ -134,7 +134,7 @@ export default function StorageModal({ open, onClose }: Props) {
   if (!open) return null;
 
   const used = quota?.used_bytes ?? 0;
-  const limit = quota?.limit_bytes ?? 5 * 1024 * 1024 * 1024;
+  const limit = quota?.limit_bytes ?? 0; // real limit comes from the API — never hardcode
   const imp = quota?.import_used_bytes ?? 0;
   const exp = quota?.export_used_bytes ?? 0;
   const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
@@ -192,7 +192,7 @@ export default function StorageModal({ open, onClose }: Props) {
             <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
               <p className="text-xs text-gray-500 dark:text-gray-400 mb-2 shrink-0">
                 Files you upload and files exported from chats share a{' '}
-                <span className="font-medium text-gray-700 dark:text-gray-300">5 GB</span> storage
+                <span className="font-medium text-gray-700 dark:text-gray-300">{formatBytes(limit)}</span> storage
                 limit. Delete files you no longer need to free up space.
               </p>
               <div className="mb-1 flex justify-between text-sm shrink-0">
