@@ -78,6 +78,14 @@ async def delete_file(file_id: str, user_id: str) -> bool:
     return row is not None
 
 
+async def delete_for_session(session_id: str) -> int:
+    """Drop ALL file rows of a session (stateless excel: rows only live within a turn)."""
+    logger.info("→ delete_for_session(session_id=%r)", session_id)  # autolog
+    pool = get_pool()
+    rows = await pool.fetch("DELETE FROM files WHERE session_id=$1 RETURNING id", session_id)
+    return len(rows)
+
+
 async def user_storage(user_id: str) -> tuple[int, int]:
     """(total size_bytes, file_count) for the user."""
     logger.info("→ user_storage(user_id=%r)", user_id)  # autolog

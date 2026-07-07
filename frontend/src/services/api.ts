@@ -596,6 +596,8 @@ export type FileQuotaInfo = {
   remaining_bytes: number;
   import_used_bytes: number;
   export_used_bytes: number;
+  /** Hosted-DB metric: number of hosted project databases counted in used_bytes. */
+  file_count: number;
 };
 
 export async function getFilesQuota(): Promise<FileQuotaInfo> {
@@ -615,6 +617,7 @@ export async function getFilesQuota(): Promise<FileQuotaInfo> {
     remaining_bytes: w.remaining_bytes ?? Math.max(0, limit - used),
     import_used_bytes: w.import_used_bytes ?? used,
     export_used_bytes: w.export_used_bytes ?? 0,
+    file_count: w.file_count ?? 0,
   };
 }
 

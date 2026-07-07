@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
+from app.config import get_settings
 from app.features.auth import repository as auth_repo
 from app.features.auth.deps import get_current_user_id
 from app.features.files import repository as repo
@@ -116,16 +117,9 @@ async def upload(
         raise HTTPException(status_code=400, detail=f"Invalid import_mode (expected one of {_IMPORT_MODES})")
     tmp_path = await _spool_to_disk(file, _upload_limit(file.filename or "", import_mode), import_mode)
     try:
-        # Cumulative quota: per-file size was capped above; also reject when the user's TOTAL
-        # stored bytes would exceed the limit. Only 'excel' persists into `files` (project_db
-        # lives in the user's own DB and is not counted as our storage).
-        if import_mode == "excel":
-            used, _ = await repo.user_storage(user_id)
-            if used + tmp_path.stat().st_size > _QUOTA_BYTES:
-                raise HTTPException(
-                    status_code=413,
-                    detail="Storage quota exceeded (200 MB total). Delete some files first.",
-                )
+        # Mode "excel" is EPHEMERAL — the workbook lives only for the next excel turn, then
+        # collect_excel_outputs_inline hands it to the FE and deletes it. No cumulative
+        # quota; the 1 MB per-file cap in _upload_limit is the whole policy.
 
         # project_db needs the project's resolved DSN (ownership-checked); other modes don't.
         project_db_url: str | None = None
@@ -143,6 +137,23 @@ async def upload(
             project_db_url = await proj_service.resolve_db_url(pid, user_id)
             if not project_db_url:
                 raise HTTPException(status_code=400, detail="Project has no database connected")
+            # Hosted SQLite: STRICT quota — current hosted-DB bytes + the incoming file must
+            # fit under the ceiling (external DBs are the user's own infra — never limited).
+            # The imported table can expand somewhat vs the source file, but file size is the
+            # best cheap pre-import estimate.
+            if project_db_url.startswith("sqlite"):
+                used, _ = await service.hosted_db_usage(user_id)
+                limit = get_settings().hosted_db_quota_bytes
+                if used + tmp_path.stat().st_size > limit:
+                    logger.warning(
+                        "upload rejected 413: hosted DB quota used=%d + incoming=%d > %d user=%s",
+                        used, tmp_path.stat().st_size, limit, user_id,
+                    )
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Not enough database storage ({used // (1024 * 1024)} MB used of "
+                               f"{limit // (1024 * 1024)} MB). Delete tables or projects first.",
+                    )
 
         try:
             rec = await service.save_and_import(
@@ -170,8 +181,13 @@ async def list_files(session_id: str, user_id: str = Depends(get_current_user_id
 
 @router.get("/quota")
 async def quota(user_id: str = Depends(get_current_user_id)):
-    used, count = await repo.user_storage(user_id)
-    return {"success": True, "used_bytes": used, "limit_bytes": _QUOTA_BYTES, "file_count": count}
+    """Storage = hosted SQLite DB bytes now. Excel workbooks are ephemeral (never stored),
+    so the old SUM(files.size_bytes) metric is gone."""
+    used, count = await service.hosted_db_usage(user_id)
+    return {
+        "success": True, "used_bytes": used,
+        "limit_bytes": get_settings().hosted_db_quota_bytes, "file_count": count,
+    }
 
 
 @router.get("/inventory")

@@ -235,30 +235,90 @@ def snapshot_excel_dir(session_id: str) -> dict[str, float]:
     return {p.name: p.stat().st_mtime for p in d.glob("*.xlsx") if p.is_file()}
 
 
-async def register_excel_outputs(
+_INLINE_EXPORT_MAX = 2 * 1024 * 1024  # a 1 MB workbook can grow after edits; safety ceiling
+
+
+async def collect_excel_outputs_inline(
     user_id: str, session_id: str, before: dict[str, float]
 ) -> list[dict]:
-    """After an excel turn: for each .xlsx the agent created or modified, ensure a `files` row
-    exists and return a `file_export` tool_event so the FE shows an inline download card."""
+    """After an excel turn: every workbook the agent created or MODIFIED is read and
+    returned as an inline-base64 `file_export` payload — the FE stores the blob
+    (IndexedDB) and becomes the only holder of the file. Then the session's uploads
+    dir AND its `files` rows are deleted: the server keeps NO workbook between turns
+    (stateless excel — see docs/superpowers/plans/2026-07-07-stateless-excel-editing.md)."""
+    import base64
+
     d = _session_uploads_dir(session_id)
-    if not d.exists():
-        return []
-    by_path = {r.get("disk_path"): r for r in await repo.list_for_session(session_id)}
     out: list[dict] = []
-    for p in sorted(d.glob("*.xlsx")):
-        if not p.is_file():
-            continue
-        prev = before.get(p.name)
-        if prev is not None and p.stat().st_mtime <= prev + 1e-6:
-            continue  # untouched this turn
-        row = by_path.get(str(p))
-        if row is None:  # a NEW workbook the agent created → register it so it is listable/downloadable
-            row = await repo.insert_file(user_id, session_id, p.name, str(p), p.stat().st_size)
-        out.append({
-            "tool": "excel", "type": "file_export",
-            "payload": {"filename": p.name, "sessionFileId": row["id"]},
-        })
+    if d.exists():
+        for p in sorted(d.glob("*.xlsx")):
+            if not p.is_file():
+                continue
+            prev = before.get(p.name)
+            if prev is not None and p.stat().st_mtime <= prev + 1e-6:
+                continue  # untouched this turn → the FE already holds this version
+            data = p.read_bytes()
+            if len(data) > _INLINE_EXPORT_MAX:
+                logger.warning("excel inline export %r skipped: %d bytes > cap", p.name, len(data))
+                continue
+            out.append({
+                "tool": "excel", "type": "file_export",
+                "payload": {
+                    "filename": p.name,
+                    "base64": base64.b64encode(data).decode("ascii"),
+                    "ephemeral": True,
+                },
+            })
+        shutil.rmtree(d, ignore_errors=True)
+    await repo.delete_for_session(session_id)
+    logger.info("excel turn cleanup: session=%s exports=%d", session_id, len(out))
     return out
+
+
+def sweep_stale_uploads(max_age_hours: int = 48) -> int:
+    """Remove orphaned uploads/<session>/ dirs (user uploaded a workbook but never ran
+    an excel turn, so the per-turn cleanup never fired). Called at app startup."""
+    import time
+
+    root = Path(get_settings().data_root) / "uploads"
+    if not root.exists():
+        return 0
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    for d in root.iterdir():
+        if d.is_dir() and d.stat().st_mtime < cutoff:
+            shutil.rmtree(d, ignore_errors=True)
+            removed += 1
+    if removed:
+        logger.info("sweep_stale_uploads: removed %d stale session dir(s)", removed)
+    return removed
+
+
+async def _owned_hosted_db_paths(user_id: str) -> list[str]:
+    """SQLite file paths of projects the user OWNS whose DB lives inside DATA_ROOT
+    (hosted by us). External DSNs (postgres://…) are never returned."""
+    from app.features.projects import service as proj_service
+
+    root = Path(get_settings().data_root).resolve()
+    paths: list[str] = []
+    for raw in await proj_service.owned_sqlite_paths(user_id):
+        rp = Path(raw).resolve()
+        if root in rp.parents:  # only files we actually host
+            paths.append(str(rp))
+    return paths
+
+
+async def hosted_db_usage(user_id: str) -> tuple[int, int]:
+    """(total bytes, project count) of the hosted SQLite DBs the user owns — the
+    real 'storage used on our service' now that excel workbooks are ephemeral."""
+    total = 0
+    count = 0
+    for raw in await _owned_hosted_db_paths(user_id):
+        p = Path(raw)
+        if p.is_file():
+            total += p.stat().st_size
+            count += 1
+    return total, count
 
 
 async def save_and_import(

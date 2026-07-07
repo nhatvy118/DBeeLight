@@ -30,6 +30,13 @@ import {
   type ChartRecipe,
   type ProjectKind,
 } from '../services/api';
+import {
+  base64ToBlob,
+  downloadBlob,
+  getWorkbook,
+  listWorkbooks,
+  putWorkbook,
+} from '../utils/workbookStore';
 import ConnectionInfoModal from '../components/modals/ConnectionInfoModal';
 import DescribeTableModal from '../components/modals/DescribeTableModal';
 import {
@@ -480,6 +487,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         if (result.status === 'fulfilled') {
           const up = result.value.file;
           uploaded.push({ id: up.id, filename: up.filename });
+          if (importMode === 'excel') {
+            // Stateless excel: the server deletes its copy after the next turn — keep the
+            // original on this device so later turns can re-stage it from IndexedDB.
+            void putWorkbook(sid!, up.filename, staged.file);
+          }
           if (result.value.tables) createdTables.push(...result.value.tables);
           continue;
         }
@@ -624,10 +636,27 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       setSessionDb(null);
       return;
     }
-    listSessionFiles(sessionId)
-      .then((files) => {
-        setSessionFiles(files);
-        const fileIdSet = new Set(files.map((f) => f.id));
+    Promise.all([
+      listSessionFiles(sessionId).catch(() => [] as SessionFileMeta[]),
+      listWorkbooks(sessionId).catch(() => [] as { filename: string; updatedAt: number }[]),
+    ])
+      .then(([files, local]) => {
+        // Stateless excel: server rows only live within a turn. Workbooks kept on THIS
+        // device (IndexedDB) re-appear as `local:` sources so the user can keep editing —
+        // resolveActiveFileIds re-uploads the blob when one is picked.
+        const serverNames = new Set(files.map((f) => f.filename));
+        const localMeta: SessionFileMeta[] = local
+          .filter((w) => !serverNames.has(w.filename))
+          .map((w) => ({
+            id: `local:${w.filename}`,
+            filename: w.filename,
+            mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            size_bytes: 0,
+            uploaded_at: new Date(w.updatedAt).toISOString(),
+          }));
+        const merged = [...files, ...localMeta];
+        setSessionFiles(merged);
+        const fileIdSet = new Set(merged.map((f) => f.id));
         // Default scope is the database (empty selection). Only carry over file picks that
         // still exist in this session; file ids are session-scoped.
         setActiveDataSources((prev) => prev.filter((s) => fileIdSet.has(s.id)));
@@ -647,6 +676,57 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     el.style.overflowY = scrollHeight > MAX_TEXTAREA_HEIGHT ? 'auto' : 'hidden';
   }, [query]);
 
+  /** Stateless excel: an inline-base64 export is the ONLY copy of the workbook — persist it
+   *  to IndexedDB and flip the matching data source to a `local:` id (the server just deleted
+   *  its row). Returns the export unchanged so call sites can keep their one-liner shape. */
+  const captureExport = (exp: ReturnType<typeof readFileExport>): ReturnType<typeof readFileExport> => {
+    if (exp?.base64 && exp.filename && sessionId) {
+      const fn = exp.filename;
+      void putWorkbook(sessionId, fn, base64ToBlob(exp.base64));
+      const localId = `local:${fn}`;
+      setSessionFiles((prev) => [
+        ...prev.filter((f) => f.filename !== fn),
+        {
+          id: localId,
+          filename: fn,
+          mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          size_bytes: 0,
+          uploaded_at: new Date().toISOString(),
+        },
+      ]);
+      setActiveDataSources((prev) =>
+        prev.map((s) => (s.type === 'file' && s.filename === fn ? { ...s, id: localId } : s)),
+      );
+    }
+    return exp;
+  };
+
+  /** Server ids in activeDataSources can be dead (workbooks are deleted after every excel
+   *  turn). Ids still present in the server list pass through; `local:` sources re-upload
+   *  the latest blob from IndexedDB to get a fresh id for THIS turn. */
+  const resolveActiveFileIds = async (override?: string[]): Promise<string[]> => {
+    if (override) return override; // fresh ids from an upload in this same click
+    const fileSources = activeDataSources.filter((s) => s.type === 'file');
+    if (fileSources.length === 0 || !sessionId) return getActiveFileIds(activeDataSources);
+    const live = new Set(sessionFiles.filter((f) => !f.id.startsWith('local:')).map((f) => f.id));
+    const ids: string[] = [];
+    for (const src of fileSources) {
+      if (live.has(src.id)) {
+        ids.push(src.id);
+        continue;
+      }
+      const blob = await getWorkbook(sessionId, src.filename);
+      if (!blob) {
+        toast.error(`"${src.filename}" is only available on the device where it was edited — please upload it again.`);
+        continue;
+      }
+      const f = new File([blob], src.filename, { type: blob.type });
+      const up = await uploadSessionFile(sessionId, f, 'excel', selectedProject?.id || propProjectId || null, null);
+      ids.push(up.file.id);
+    }
+    return ids;
+  };
+
   // `activeFileIdsOverride` scopes this turn to specific files instead of the activeDataSources
   // state — needed right after an upload, where the state hasn't propagated to this closure yet
   // (so the just-uploaded workbook would otherwise be missed and the Excel route wouldn't fire).
@@ -657,10 +737,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const controller = new AbortController();
     sendAbortControllerRef.current = controller;
     try {
+      const resolvedFileIds = await resolveActiveFileIds(activeFileIdsOverride);
       const finalRes = await sendMessageWithStream(text, sessionId, selectedProject?.id || null, {
         onStage: (m) => setStreamingStage(m),
         signal: controller.signal,
-        activeFileIds: scopedFileIds(activeFileIdsOverride ?? getActiveFileIds(activeDataSources)),
+        activeFileIds: scopedFileIds(resolvedFileIds),
       });
       setStreamingStage(null);
       // ChatResponse is a discriminated union; downstream code reads optional
@@ -687,7 +768,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 workflowResumePending: pendingResume,
               };
             })(),
-            exportToExcel: readFileExport((res as any).tool_events),
+            exportToExcel: captureExport(readFileExport((res as any).tool_events)),
             charts: readCharts((res as any).tool_events),
             queryResult: readQueryResult((res as any).tool_events),
             mutationPreview: readSqlPreview((res as any).tool_events)?.preview ?? null,
@@ -967,7 +1048,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 workflowResumePending: pendingResume,
               };
             })(),
-            exportToExcel: readFileExport((res as any).tool_events),
+            exportToExcel: captureExport(readFileExport((res as any).tool_events)),
             charts: readCharts((res as any).tool_events),
             queryResult: readQueryResult((res as any).tool_events),
             mutationPreview: readSqlPreview((res as any).tool_events)?.preview ?? null,
@@ -1227,7 +1308,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 workflowResumePending: pendingResume,
               };
             })(),
-            exportToExcel: readFileExport((res as any).tool_events),
+            exportToExcel: captureExport(readFileExport((res as any).tool_events)),
             schemaPreview: readSchemaPreview((res as any).tool_events),
           },
         ]);
@@ -1313,7 +1394,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                   workflowResumePending: pendingResume,
                 };
               })(),
-              exportToExcel: readFileExport((res as any).tool_events),
+              exportToExcel: captureExport(readFileExport((res as any).tool_events)),
               schemaPreview: readSchemaPreview((res as any).tool_events),
             },
           ];
@@ -1358,13 +1439,22 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const exp = msg?.exportToExcel;
     if (!exp?.filename) return;
     try {
-      if (exp.sessionFileId) {
+      if (exp.base64) {          // live response — bytes are right here
+        triggerExcelDownload(exp);
+        return;
+      }
+      // Reloaded history: persisted events carry no base64 (stateless excel) — the blob
+      // lives in THIS device's IndexedDB if the edit happened here.
+      const blob = sessionId ? await getWorkbook(sessionId, exp.filename) : null;
+      if (blob) {
+        downloadBlob(blob, exp.filename);
+        return;
+      }
+      if (exp.sessionFileId) {   // pre-migration exports still stored server-side
         await downloadStoredSessionFile(exp.sessionFileId);
         return;
       }
-      if (exp.base64) {
-        triggerExcelDownload(exp);
-      }
+      toast.error('This file is only available on the device where it was edited.');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to export';
       setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);
