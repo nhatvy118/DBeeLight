@@ -239,20 +239,32 @@ _INLINE_EXPORT_MAX = 2 * 1024 * 1024  # a 1 MB workbook can grow after edits; sa
 
 
 async def collect_excel_outputs_inline(
-    user_id: str, session_id: str, before: dict[str, float]
+    user_id: str, session_id: str, before: dict[str, float],
+    allowed_paths: list[str] | None = None,
 ) -> list[dict]:
     """After an excel turn: every workbook the agent created or MODIFIED is read and
     returned as an inline-base64 `file_export` payload — the FE stores the blob
     (IndexedDB) and becomes the only holder of the file. Then the session's uploads
     dir AND its `files` rows are deleted: the server keeps NO workbook between turns
-    (stateless excel — see docs/superpowers/plans/2026-07-07-stateless-excel-editing.md)."""
+    (stateless excel — see docs/superpowers/plans/2026-07-07-stateless-excel-editing.md).
+
+    `allowed_paths` are the relative paths passed to the agent prompt this turn
+    (e.g. ['{session_id}/foo.xlsx']). Files created by the agent outside this set
+    (due to LLM confusion from history) are silently discarded."""
     import base64
+
+    allowed_names: set[str] | None = None
+    if allowed_paths:
+        allowed_names = {Path(p).name for p in allowed_paths}
 
     d = _session_uploads_dir(session_id)
     out: list[dict] = []
     if d.exists():
         for p in sorted(d.glob("*.xlsx")):
             if not p.is_file():
+                continue
+            if allowed_names is not None and p.name not in allowed_names:
+                logger.warning("excel cleanup: skipping unexpected file %r (not in allowed set %r)", p.name, allowed_names)
                 continue
             prev = before.get(p.name)
             if prev is not None and p.stat().st_mtime <= prev + 1e-6:
