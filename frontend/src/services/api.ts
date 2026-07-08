@@ -742,6 +742,27 @@ export async function deleteSessionFile(fileId: string): Promise<void> {
 }
 
 /** Download a session file from ``file_handle/{user}/{session}/import`` or ``…/export``. */
+/** Persist a DB-import exchange (user text + attachment chips + deterministic confirmation)
+ *  into session history — the 'Save to database' flow never goes through /api/chat, so
+ *  without this the whole turn disappears on reload. Fire-and-forget friendly. */
+export async function recordImportNote(
+  sessionId: string,
+  text: string,
+  fileNames: string[],
+  confirmation: string,
+): Promise<void> {
+  const response = await fetch(url(`/api/sessions/${encodeURIComponent(sessionId)}/import-note`), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, confirmation, files: fileNames.map((name) => ({ name })) }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error((data as { detail?: string }).detail || 'Failed to save import history');
+  }
+}
+
 export async function downloadStoredSessionFile(fileId: string): Promise<void> {
   const response = await fetch(url(`/api/files/${encodeURIComponent(fileId)}/download`), {
     method: 'GET',

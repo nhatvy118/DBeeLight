@@ -13,6 +13,7 @@ import {
   deleteChatSession,
   resumeWorkflow,
   createSession,
+  recordImportNote,
   listUserFilesInventory,
   listSessionFiles,
   uploadSessionFile,
@@ -137,6 +138,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   /** Summary of the most recent import, captured in uploadStagedFiles and read right after by
    *  handleStorageChoice to build the deterministic confirmation line. */
   const lastImportRef = useRef<{ mode: ImportMode; fileNames: string[]; createdTables: string[]; appendedTo: string | null } | null>(null);
+  // Session the last upload actually used — survives the closure staleness right after
+  // uploadStagedFiles creates a brand-new session (setSessionId hasn't re-rendered yet).
+  const lastUploadSessionRef = useRef<string | null>(null);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [typingStopSignal, setTypingStopSignal] = useState(0);
   // Live progress label streamed from the backend (e.g. "Đang sinh SQL...").
@@ -453,6 +457,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         }
         sid = cr.session_id;
         setSessionId(sid);
+        lastUploadSessionRef.current = sid;
         onSessionIdChange?.(sid);
         saveLastSession(sid, selectedProject?.id ?? propProjectId ?? null);
         if (selectedProject?.id || propProjectId) {
@@ -984,7 +989,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       const imp = lastImportRef.current;
       lastImportRef.current = null;
       if (imp) {
-        setMessages((prev) => [...prev, { text: importConfirmation(imp.fileNames, imp.createdTables, imp.appendedTo), isUser: false }]);
+        const confirmation = importConfirmation(imp.fileNames, imp.createdTables, imp.appendedTo);
+        setMessages((prev) => [...prev, { text: confirmation, isUser: false }]);
+        // Persist the exchange — this flow skips /api/chat, so without this the upload
+        // turn (user text + attachment chip + confirmation) is lost on reload.
+        const sid = sessionId ?? lastUploadSessionRef.current;
+        if (sid) {
+          recordImportNote(sid, displayText, imp.fileNames, confirmation)
+            .catch((e) => console.warn('import-note persist failed:', e));
+        }
       }
       return;
     }

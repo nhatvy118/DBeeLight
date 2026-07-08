@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 from app.agent import titling
 from app.agent.context import DbContext, RequestContext, reset_ctx, set_ctx
@@ -198,7 +199,16 @@ async def handle(
             reset_ctx(token)
 
     result.cancelled_action_ids = cancelled_action_ids  # superseded cards → FE disables them live
-    await sess_repo.add_message(session_id, "user", message)
+    # Excel turns: persist WHICH workbook(s) the user had attached as a `session_file`
+    # event on the user message, so the attachment chip survives a reload (the FE
+    # renders it from history via readSessionFiles).
+    user_events = None
+    if excel_paths:
+        user_events = [{
+            "tool": "files", "type": "session_file",
+            "payload": {"files": [{"name": PurePosixPath(p).name} for p in excel_paths]},
+        }]
+    await sess_repo.add_message(session_id, "user", message, user_events)
     # base64 payloads are for the LIVE response only — never persisted (they would bloat the
     # messages table and every GET /messages). The persisted card keeps metadata only; on
     # reload the FE re-attaches the blob from the device's IndexedDB.
