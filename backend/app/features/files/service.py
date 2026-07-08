@@ -275,7 +275,7 @@ async def collect_excel_outputs_inline(
     return out
 
 
-def sweep_stale_uploads(max_age_hours: int = 48) -> int:
+def sweep_stale_uploads(max_age_hours: float = 5 / 60) -> int:
     """Remove orphaned uploads/<session>/ dirs (user uploaded a workbook but never ran
     an excel turn, so the per-turn cleanup never fired). Called at app startup."""
     import time

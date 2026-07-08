@@ -147,6 +147,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   // Null when no streaming chat is in flight.
   const [streamingStage, setStreamingStage] = useState<string | null>(null);
   const sendAbortControllerRef = useRef<AbortController | null>(null);
+  // Tracks indices of messages whose 5-min export timer has been scheduled, to avoid duplicates.
+  const scheduledExportTimersRef = useRef<Set<number>>(new Set());
+  const EXPORT_WINDOW_MS = 5 * 60 * 1000;
 
   // Data source selector (multi-select: DB is exclusive with files, multiple files allowed)
   const [sessionFiles, setSessionFiles] = useState<SessionFileMeta[]>([]);
@@ -324,6 +327,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
             ? (persistedSqlState ?? sqlAction.sqlActionState ?? ('pending' as const))
             : sqlAction.sqlActionState,
           exportToExcel: msg.role === 'assistant' ? readFileExport(msg.tool_events) : null,
+          exportDisabled: (() => {
+            if (msg.role !== 'assistant') return undefined;
+            const exp = readFileExport(msg.tool_events);
+            if (!exp?.filename) return undefined;
+            const hasLaterMessages = msgIndex < filteredMessages.length - 1;
+            if (!hasLaterMessages) return undefined;
+            const wasDownloaded = !!localStorage.getItem(`dbeelight:exported:${sid}:${exp.filename}`);
+            return wasDownloaded ? undefined : true;
+          })(),
           charts: msg.role === 'assistant' ? readCharts(msg.tool_events) : undefined,
           queryResult: msg.role === 'assistant' ? readQueryResult(msg.tool_events) : null,
           mutationPreview: msg.role === 'assistant' ? (sqlPreview?.preview ?? null) : null,
@@ -681,6 +693,38 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     el.style.overflowY = scrollHeight > MAX_TEXTAREA_HEIGHT ? 'auto' : 'hidden';
   }, [query]);
 
+  // Schedule a 5-min expiry for any newly added export that hasn't been downloaded yet.
+  useEffect(() => {
+    messages.forEach((msg, i) => {
+      if (!msg.isUser && msg.exportToExcel && msg.exportCreatedAt && !scheduledExportTimersRef.current.has(i)) {
+        scheduledExportTimersRef.current.add(i);
+        const remaining = msg.exportCreatedAt + EXPORT_WINDOW_MS - Date.now();
+        if (remaining <= 0) {
+          if (!msg.exportDownloadedAt) {
+            setMessages((prev) => {
+              const updated = [...prev];
+              if (updated[i]?.exportToExcel && !updated[i]?.exportDownloadedAt) {
+                updated[i] = { ...updated[i], exportDisabled: true };
+              }
+              return updated;
+            });
+          }
+        } else {
+          setTimeout(() => {
+            setMessages((prev) => {
+              const updated = [...prev];
+              if (updated[i]?.exportToExcel && !updated[i]?.exportDownloadedAt) {
+                updated[i] = { ...updated[i], exportDisabled: true };
+              }
+              return updated;
+            });
+          }, remaining);
+        }
+      }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length]);
+
   /** Stateless excel: an inline-base64 export is the ONLY copy of the workbook — persist it
    *  to IndexedDB and flip the matching data source to a `local:` id (the server just deleted
    *  its row). Returns the export unchanged so call sites can keep their one-liner shape. */
@@ -736,6 +780,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   // state — needed right after an upload, where the state hasn't propagated to this closure yet
   // (so the just-uploaded workbook would otherwise be missed and the Excel route wouldn't fire).
   const doSend = async (text: string, activeFileIdsOverride?: string[]) => {
+    // Rule: new message → disable any un-downloaded export (window has passed).
+    // Already-downloaded exports survive because the file is already on the client.
+    setMessages((prev) => prev.map((m) =>
+      !m.isUser && m.exportToExcel && !m.exportDownloadedAt
+        ? { ...m, exportDisabled: true }
+        : m
+    ));
     setIsSending(true);
     setIsAssistantTyping(false);
     setStreamingStage('Processing');
@@ -774,6 +825,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               };
             })(),
             exportToExcel: captureExport(readFileExport((res as any).tool_events)),
+            exportCreatedAt: readFileExport((res as any).tool_events) ? Date.now() : undefined,
             charts: readCharts((res as any).tool_events),
             queryResult: readQueryResult((res as any).tool_events),
             mutationPreview: readSqlPreview((res as any).tool_events)?.preview ?? null,
@@ -1062,6 +1114,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               };
             })(),
             exportToExcel: captureExport(readFileExport((res as any).tool_events)),
+            exportCreatedAt: readFileExport((res as any).tool_events) ? Date.now() : undefined,
             charts: readCharts((res as any).tool_events),
             queryResult: readQueryResult((res as any).tool_events),
             mutationPreview: readSqlPreview((res as any).tool_events)?.preview ?? null,
@@ -1322,6 +1375,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
               };
             })(),
             exportToExcel: captureExport(readFileExport((res as any).tool_events)),
+            exportCreatedAt: readFileExport((res as any).tool_events) ? Date.now() : undefined,
             schemaPreview: readSchemaPreview((res as any).tool_events),
           },
         ]);
@@ -1408,6 +1462,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 };
               })(),
               exportToExcel: captureExport(readFileExport((res as any).tool_events)),
+            exportCreatedAt: readFileExport((res as any).tool_events) ? Date.now() : undefined,
               schemaPreview: readSchemaPreview((res as any).tool_events),
             },
           ];
@@ -1452,22 +1507,30 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const exp = msg?.exportToExcel;
     if (!exp?.filename) return;
     try {
-      if (exp.base64) {          // live response — bytes are right here
-        triggerExcelDownload(exp);
-        return;
-      }
-      // Reloaded history: persisted events carry no base64 (stateless excel) — the blob
-      // lives in THIS device's IndexedDB if the edit happened here.
+      // Always prefer IndexedDB: it holds the latest AI-edited version even after subsequent turns.
+      // Fall back to inline base64 (first-response case before IndexedDB write completes)
+      // or server-side file (pre-migration exports).
       const blob = sessionId ? await getWorkbook(sessionId, exp.filename) : null;
       if (blob) {
         downloadBlob(blob, exp.filename);
-        return;
-      }
-      if (exp.sessionFileId) {   // pre-migration exports still stored server-side
+      } else if (exp.base64) {
+        triggerExcelDownload(exp);
+      } else if (exp.sessionFileId) {
         await downloadStoredSessionFile(exp.sessionFileId);
+      } else {
+        toast.error('This file is only available on the device where it was edited.');
         return;
       }
-      toast.error('This file is only available on the device where it was edited.');
+      // Persist download state so the button survives page reloads.
+      if (exp.filename && sessionId) {
+        localStorage.setItem(`dbeelight:exported:${sessionId}:${exp.filename}`, String(Date.now()));
+      }
+      // Mark in-memory so the button survives future sends within this session.
+      setMessages((prev) => {
+        const updated = [...prev];
+        if (updated[aiIndex]) updated[aiIndex] = { ...updated[aiIndex], exportDownloadedAt: Date.now() };
+        return updated;
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to export';
       setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);
