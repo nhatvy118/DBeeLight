@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
+    # Storage quota for HOSTED SQLite project DBs (external DBs are never limited).
+    # Excel workbooks are ephemeral (stateless excel) and use no server storage.
+    # Enforced STRICTLY at import time (current usage + incoming file must fit), so this
+    # is the true per-user ceiling. Override via HOSTED_DB_QUOTA_BYTES env.
+    hosted_db_quota_bytes: int = 400 * 1024 * 1024  # 400 MB per user
+
     @property
     def databases_dir(self) -> Path:
         return Path(self.data_root) / "databases"

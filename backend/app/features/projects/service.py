@@ -263,6 +263,17 @@ async def resolve_db_url(project_id: str, user_id: str) -> str | None:
     return db_url if is_configured(db_url) else None
 
 
+async def owned_sqlite_paths(user_id: str) -> list[str]:
+    """SQLite file paths of every project the user OWNS (db_url = sqlite:///…). External
+    DSNs are excluded. Used by the hosted-DB storage metric (files.service.hosted_db_usage)."""
+    out: list[str] = []
+    for p in await repo.list_projects(user_id):
+        url = p.get("db_url") or ""
+        if url.startswith("sqlite:///"):
+            out.append(url[len("sqlite:///"):])
+    return out
+
+
 async def resolve_db_url_for_access(project_id: str, user_id: str) -> str | None:
     """db_url if the user can ACCESS the project — owns it OR it's shared with them. Read access;
     WRITE is gated separately (viewers are blocked from mutations by role). Used by chat."""

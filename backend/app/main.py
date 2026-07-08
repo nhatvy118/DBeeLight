@@ -46,6 +46,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not connect to app DB (%s) — metadata APIs will fail until Postgres is available.", e)
 
+    # Stateless excel: per-turn cleanup misses workbooks whose session never ran a turn —
+    # sweep anything older than a day so orphans can't accumulate.
+    from app.features.files.service import sweep_stale_uploads
+    sweep_stale_uploads()
+
     orch = get_orchestrator()
     await orch.warmup()
     logger.info("Orchestrator singleton ready.")

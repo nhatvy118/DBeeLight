@@ -13,9 +13,12 @@ import {
   deleteChatSession,
   resumeWorkflow,
   createSession,
+  recordImportNote,
   listUserFilesInventory,
   listSessionFiles,
   uploadSessionFile,
+  getFilesQuota,
+  validateUploadFileSize,
   downloadStoredSessionFile,
   saveChart,
   listProjectTables,
@@ -28,6 +31,13 @@ import {
   type ChartRecipe,
   type ProjectKind,
 } from '../services/api';
+import {
+  base64ToBlob,
+  downloadBlob,
+  getWorkbook,
+  listWorkbooks,
+  putWorkbook,
+} from '../utils/workbookStore';
 import ConnectionInfoModal from '../components/modals/ConnectionInfoModal';
 import DescribeTableModal from '../components/modals/DescribeTableModal';
 import {
@@ -128,6 +138,9 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   /** Summary of the most recent import, captured in uploadStagedFiles and read right after by
    *  handleStorageChoice to build the deterministic confirmation line. */
   const lastImportRef = useRef<{ mode: ImportMode; fileNames: string[]; createdTables: string[]; appendedTo: string | null } | null>(null);
+  // Session the last upload actually used — survives the closure staleness right after
+  // uploadStagedFiles creates a brand-new session (setSessionId hasn't re-rendered yet).
+  const lastUploadSessionRef = useRef<string | null>(null);
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [typingStopSignal, setTypingStopSignal] = useState(0);
   // Live progress label streamed from the backend (e.g. "Đang sinh SQL...").
@@ -374,17 +387,27 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
   };
 
   const showStorageQuotaToast = async () => {
+    // Pull the real limit from the API — the FE must never hardcode the quota.
+    let limitLabel = 'Storage limit reached';
+    try {
+      const q = await getFilesQuota();
+      if (q.limit_bytes > 0) {
+        limitLabel = `Storage limit reached (${Math.round(q.limit_bytes / (1024 * 1024))} MB total)`;
+      }
+    } catch {
+      /* keep generic label */
+    }
     try {
       const inv = await listUserFilesInventory();
       const lines = inv.slice(0, 12).map(
         (r) => `• ${r.filename} (${(r.size_bytes / (1024 * 1024)).toFixed(1)} MB) — session ${r.session_id.slice(0, 8)}…`,
       );
       toast.error(
-        'Storage limit reached (5 GB). Delete some files and try again.\n\n' +
+        `${limitLabel}. Delete some files and try again.\n\n` +
           (lines.length ? `Recent files:\n${lines.join('\n')}` : ''),
       );
     } catch {
-      toast.error('Storage limit reached (5 GB). Delete some files and try again.');
+      toast.error(`${limitLabel}. Delete some files and try again.`);
     }
   };
 
@@ -395,6 +418,31 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     targetTable: string | null = null,
   ): Promise<{ id: string; filename: string }[]> => {
     if (filesToUpload.length === 0) return [];
+
+    // Now that the mode is known, re-check per-file caps exactly (staging only checked
+    // the most permissive mode — e.g. a 5 MB xlsx passes staging but not 'excel' mode).
+    const oversized = filesToUpload.filter((f) => validateUploadFileSize(f.file, importMode));
+    if (oversized.length > 0) {
+      oversized.forEach((f) => toast.error(validateUploadFileSize(f.file, importMode)!));
+      filesToUpload = filesToUpload.filter((f) => !oversized.includes(f));
+      if (filesToUpload.length === 0) return [];
+    }
+
+    // Pre-flight quota check ('excel' mode only — project_db imports live in the user's
+    // own DB and don't count against storage). BE re-checks (413); this just fails fast
+    // before wasting the transfer.
+    if (importMode === 'excel') {
+      try {
+        const q = await getFilesQuota();
+        const incoming = filesToUpload.reduce((sum, f) => sum + f.file.size, 0);
+        if (q.limit_bytes > 0 && q.used_bytes + incoming > q.limit_bytes) {
+          await showStorageQuotaToast();
+          return [];
+        }
+      } catch {
+        /* quota endpoint unavailable → let the upload proceed; BE still enforces */
+      }
+    }
 
     setIsUploadingFile(true);
     setFileUploadProgress({ done: 0, total: filesToUpload.length, filename: filesToUpload[0].filename });
@@ -409,6 +457,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         }
         sid = cr.session_id;
         setSessionId(sid);
+        lastUploadSessionRef.current = sid;
         onSessionIdChange?.(sid);
         saveLastSession(sid, selectedProject?.id ?? propProjectId ?? null);
         if (selectedProject?.id || propProjectId) {
@@ -443,12 +492,17 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
         if (result.status === 'fulfilled') {
           const up = result.value.file;
           uploaded.push({ id: up.id, filename: up.filename });
+          if (importMode === 'excel') {
+            // Stateless excel: the server deletes its copy after the next turn — keep the
+            // original on this device so later turns can re-stage it from IndexedDB.
+            void putWorkbook(sid!, up.filename, staged.file);
+          }
           if (result.value.tables) createdTables.push(...result.value.tables);
           continue;
         }
 
         const e = result.reason as Error & { code?: string };
-        if (e.code === 'storage_quota_exceeded' || /5\s*GB|storage limit/i.test(e.message || '')) {
+        if (e.code === 'storage_quota_exceeded' || /storage (quota|limit)/i.test(e.message || '')) {
           if (!quotaToastShown) {
             quotaToastShown = true;
             await showStorageQuotaToast();
@@ -496,6 +550,13 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
 
   /** Stage file locally — upload on Send sends the original file (Excel kept for formatting + SQL import on BE). */
   const stageFileForUpload = (file: File) => {
+    // Fail fast on the per-file cap (mirrors BE 413) — no point uploading a file
+    // the server will reject after the transfer.
+    const sizeError = validateUploadFileSize(file);
+    if (sizeError) {
+      toast.error(sizeError);
+      return;
+    }
     const localId = `staged-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setStagedFiles((prev) => [...prev, { localId, file, filename: file.name }]);
   };
@@ -580,10 +641,27 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       setSessionDb(null);
       return;
     }
-    listSessionFiles(sessionId)
-      .then((files) => {
-        setSessionFiles(files);
-        const fileIdSet = new Set(files.map((f) => f.id));
+    Promise.all([
+      listSessionFiles(sessionId).catch(() => [] as SessionFileMeta[]),
+      listWorkbooks(sessionId).catch(() => [] as { filename: string; updatedAt: number }[]),
+    ])
+      .then(([files, local]) => {
+        // Stateless excel: server rows only live within a turn. Workbooks kept on THIS
+        // device (IndexedDB) re-appear as `local:` sources so the user can keep editing —
+        // resolveActiveFileIds re-uploads the blob when one is picked.
+        const serverNames = new Set(files.map((f) => f.filename));
+        const localMeta: SessionFileMeta[] = local
+          .filter((w) => !serverNames.has(w.filename))
+          .map((w) => ({
+            id: `local:${w.filename}`,
+            filename: w.filename,
+            mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            size_bytes: 0,
+            uploaded_at: new Date(w.updatedAt).toISOString(),
+          }));
+        const merged = [...files, ...localMeta];
+        setSessionFiles(merged);
+        const fileIdSet = new Set(merged.map((f) => f.id));
         // Default scope is the database (empty selection). Only carry over file picks that
         // still exist in this session; file ids are session-scoped.
         setActiveDataSources((prev) => prev.filter((s) => fileIdSet.has(s.id)));
@@ -603,6 +681,57 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     el.style.overflowY = scrollHeight > MAX_TEXTAREA_HEIGHT ? 'auto' : 'hidden';
   }, [query]);
 
+  /** Stateless excel: an inline-base64 export is the ONLY copy of the workbook — persist it
+   *  to IndexedDB and flip the matching data source to a `local:` id (the server just deleted
+   *  its row). Returns the export unchanged so call sites can keep their one-liner shape. */
+  const captureExport = (exp: ReturnType<typeof readFileExport>): ReturnType<typeof readFileExport> => {
+    if (exp?.base64 && exp.filename && sessionId) {
+      const fn = exp.filename;
+      void putWorkbook(sessionId, fn, base64ToBlob(exp.base64));
+      const localId = `local:${fn}`;
+      setSessionFiles((prev) => [
+        ...prev.filter((f) => f.filename !== fn),
+        {
+          id: localId,
+          filename: fn,
+          mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          size_bytes: 0,
+          uploaded_at: new Date().toISOString(),
+        },
+      ]);
+      setActiveDataSources((prev) =>
+        prev.map((s) => (s.type === 'file' && s.filename === fn ? { ...s, id: localId } : s)),
+      );
+    }
+    return exp;
+  };
+
+  /** Server ids in activeDataSources can be dead (workbooks are deleted after every excel
+   *  turn). Ids still present in the server list pass through; `local:` sources re-upload
+   *  the latest blob from IndexedDB to get a fresh id for THIS turn. */
+  const resolveActiveFileIds = async (override?: string[]): Promise<string[]> => {
+    if (override) return override; // fresh ids from an upload in this same click
+    const fileSources = activeDataSources.filter((s) => s.type === 'file');
+    if (fileSources.length === 0 || !sessionId) return getActiveFileIds(activeDataSources);
+    const live = new Set(sessionFiles.filter((f) => !f.id.startsWith('local:')).map((f) => f.id));
+    const ids: string[] = [];
+    for (const src of fileSources) {
+      if (live.has(src.id)) {
+        ids.push(src.id);
+        continue;
+      }
+      const blob = await getWorkbook(sessionId, src.filename);
+      if (!blob) {
+        toast.error(`"${src.filename}" is only available on the device where it was edited — please upload it again.`);
+        continue;
+      }
+      const f = new File([blob], src.filename, { type: blob.type });
+      const up = await uploadSessionFile(sessionId, f, 'excel', selectedProject?.id || propProjectId || null, null);
+      ids.push(up.file.id);
+    }
+    return ids;
+  };
+
   // `activeFileIdsOverride` scopes this turn to specific files instead of the activeDataSources
   // state — needed right after an upload, where the state hasn't propagated to this closure yet
   // (so the just-uploaded workbook would otherwise be missed and the Excel route wouldn't fire).
@@ -613,10 +742,11 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const controller = new AbortController();
     sendAbortControllerRef.current = controller;
     try {
+      const resolvedFileIds = await resolveActiveFileIds(activeFileIdsOverride);
       const finalRes = await sendMessageWithStream(text, sessionId, selectedProject?.id || null, {
         onStage: (m) => setStreamingStage(m),
         signal: controller.signal,
-        activeFileIds: scopedFileIds(activeFileIdsOverride ?? getActiveFileIds(activeDataSources)),
+        activeFileIds: scopedFileIds(resolvedFileIds),
       });
       setStreamingStage(null);
       // ChatResponse is a discriminated union; downstream code reads optional
@@ -643,7 +773,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 workflowResumePending: pendingResume,
               };
             })(),
-            exportToExcel: readFileExport((res as any).tool_events),
+            exportToExcel: captureExport(readFileExport((res as any).tool_events)),
             charts: readCharts((res as any).tool_events),
             queryResult: readQueryResult((res as any).tool_events),
             mutationPreview: readSqlPreview((res as any).tool_events)?.preview ?? null,
@@ -727,7 +857,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     { icon: React.ReactNode; bg: string; color: string; title: string; desc: string }
   > = {
     project_db: { icon: <Icons.Database size={17} />, bg: 'var(--green-soft)', color: 'var(--green-ink)', title: 'Save to database', desc: "Store this file's data in your project database so you can query it anytime." },
-    excel: { icon: <Icons.Pencil size={17} />, bg: 'var(--accent-soft)', color: 'var(--accent-ink)', title: 'Edit in Excel', desc: 'Let the assistant open and edit this workbook with the Excel tools.' },
+    excel: { icon: <Icons.Pencil size={17} />, bg: 'var(--accent-soft)', color: 'var(--accent-ink)', title: 'Edit in Excel', desc: 'Let the assistant open and edit this workbook with the Excel tools (files up to 1 MB).' },
   };
 
   /** Which destinations make sense for the staged batch. All tabular formats (CSV/TSV/XLS/XLSX)
@@ -859,7 +989,15 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
       const imp = lastImportRef.current;
       lastImportRef.current = null;
       if (imp) {
-        setMessages((prev) => [...prev, { text: importConfirmation(imp.fileNames, imp.createdTables, imp.appendedTo), isUser: false }]);
+        const confirmation = importConfirmation(imp.fileNames, imp.createdTables, imp.appendedTo);
+        setMessages((prev) => [...prev, { text: confirmation, isUser: false }]);
+        // Persist the exchange — this flow skips /api/chat, so without this the upload
+        // turn (user text + attachment chip + confirmation) is lost on reload.
+        const sid = sessionId ?? lastUploadSessionRef.current;
+        if (sid) {
+          recordImportNote(sid, displayText, imp.fileNames, confirmation)
+            .catch((e) => console.warn('import-note persist failed:', e));
+        }
       }
       return;
     }
@@ -923,7 +1061,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 workflowResumePending: pendingResume,
               };
             })(),
-            exportToExcel: readFileExport((res as any).tool_events),
+            exportToExcel: captureExport(readFileExport((res as any).tool_events)),
             charts: readCharts((res as any).tool_events),
             queryResult: readQueryResult((res as any).tool_events),
             mutationPreview: readSqlPreview((res as any).tool_events)?.preview ?? null,
@@ -1183,7 +1321,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                 workflowResumePending: pendingResume,
               };
             })(),
-            exportToExcel: readFileExport((res as any).tool_events),
+            exportToExcel: captureExport(readFileExport((res as any).tool_events)),
             schemaPreview: readSchemaPreview((res as any).tool_events),
           },
         ]);
@@ -1269,7 +1407,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
                   workflowResumePending: pendingResume,
                 };
               })(),
-              exportToExcel: readFileExport((res as any).tool_events),
+              exportToExcel: captureExport(readFileExport((res as any).tool_events)),
               schemaPreview: readSchemaPreview((res as any).tool_events),
             },
           ];
@@ -1314,13 +1452,22 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     const exp = msg?.exportToExcel;
     if (!exp?.filename) return;
     try {
-      if (exp.sessionFileId) {
+      if (exp.base64) {          // live response — bytes are right here
+        triggerExcelDownload(exp);
+        return;
+      }
+      // Reloaded history: persisted events carry no base64 (stateless excel) — the blob
+      // lives in THIS device's IndexedDB if the edit happened here.
+      const blob = sessionId ? await getWorkbook(sessionId, exp.filename) : null;
+      if (blob) {
+        downloadBlob(blob, exp.filename);
+        return;
+      }
+      if (exp.sessionFileId) {   // pre-migration exports still stored server-side
         await downloadStoredSessionFile(exp.sessionFileId);
         return;
       }
-      if (exp.base64) {
-        triggerExcelDownload(exp);
-      }
+      toast.error('This file is only available on the device where it was edited.');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to export';
       setMessages((prev) => [...prev, { text: `Error: ${message}`, isUser: false }]);

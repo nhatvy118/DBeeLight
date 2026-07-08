@@ -218,9 +218,9 @@ export default function MessageList({
         const isLastTyping = !msg.isUser && index === messages.length - 1 && lastMessageTyping;
         const turnBody = (
           <>
-          {!msg.isUser &&
-          msg.exportToExcel?.filename &&
-          (msg.exportToExcel.base64 || msg.exportToExcel.sessionFileId) ? (
+          {/* filename alone is enough: ephemeral exports (stateless excel) persist without
+              base64/sessionFileId — the blob is fetched from this device's IndexedDB. */}
+          {!msg.isUser && msg.exportToExcel?.filename ? (
             <div style={{ display: 'flex', justifyContent: 'flex-start', width: '100%', marginBottom: 8 }}>
               <div style={{ width: '100%', maxWidth: 320, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
                 <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '11px 14px' }} title={msg.exportToExcel.filename}>

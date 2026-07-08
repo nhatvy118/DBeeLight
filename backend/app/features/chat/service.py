@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 from app.agent import titling
 from app.agent.context import DbContext, RequestContext, reset_ctx, set_ctx
@@ -189,15 +190,35 @@ async def handle(
                 excel_file_paths=excel_paths if is_excel else None,
             )
             if is_excel:
-                exports = await files_service.register_excel_outputs(user_id, session_id, excel_before)
+                # Stateless excel: exports come back inline (base64) and the server deletes
+                # the session's workbooks + `files` rows — the FE keeps the only copy.
+                exports = await files_service.collect_excel_outputs_inline(user_id, session_id, excel_before)
                 if exports:
                     result.tool_events = (result.tool_events or []) + exports
         finally:
             reset_ctx(token)
 
     result.cancelled_action_ids = cancelled_action_ids  # superseded cards → FE disables them live
-    await sess_repo.add_message(session_id, "user", message)
-    await sess_repo.add_message(session_id, "assistant", result.response, result.tool_events)
+    # Excel turns: persist WHICH workbook(s) the user had attached as a `session_file`
+    # event on the user message, so the attachment chip survives a reload (the FE
+    # renders it from history via readSessionFiles).
+    user_events = None
+    if excel_paths:
+        user_events = [{
+            "tool": "files", "type": "session_file",
+            "payload": {"files": [{"name": PurePosixPath(p).name} for p in excel_paths]},
+        }]
+    await sess_repo.add_message(session_id, "user", message, user_events)
+    # base64 payloads are for the LIVE response only — never persisted (they would bloat the
+    # messages table and every GET /messages). The persisted card keeps metadata only; on
+    # reload the FE re-attaches the blob from the device's IndexedDB.
+    persisted_events = [
+        {**ev, "payload": {k: v for k, v in ev["payload"].items() if k != "base64"}}
+        if ev.get("type") == "file_export" and (ev.get("payload") or {}).get("ephemeral")
+        else ev
+        for ev in (result.tool_events or [])
+    ] or None
+    await sess_repo.add_message(session_id, "assistant", result.response, persisted_events)
     if result.action_id and result.action_state:
         await sess_repo.set_sql_action(session_id, result.action_id, result.action_state)
 

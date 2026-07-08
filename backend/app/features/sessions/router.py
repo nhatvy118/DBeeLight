@@ -68,6 +68,29 @@ async def messages(
     return {"success": True, **page}
 
 
+@router.post("/api/sessions/{session_id}/import-note")
+async def import_note(session_id: str, body: dict, user_id: str = Depends(get_current_user_id)):
+    """Persist a DB-import exchange into history. The 'Save to database' flow never goes
+    through /api/chat (it's a pure storage action with a deterministic FE confirmation),
+    so without this the upload turn vanishes on reload. The user message carries a
+    `session_file` tool_event so the attachment chip re-renders from history."""
+    if not await repo.get_session(session_id, user_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    text = str(body.get("text") or "")
+    confirmation = str(body.get("confirmation") or "").strip()
+    files = [
+        {"name": str(f.get("name") or "")}
+        for f in (body.get("files") or [])
+        if isinstance(f, dict) and f.get("name")
+    ]
+    if not confirmation:
+        raise HTTPException(status_code=400, detail="confirmation is required")
+    events = [{"tool": "files", "type": "session_file", "payload": {"files": files}}] if files else None
+    await repo.add_message(session_id, "user", text, events)
+    await repo.add_message(session_id, "assistant", confirmation)
+    return {"success": True}
+
+
 @router.delete("/api/sessions/{session_id}")
 async def delete(session_id: str, user_id: str = Depends(get_current_user_id)):
     await repo.delete_session(session_id, user_id)
