@@ -114,6 +114,10 @@ export type UiMessage = {
   sqlActionId?: string;
   sqlActionState?: 'pending' | 'running' | 'executed' | 'failed' | 'cancelled';
   exportToExcel?: ExportData | null;
+  exportCreatedAt?: number;
+  exportDownloadedAt?: number;
+  /** True when the download window has closed (user sent more messages without downloading). Button shows but is disabled. */
+  exportDisabled?: boolean;
   schemaPreview?: SchemaPreviewData | null;
   schemaLocked?: boolean;
   /** Locked because the action was cancelled (vs confirmed/created) — drives the header label. */
@@ -235,10 +239,19 @@ export default function MessageList({
                   <div style={{ display: 'flex', justifyContent: 'flex-end', width: '100%', borderTop: '1px solid var(--border)', paddingTop: 8 }}>
                     <button
                       type="button"
-                      disabled={!onExportFile || exportingIndex === index}
+                      disabled={!onExportFile || exportingIndex === index || msg.exportDisabled}
                       onClick={() => void runFileDownload(index)}
-                      className="btn btn-outline"
-                      style={{ padding: '6px 14px', fontSize: 13 }}
+                      className={msg.exportDisabled ? undefined : 'btn btn-outline'}
+                      title={msg.exportDisabled ? 'Download window has expired' : undefined}
+                      style={{
+                        padding: '6px 14px', fontSize: 13,
+                        ...(msg.exportDisabled ? {
+                          display: 'inline-flex', alignItems: 'center', gap: 6,
+                          borderRadius: 'var(--r-sm)', border: '1px solid var(--border)',
+                          background: 'var(--surface)', color: 'var(--text-muted)',
+                          opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none',
+                        } : {}),
+                      }}
                     >
                       <Icons.Download size={15} />
                       {exportingIndex === index ? '…' : 'Download'}

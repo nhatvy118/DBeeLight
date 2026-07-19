@@ -192,7 +192,7 @@ async def handle(
             if is_excel:
                 # Stateless excel: exports come back inline (base64) and the server deletes
                 # the session's workbooks + `files` rows — the FE keeps the only copy.
-                exports = await files_service.collect_excel_outputs_inline(user_id, session_id, excel_before)
+                exports = await files_service.collect_excel_outputs_inline(user_id, session_id, excel_before, excel_paths)
                 if exports:
                     result.tool_events = (result.tool_events or []) + exports
         finally:

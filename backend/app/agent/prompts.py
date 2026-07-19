@@ -63,5 +63,9 @@ def excel_system_prompt(session_dir: str = "", file_paths: list[str] | None = No
             f"an absolute path, or another folder (you must not touch other users' files)."
         )
     if file_paths:
-        base += " Uploaded workbook(s) available: " + ", ".join(file_paths) + "."
+        base += (
+            " The workbook(s) on disk for this turn are: "
+            + ", ".join(file_paths)
+            + ". No other files exist in the session folder."
+        )
     return base
