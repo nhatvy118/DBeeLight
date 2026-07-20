@@ -1,119 +1,123 @@
-# MCP Server Projects
+# DBeeLight
 
-Dự án này chứa các MCP (Model Context Protocol) servers và client để tương tác với chúng.
+A Natural Language to SQL (NL2SQL) AI agent platform. Users chat in plain language; the system classifies intent, routes to the appropriate workflow, and executes SQL or file operations — with human-in-the-loop approval for any write operations.
 
-## Các Servers
+## Architecture Overview
 
-Các MCP server giờ được bundle bên trong `mcp-client/servers/` (cùng package với `mcp_agent`). API server không cần biết workspace layout — chỉ import `mcp_agent.server_script("database")` để lấy đường dẫn.
+```
+      User Message
+            │
+            ▼
+┌──────────────────────┐
+│  normalize()         │  <- resolve references, translate to English
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│  classify()          │  <- LLM intent router (router_model)
+└──────────┬───────────┘
+           │
+     ┌─────┴──────────────────────────────────────┐
+     ▼             ▼            ▼         ▼        ▼
+db_readonly   db_mutation  db_create   chart    excel
+db_general                  _table
+     │             │            │         │        │
+     ▼             ▼            ▼         ▼        ▼
+ Tool loop    LangGraph    LangGraph   Tool loop  Tool loop
+ (LLM +       workflow     workflow    (LLM +     (LLM +
+  db tools)   + approval   + schema    db tools   Excel MCP
+               gate        editor)    + chart     over HTTP)
+                                       tools)
+```
 
-### 1. Database Server (`mcp-client/servers/database/`)
-MCP server cung cấp các công cụ để thao tác với PostgreSQL database (CRUD, schema management, SQL execution, etc.).
+### Intent Routes
 
-**Cài đặt:**
+| Route | Triggered by | Backend |
+|---|---|---|
+| `db_readonly` | SELECT queries — "show", "list", "top N", "how many" | `ReadOnlyWorkflow` (LangGraph) |
+| `db_general` | Analysis, schema exploration, multi-query reasoning | Tool loop |
+| `db_mutation` | INSERT / UPDATE / DELETE / ALTER — requires user approval | `MutationWorkflow` (LangGraph) |
+| `db_create_table` | "Create a table for …" — shows schema editor before executing | `CreateTableWorkflow` (LangGraph) |
+| `chart` | "Plot / chart / visualize …" — generates a Vega-Lite spec | Tool loop (chart + db tools) |
+| `excel` | Questions about an uploaded Excel file | Tool loop (Excel MCP over HTTP) |
+| `off_topic` | Greetings, small talk, anything unrelated | Friendly decline |
+
+### Components
+
+```
+DBeeLight/
+├── backend/                  # Python 3.12 / FastAPI
+│   ├── app/
+│   │   ├── agent/
+│   │   │   ├── orchestration/   # intent classifier + orchestrator (singleton)
+│   │   │   ├── graph/           # LangGraph workflows (readonly / mutation / create_table)
+│   │   │   ├── tools/           # in-process db tools, chart tools, Excel HTTP backend
+│   │   │   └── loop.py          # generic tool loop for db_general / chart / excel routes
+│   │   └── features/            # REST API modules: auth, chat, sessions, projects,
+│   │                            #                   files, charts, admin, metadata
+│   └── excel_server/         # FastMCP Excel server (HTTP, port 8931)
+├── frontend/                 # React 18 + TypeScript + Vite + Tailwind
+│   └── src/
+└── docker-compose.yml        # postgres + excel-server + backend
+```
+
+### Human-in-the-loop (Write Operations)
+
+Mutation and create-table routes pause before executing:
+
+- **`db_mutation`** - generates SQL, shows a preview of affected rows, waits for user to click "Execute".
+- **`db_create_table`** - generates a column schema in a structured editor; user can edit columns before confirming.
+
+The `Orchestrator.resume()` method handles confirmation (or cancellation) for both. Pending actions are tracked in the database so page reloads don't lose state.
+
+---
+
+## Services
+
+| Service | Port | Description |
+|---|---|---|
+| Backend API | 5001 | FastAPI, auto-runs migrations on startup |
+| Excel MCP server | 8931 | FastMCP HTTP server for Excel file operations |
+| PostgreSQL | 5432 | pgvector/pgvector:pg16 |
+| Frontend (dev) | 5173 | Vite dev server |
+
+---
+
+## Running the Project
+
+See **HuongDanCaiDat.txt** for prerequisites and environment setup, and **HuongDanSuDung.txt** for step-by-step run instructions (Docker Compose or local development).
+
+Quick start with Docker:
+
 ```bash
-cd mcp-client/servers/database
-uv sync  # Tạo .venv và cài đặt dependencies
+# 1. Set up .env files (see HuongDanCaiDat.txt)
+cp .env.example .env
+cp backend/.env.example backend/.env
+# edit both files — set POSTGRES_PASSWORD and OPENAI_API_KEY at minimum
+
+# 2. Start backend stack
+docker compose up --build
+
+# 3. Start frontend (separate terminal)
+cd frontend && npm run dev
 ```
 
-**Lưu ý:** Không cần file `.env` nữa! Bạn sẽ cung cấp thông tin database qua chatbot.
+App is at http://localhost:5173. API docs at http://localhost:5001/docs.
 
-**Sử dụng:**
-- Database server được kết nối bởi `backend` thông qua package `mcp_agent`.
-- Hãy chạy `backend` và gọi các endpoint `/api/chat` để sử dụng.
+---
 
-**Tools:** connect_db, create_db_from_spec, list_databases, list_tables, get_table_stats, get_schema, generate_schema_doc, manage_constraint, manage_trigger, preview_table, validate_sql, explain_sql, run_mutation, và các tools CRUD cơ bản.
+## Environment Variables (backend/.env)
 
-Client sẽ tự động sử dụng Python từ `.venv` của database server để đảm bảo tất cả dependencies đã được cài đặt.
-
-### 2. Excel Server (`mcp-client/servers/excel-server/`)
-Stdio adapter cho [`excel-mcp-server`](https://github.com/haris-musa/excel-mcp-server) (haris-musa, MIT). Cung cấp tool thao tác file Excel: workbook/worksheet ops, đọc/ghi cell, formula, formatting, chart, pivot table, native Excel tables.
-
-**Cài đặt:**
-```bash
-cd mcp-client/servers/excel-server
-uv sync  # Tạo .venv và cài đặt excel-mcp-server
-```
-
-**Sử dụng:**
-- Excel server được kết nối bởi `backend` thông qua package `mcp_agent`.
-- Hãy chạy `backend` và gọi các endpoint `/api/chat` để sử dụng.
-
-**Tools (24):** create_workbook, create_worksheet, get_workbook_metadata, read_data_from_excel, write_data_to_excel, copy_worksheet, delete_worksheet, rename_worksheet, copy_range, delete_range, validate_excel_range, get_data_validation_info, insert_rows, insert_columns, delete_sheet_rows, delete_sheet_columns, apply_formula, validate_formula_syntax, format_range, merge_cells, unmerge_cells, get_merged_cells, create_chart, create_pivot_table, create_table.
-
-### 3. Excel UI (`excel-ui/`)
-Web UI để upload Excel files và thao tác workbook qua MCP excel-server tools.
-
-**Cài đặt:**
-```bash
-cd excel-ui
-uv sync
-```
-
-**Sử dụng:**
-```bash
-cd excel-ui
-uv run app.py
-```
-
-Sau đó mở browser tại: http://localhost:5000
-
-**Tính năng:**
-- Upload Excel files (drag & drop hoặc click)
-- Data preview
-- Generate summary với statistics
-- Generate charts (bar, line, pie, scatter, histogram)
-- Chart type suggestions
-
-## MCP Client (`mcp-client/`)
-
-Client để kết nối và tương tác với các MCP servers sử dụng OpenAI GPT.
-
-**Cài đặt:**
-```bash
-cd mcp-client
-uv sync  # Tạo .venv và cài đặt dependencies
-```
-
-**Yêu cầu:**
-- File `.env` với `OPENAI_API_KEY`
-
-**Sử dụng:**
-- `mcp-client` chỉ là package/library (không còn CLI).
-- Được dùng bởi `backend` để cung cấp REST API.
-
-**Kiến trúc (Hybrid Orchestrator):**
-
-```
-User Prompt
-      │
-      ▼
-┌──────────────────┐
-│  IntentRouter    │  ← LLM classify: simple/complex/conversational
-│  .classify()     │
-└────────┬─────────┘
-         │
-    ┌────┴────┬────────────┐
-    ▼         ▼            ▼
-Simple   Complex    Conversational
-    │         │            │
-    ▼         ▼            ▼
-LLM-driven  Workflow   Continue
-(BaseAgent)  (LangGraph) conversation
-```
-
-**Hybrid Approach:**
-- **Simple queries** ("list tables", "show schema", "select data"): Dùng LLM-driven (BaseAgent) - nhanh, trực tiếp
-- **Complex queries** ("insert data", "create report"): Dùng LangGraph workflow - sequential stages + human approval
-- **Conversational**: Tiếp tục conversation với context
-
-**LangGraph Workflow:**
-- Mỗi agent (database, excel) có workflow riêng
-- Nodes delegate cho BaseAgent để execute tools
-- Hỗ trợ human-in-the-loop (chờ user approve SQL)
-
-**Lưu ý về Virtual Environment:**
-- Client tự động phát hiện và sử dụng Python từ `.venv` của server (nếu có)
-- Điều này đảm bảo server chạy với đúng dependencies đã được cài đặt
-- Nếu không tìm thấy venv, client sẽ fallback về system Python
-
-Xem thêm chi tiết trong các README của từng server.
+| Variable | Required | Description |
+|---|---|---|
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `OPENAI_API_KEY` | Yes | Used by both LLM and intent router |
+| `LLM_MODEL` | Yes | Main model (e.g. `gpt-5.2`) |
+| `ROUTER_MODEL` | Yes | Model for intent classification (e.g. `gpt-5.2`) |
+| `EXCEL_MCP_URL` | Yes | URL of the Excel MCP server (`http://localhost:8931/mcp`) |
+| `SESSION_SECRET` | Yes | Random string for session signing |
+| `GOOGLE_CLIENT_ID` | No | Google OAuth (optional — app works without it) |
+| `GOOGLE_CLIENT_SECRET` | No | Google OAuth |
+| `BOOTSTRAP_ADMIN_EMAILS` | No | Comma-separated emails that are auto-granted admin on first login |
+| `RESEND_API_KEY` | No | Email invitations (omit to disable email, sharing via link still works) |
+| `FRONTEND_URL` | No | Used in CORS and OAuth redirect (default: `http://localhost:5173`) |
