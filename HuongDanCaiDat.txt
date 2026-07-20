@@ -1,0 +1,87 @@
+DBeeLight is a Natural Language to SQL (NL2SQL) AI agent platform composed of:
+  - A Python/FastAPI backend with LangGraph-based AI agent orchestration
+  - An Excel MCP (Model Context Protocol) server for spreadsheet operations
+  - A React/TypeScript/Vite frontend
+  - A PostgreSQL (with pgvector extension) database
+
+1. PREREQUISITES
+Install the following tools before proceeding:
+  a) Docker Desktop (v24 or later) — https://docs.docker.com/get-docker/
+     Includes Docker Compose V2 (used as `docker compose`, not `docker-compose`).
+
+  b) Node.js v20 or later — https://nodejs.org/
+     Verify: node --version   (must show v20.x.x or higher)
+     npm is bundled with Node.js.
+
+  c) Python 3.12 or later — https://www.python.org/downloads/
+     Verify: python3 --version   (must show 3.12.x or higher)
+
+  d) uv (Python package manager) — https://docs.astral.sh/uv/getting-started/installation/
+     Install on macOS/Linux:
+       curl -LsSf https://astral.sh/uv/install.sh | sh
+     Install on Windows:
+       powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+     Verify: uv --version
+
+  e) Git — https://git-scm.com/downloads
+     Verify: git --version
+
+  f) An OpenAI API key — https://platform.openai.com/api-keys
+     Required for the LLM (GPT) used by the AI agent.
+
+  g) Google OAuth credentials (optional, for Google sign-in)
+     Create credentials at https://console.cloud.google.com/ (OAuth 2.0 Client IDs).
+     Set Authorized redirect URIs to: http://localhost:5001/auth/google/callback
+
+
+2. ENVIRONMENT CONFIGURATION
+The project uses .env files to manage secrets. Never commit real secrets to git.
+
+Step 1: Configure root-level Postgres credentials
+  - Copy the example file:
+      cp .env.example .env
+  - Edit .env and set a strong POSTGRES_PASSWORD:
+      POSTGRES_USER=dbeelight
+      POSTGRES_PASSWORD=strong_password_here
+      POSTGRES_DB=dbeelight_app
+
+Step 2: Configure the backend
+  - Copy the example file:
+      cp backend/.env.example backend/.env
+  - Edit backend/.env and fill in the required values:
+      DATABASE_URL=postgresql://dbeelight:strong_password_here@localhost:5432/dbeelight_app
+
+      OPENAI_API_KEY=sk-...          # your OpenAI API key (required)
+      LLM_MODEL=gpt-4o               # or another supported GPT model
+      ROUTER_MODEL=gpt-4o-mini       # lightweight model for intent routing
+
+      GOOGLE_CLIENT_ID=              # from Google Console (optional)
+      GOOGLE_CLIENT_SECRET=          # from Google Console (optional)
+
+      SESSION_SECRET=a-random-string
+      FRONTEND_URL=http://localhost:5173
+      BOOTSTRAP_ADMIN_EMAILS=your@email.com   # your email for first admin login
+
+      RESEND_API_KEY=                # optional, only needed for email invitations
+      RESEND_FROM=noreply@dbeelight.local
+
+Step 3: Configure the frontend
+  - Copy the example file:
+      cp frontend/.env.example frontend/.env
+  - Edit frontend/.env:
+      VITE_API_URL=http://localhost:5001
+
+3. DEVELOPMENT ENVIRONMENT - LIBRARY & TOOL INSTALLATION
+  A) Backend Python dependencies (for local development without Docker)
+     cd backend
+     uv sync
+     cd ..
+
+  B) Frontend Node.js dependencies
+     cd frontend
+     npm install
+     cd ..
+
+  C) Docker images (for Docker-based run)
+     Images are built automatically when you run `docker compose up --build`
+     (see Usage Guide). No separate step is needed.

@@ -1,0 +1,141 @@
+This guide explains how to build and run the DBeeLight application.
+Complete the Installation Guide (HuongDanCaiDat.txt) before proceeding.
+
+There are two ways to run DBeeLight:
+  - Option A: Docker Compose  (runs everything with one command)
+  - Option B: Local development  (each service started manually)
+
+OPTION A: DOCKER COMPOSE
+This starts PostgreSQL, the Excel MCP server, and the backend API in containers.
+The frontend is run separately (see Step 2 below).
+
+Step 1: Start the backend stack
+  From the project root directory:
+    docker compose up --build
+
+  On the first run, Docker will:
+    1. Pull the pgvector/pgvector:pg16 image and start PostgreSQL.
+    2. Build the Excel MCP server image.
+    3. Build (or pull) the backend API image.
+    4. Run database migrations automatically on startup.
+
+  Once all services are healthy you will see log lines similar to:
+    dbeelight-api  | INFO:     Application startup complete.
+
+  Services available after startup:
+    - Backend API :  http://localhost:5001
+    - Health check:  http://localhost:5001/api/health
+    - PostgreSQL  :  localhost:5432  (accessible from host for debugging)
+
+  To run in the background (detached mode):
+    docker compose up --build -d
+
+  To view logs while detached:
+    docker compose logs -f
+
+  To stop all services:
+    docker compose down
+
+  To stop and remove all data volumes (full reset):
+    docker compose down -v
+
+Step 2: Start the frontend
+  Open a new terminal. From the project root:
+    cd frontend
+    npm run dev
+
+  The frontend will be available at:
+    http://localhost:5173
+
+  Open this URL in your browser to use the DBeeLight application.
+
+Step 3: Sign in
+  On first launch, sign in using the email set in BOOTSTRAP_ADMIN_EMAILS
+  (configured in backend/.env). This account has admin privileges and can
+  invite other users from the /admin panel.
+
+  If Google OAuth is configured, use "Sign in with Google".
+  Otherwise the application uses session-based authentication.
+
+OPTION B: LOCAL DEVELOPMENT (WITHOUT DOCKER)
+Use this option when you want to edit and hot-reload backend or frontend code.
+
+Step 1: Start PostgreSQL
+  You need a running PostgreSQL 16 instance with the pgvector extension.
+
+  Option i - Use Docker for Postgres only:
+    docker run -d \
+      --name dbeelight-postgres \
+      -e POSTGRES_USER=dbeelight \
+      -e POSTGRES_PASSWORD=your_strong_password_here \
+      -e POSTGRES_DB=dbeelight_app \
+      -p 5432:5432 \
+      pgvector/pgvector:pg16
+
+  Option ii — Use a locally installed PostgreSQL:
+    - Install pgvector: https://github.com/pgvector/pgvector#installation
+    - Create the database and user manually.
+    - Enable the extension: CREATE EXTENSION IF NOT EXISTS vector;
+
+Step 2: Start the Excel MCP server
+  The Excel server handles Excel file operations and runs as a separate service.
+    cd backend/excel_server
+    uv sync
+    uv run fastmcp run server.py --transport streamable-http --host 0.0.0.0 --port 8931
+
+  Leave this terminal open. The server listens at http://localhost:8931/mcp.
+
+Step 3: Start the backend API
+  Open a new terminal. From the project root:
+    cd backend
+    uv run uvicorn app.main:app --host 0.0.0.0 --port 5001 --reload
+
+  Database migrations run automatically on startup.
+  The API is available at http://localhost:5001.
+  Interactive API docs: http://localhost:5001/docs
+
+
+Step 4: Start the frontend
+  Open a new terminal. From the project root:
+    cd frontend
+    npm run dev
+  The frontend is available at http://localhost:5173.
+
+BUILD FOR PRODUCTION
+  Frontend (static build):
+    cd frontend
+    npm run build
+
+  Backend (Docker image):
+    docker build -t dbeelight-api ./backend
+
+  Full stack (Docker Compose production):
+    docker compose up --build -d
+
+COMMON COMMANDS REFERENCE
+  Start everything (Docker):          docker compose up --build
+  Stop everything (Docker):           docker compose down
+  View backend logs:                  docker compose logs -f backend
+  Run backend tests:                  cd backend && uv run pytest
+  Frontend dev server:                cd frontend && npm run dev
+  Frontend production build:          cd frontend && npm run build
+  Reset database (drops all data):    docker compose down -v
+
+TROUBLESHOOTING
+  Port already in use:
+    Check what is using the port: lsof -i :5001  (or :5173 / :5432 / :8931)
+    Stop the conflicting process or change the port in the .env file.
+
+  Docker: "POSTGRES_PASSWORD is not set":
+    Ensure the root .env file exists and contains POSTGRES_PASSWORD.
+
+  Frontend cannot reach API (CORS error):
+    Verify VITE_API_URL in frontend/.env matches the running backend address.
+    Verify CORS_ORIGINS in backend/.env includes http://localhost:5173.
+
+  OpenAI API errors:
+    Confirm OPENAI_API_KEY in backend/.env is valid and has available quota.
+
+  Database migration fails on startup:
+    Check DATABASE_URL in backend/.env points to the correct host and database.
+    Ensure PostgreSQL is running and accepting connections.
