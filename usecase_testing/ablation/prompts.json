@@ -1,0 +1,352 @@
+[
+  {
+    "id": 1,
+    "domain": "ecommerce",
+    "prompt": "What is the total revenue generated from paid orders?",
+    "ambiguous": ["revenue → total_amount", "paid → status='paid'"],
+    "expected_columns": ["total_amount", "status"]
+  },
+  {
+    "id": 2,
+    "domain": "ecommerce",
+    "prompt": "What is our profit margin on each product — the difference between retail price and supplier cost?",
+    "ambiguous": ["retail price → products.price", "supplier cost → product_suppliers.supply_price", "profit margin → computed"],
+    "expected_columns": ["price", "supply_price"]
+  },
+  {
+    "id": 3,
+    "domain": "ecommerce",
+    "prompt": "List all orders that are currently in the fulfillment process.",
+    "ambiguous": ["in the fulfillment process → status IN ('pending','paid','shipped')"],
+    "expected_columns": ["status"]
+  },
+  {
+    "id": 4,
+    "domain": "ecommerce",
+    "prompt": "Which products have never been purchased by any customer?",
+    "ambiguous": ["never been purchased → not in order_items"],
+    "expected_columns": ["order_items", "product_id"]
+  },
+  {
+    "id": 5,
+    "domain": "ecommerce",
+    "prompt": "Show me the top 5 customers by lifetime spending.",
+    "ambiguous": ["lifetime spending → SUM(total_amount)", "top 5 → ORDER BY ... LIMIT 5"],
+    "expected_columns": ["total_amount", "customer_id"]
+  },
+  {
+    "id": 6,
+    "domain": "ecommerce",
+    "prompt": "Which root-level categories have no sub-categories?",
+    "ambiguous": ["root-level → parent_id IS NULL", "no sub-categories → no rows with that parent_id"],
+    "expected_columns": ["parent_id"]
+  },
+  {
+    "id": 7,
+    "domain": "ecommerce",
+    "prompt": "How much stock do we have at risk — products that have been ordered but not yet shipped?",
+    "ambiguous": ["at risk → ordered but not shipped", "not yet shipped → status IN ('pending','paid')"],
+    "expected_columns": ["status", "stock", "quantity"]
+  },
+  {
+    "id": 8,
+    "domain": "ecommerce",
+    "prompt": "What is the average customer satisfaction score per product?",
+    "ambiguous": ["customer satisfaction score → rating in reviews"],
+    "expected_columns": ["rating", "product_id"]
+  },
+  {
+    "id": 9,
+    "domain": "ecommerce",
+    "prompt": "Which suppliers are delivering the most cost-effective inventory?",
+    "ambiguous": ["cost-effective → low supply_price relative to products.price"],
+    "expected_columns": ["supply_price", "price"]
+  },
+  {
+    "id": 10,
+    "domain": "ecommerce",
+    "prompt": "Find lost sales: orders that were abandoned before payment.",
+    "ambiguous": ["lost sales → status = 'cancelled'", "abandoned before payment → cancelled"],
+    "expected_columns": ["status"]
+  },
+  {
+    "id": 11,
+    "domain": "ecommerce",
+    "prompt": "Which product lines are generating the most gross margin?",
+    "ambiguous": ["product lines → categories", "gross margin → revenue minus cost"],
+    "expected_columns": ["category_id", "total_amount", "supply_price"]
+  },
+  {
+    "id": 12,
+    "domain": "ecommerce",
+    "prompt": "Show me the order conversion rate: how many customers placed more than one order?",
+    "ambiguous": ["conversion rate → repeat customers", "more than one order → COUNT > 1"],
+    "expected_columns": ["customer_id", "orders"]
+  },
+  {
+    "id": 13,
+    "domain": "ecommerce",
+    "prompt": "Which items in our catalog have the worst buyer feedback?",
+    "ambiguous": ["catalog → products", "buyer feedback → reviews.rating", "worst → lowest average"],
+    "expected_columns": ["rating", "product_id"]
+  },
+  {
+    "id": 14,
+    "domain": "ecommerce",
+    "prompt": "What is the average basket size — how many line items per transaction?",
+    "ambiguous": ["basket size → items per order", "line items → order_items rows", "transaction → order"],
+    "expected_columns": ["order_id", "order_items"]
+  },
+  {
+    "id": 15,
+    "domain": "ecommerce",
+    "prompt": "Which vendors supply products in more than two merchandise categories?",
+    "ambiguous": ["vendors → suppliers", "merchandise categories → categories via products"],
+    "expected_columns": ["supplier_id", "category_id"]
+  },
+  {
+    "id": 16,
+    "domain": "ecommerce",
+    "prompt": "List products that are currently out of stock but still have open orders.",
+    "ambiguous": ["out of stock → stock = 0", "open orders → status IN ('pending','paid')"],
+    "expected_columns": ["stock", "status"]
+  },
+  {
+    "id": 17,
+    "domain": "ecommerce",
+    "prompt": "What percentage of our revenue comes from high-rated products (4 stars or above)?",
+    "ambiguous": ["high-rated → rating >= 4", "revenue → total_amount"],
+    "expected_columns": ["rating", "total_amount"]
+  },
+  {
+    "id": 18,
+    "domain": "ecommerce",
+    "prompt": "Which second-tier categories — those that belong to a parent — have the most products?",
+    "ambiguous": ["second-tier → parent_id IS NOT NULL", "belong to a parent → sub-categories"],
+    "expected_columns": ["parent_id", "category_id"]
+  },
+  {
+    "id": 19,
+    "domain": "ecommerce",
+    "prompt": "Show the fulfilment delay risk: orders placed more than 7 days ago that are still not shipped.",
+    "ambiguous": ["fulfilment delay → created_at < NOW()-7days AND status NOT 'shipped'"],
+    "expected_columns": ["created_at", "status"]
+  },
+  {
+    "id": 20,
+    "domain": "ecommerce",
+    "prompt": "Which customers have returned the highest total spend but have given poor reviews?",
+    "ambiguous": ["total spend → SUM(total_amount)", "poor reviews → low rating"],
+    "expected_columns": ["total_amount", "rating", "customer_id"]
+  },
+  {
+    "id": 21,
+    "domain": "hr",
+    "prompt": "What is the total compensation paid out to each department this month?",
+    "ambiguous": ["total compensation → net_pay", "this month → current period_month"],
+    "expected_columns": ["net_pay", "department_id", "period_month"]
+  },
+  {
+    "id": 22,
+    "domain": "hr",
+    "prompt": "Who are the direct reports of the department heads?",
+    "ambiguous": ["direct reports → employees whose manager_id = head's id", "department heads → employees with NULL manager_id or senior level"],
+    "expected_columns": ["manager_id"]
+  },
+  {
+    "id": 23,
+    "domain": "hr",
+    "prompt": "Which staff members were late more than 3 times last month?",
+    "ambiguous": ["staff members → employees", "late → attendance.status = 'late'"],
+    "expected_columns": ["status", "employee_id"]
+  },
+  {
+    "id": 24,
+    "domain": "hr",
+    "prompt": "Calculate the take-home pay gap between the highest and lowest earners.",
+    "ambiguous": ["take-home pay → net_pay", "gap → MAX - MIN"],
+    "expected_columns": ["net_pay"]
+  },
+  {
+    "id": 25,
+    "domain": "hr",
+    "prompt": "Which employees have never missed a day of work?",
+    "ambiguous": ["never missed → no absent or leave records", "missed → attendance.status IN ('absent','leave')"],
+    "expected_columns": ["status", "employee_id"]
+  },
+  {
+    "id": 26,
+    "domain": "hr",
+    "prompt": "What is the average base package for mid-level staff across all departments?",
+    "ambiguous": ["base package → base_salary", "mid-level → positions.level = 'mid'"],
+    "expected_columns": ["base_salary", "level"]
+  },
+  {
+    "id": 27,
+    "domain": "hr",
+    "prompt": "How many headcount does each department currently have?",
+    "ambiguous": ["headcount → COUNT(employees)", "currently → no termination concept, all employees"],
+    "expected_columns": ["department_id", "employees"]
+  },
+  {
+    "id": 28,
+    "domain": "hr",
+    "prompt": "Which team leads manage the most people?",
+    "ambiguous": ["team leads → employees where manager_id is someone else's manager", "manage the most → highest COUNT of manager_id references"],
+    "expected_columns": ["manager_id"]
+  },
+  {
+    "id": 29,
+    "domain": "hr",
+    "prompt": "Show the bonus-to-salary ratio for each employee this pay period.",
+    "ambiguous": ["salary → base_salary", "pay period → period_month (current)", "bonus-to-salary ratio → bonus / base_salary"],
+    "expected_columns": ["bonus", "base_salary", "period_month"]
+  },
+  {
+    "id": 30,
+    "domain": "hr",
+    "prompt": "Find employees who have been on leave for more than 5 days in the past 30 days.",
+    "ambiguous": ["on leave → attendance.status = 'leave'", "past 30 days → work_date >= NOW()-30"],
+    "expected_columns": ["status", "work_date"]
+  },
+  {
+    "id": 31,
+    "domain": "hr",
+    "prompt": "Which departments have the highest deductions from employee paychecks?",
+    "ambiguous": ["deductions → payroll.deductions", "paychecks → payroll records"],
+    "expected_columns": ["deductions", "department_id"]
+  },
+  {
+    "id": 32,
+    "domain": "hr",
+    "prompt": "List all employees at the top of the org chart — those who report to no one.",
+    "ambiguous": ["top of the org chart → manager_id IS NULL"],
+    "expected_columns": ["manager_id"]
+  },
+  {
+    "id": 33,
+    "domain": "hr",
+    "prompt": "What is the average attendance rate per department this year?",
+    "ambiguous": ["attendance rate → present days / total days", "present → status = 'present'"],
+    "expected_columns": ["status", "department_id", "work_date"]
+  },
+  {
+    "id": 34,
+    "domain": "hr",
+    "prompt": "Which positions carry a salary above the company average?",
+    "ambiguous": ["carry a salary → employees.salary", "company average → AVG(salary)"],
+    "expected_columns": ["salary", "position_id"]
+  },
+  {
+    "id": 35,
+    "domain": "hr",
+    "prompt": "Show me the tenure of each employee — how long they have been with the company.",
+    "ambiguous": ["tenure → derived from hire_date to NOW()"],
+    "expected_columns": ["hire_date"]
+  },
+  {
+    "id": 36,
+    "domain": "hospital",
+    "prompt": "How many patients are currently under active treatment?",
+    "ambiguous": ["active treatment → appointments.status = 'scheduled'", "currently → upcoming or today"],
+    "expected_columns": ["status", "patient_id"]
+  },
+  {
+    "id": 37,
+    "domain": "hospital",
+    "prompt": "Which physicians have the highest patient load this week?",
+    "ambiguous": ["physicians → doctors", "patient load → COUNT of appointments", "this week → appointment_time within current week"],
+    "expected_columns": ["doctor_id", "appointment_time"]
+  },
+  {
+    "id": 38,
+    "domain": "hospital",
+    "prompt": "Find all no-show appointments — visits that were scheduled but never completed.",
+    "ambiguous": ["no-show → status = 'cancelled' (scheduled but not completed)"],
+    "expected_columns": ["status"]
+  },
+  {
+    "id": 39,
+    "domain": "hospital",
+    "prompt": "What is the average consultation duration in days for each prescribed medication?",
+    "ambiguous": ["consultation duration → prescriptions.duration_days", "prescribed medication → medication_name"],
+    "expected_columns": ["duration_days", "medication_name"]
+  },
+  {
+    "id": 40,
+    "domain": "hospital",
+    "prompt": "Which wards have the most consultations this month?",
+    "ambiguous": ["wards → departments", "consultations → appointments", "this month → within current month"],
+    "expected_columns": ["department_id", "appointment_time"]
+  },
+  {
+    "id": 41,
+    "domain": "hospital",
+    "prompt": "List patients who have visited the clinic more than twice.",
+    "ambiguous": ["visited → appointments", "more than twice → COUNT > 2"],
+    "expected_columns": ["patient_id", "appointments"]
+  },
+  {
+    "id": 42,
+    "domain": "hospital",
+    "prompt": "What is the age distribution of our patient population?",
+    "ambiguous": ["age → derived from dob", "distribution → group by age range"],
+    "expected_columns": ["dob"]
+  },
+  {
+    "id": 43,
+    "domain": "hospital",
+    "prompt": "Which clinical specialties handle the most urgent cases?",
+    "ambiguous": ["clinical specialties → doctors.specialty", "urgent cases → no explicit urgency column; approximate via reason or count"],
+    "expected_columns": ["specialty", "appointments"]
+  },
+  {
+    "id": 44,
+    "domain": "hospital",
+    "prompt": "Show the most prescribed drugs across all consultations.",
+    "ambiguous": ["drugs → medication_name", "consultations → appointments via prescriptions"],
+    "expected_columns": ["medication_name", "appointment_id"]
+  },
+  {
+    "id": 45,
+    "domain": "hospital",
+    "prompt": "How many follow-up visits were scheduled after a completed appointment?",
+    "ambiguous": ["follow-up → second appointment after completed first; approximate via COUNT of total completed"],
+    "expected_columns": ["status", "patient_id"]
+  },
+  {
+    "id": 46,
+    "domain": "hospital",
+    "prompt": "Find patients whose date of birth is missing from the records.",
+    "ambiguous": ["date of birth → dob", "missing → dob IS NULL"],
+    "expected_columns": ["dob"]
+  },
+  {
+    "id": 47,
+    "domain": "hospital",
+    "prompt": "Which attending doctors have not had any appointments this month?",
+    "ambiguous": ["attending doctors → doctors", "no appointments → LEFT JOIN with no matching appointment_time"],
+    "expected_columns": ["doctor_id", "appointment_time"]
+  },
+  {
+    "id": 48,
+    "domain": "hospital",
+    "prompt": "Show the average course length of treatment grouped by medical specialty.",
+    "ambiguous": ["course length of treatment → duration_days", "medical specialty → doctors.specialty via appointments"],
+    "expected_columns": ["duration_days", "specialty"]
+  },
+  {
+    "id": 49,
+    "domain": "hospital",
+    "prompt": "Which gender has a higher rate of appointment cancellations?",
+    "ambiguous": ["cancellations → status = 'cancelled'", "gender → patients.gender"],
+    "expected_columns": ["gender", "status"]
+  },
+  {
+    "id": 50,
+    "domain": "hospital",
+    "prompt": "List departments where the head count of doctors exceeds 3.",
+    "ambiguous": ["head count → COUNT(doctors)", "departments → doctors.department_id"],
+    "expected_columns": ["department_id", "doctors"]
+  }
+]

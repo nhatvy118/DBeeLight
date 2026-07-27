@@ -1,0 +1,252 @@
+[
+  {
+    "id": 1,
+    "prompt": "What is the total revenue from paid orders?",
+    "ambiguous": ["revenue → ord_amt", "paid → sts_cd = 'P2'"]
+  },
+  {
+    "id": 2,
+    "prompt": "List all products that are currently out of stock.",
+    "ambiguous": ["out of stock → inv_qty = 0"]
+  },
+  {
+    "id": 3,
+    "prompt": "Which orders have been shipped?",
+    "ambiguous": ["shipped → sts_cd = 'S'"]
+  },
+  {
+    "id": 4,
+    "prompt": "What is the gross margin for each product — retail price minus supplier cost?",
+    "ambiguous": ["retail price → prods.prc", "supplier cost → prod_sup.sup_prc", "gross margin → prc - sup_prc"]
+  },
+  {
+    "id": 5,
+    "prompt": "Find the top 5 customers by lifetime spending.",
+    "ambiguous": ["lifetime spending → SUM(ord_amt)", "top 5 → ORDER BY desc LIMIT 5"]
+  },
+  {
+    "id": 6,
+    "prompt": "Which root-level categories have no sub-categories?",
+    "ambiguous": ["root-level → par_id IS NULL", "no sub-categories → no row references this id as par_id"]
+  },
+  {
+    "id": 7,
+    "prompt": "How many cancelled orders are there?",
+    "ambiguous": ["cancelled → sts_cd = 'C'"]
+  },
+  {
+    "id": 8,
+    "prompt": "What is the average customer satisfaction score per product?",
+    "ambiguous": ["satisfaction score → cust_rtg in rvws", "per product → GROUP BY prod_id"]
+  },
+  {
+    "id": 9,
+    "prompt": "Show the total number of units sold per product.",
+    "ambiguous": ["units sold → SUM(qty) in ord_lines"]
+  },
+  {
+    "id": 10,
+    "prompt": "Which products have received poor reviews — a score of 2 or below?",
+    "ambiguous": ["poor reviews → cust_rtg <= 2"]
+  },
+  {
+    "id": 11,
+    "prompt": "What is the total revenue from orders that are in progress (not yet cancelled)?",
+    "ambiguous": ["in progress → sts_cd NOT IN ('C')", "revenue → ord_amt"]
+  },
+  {
+    "id": 12,
+    "prompt": "Find customers who have placed more than one order.",
+    "ambiguous": ["placed → linked by cust_id in ords", "more than one → COUNT > 1"]
+  },
+  {
+    "id": 13,
+    "prompt": "Which suppliers provide products in more than one product category?",
+    "ambiguous": ["suppliers → sups via prod_sup", "category → cats via prods.cat_id"]
+  },
+  {
+    "id": 14,
+    "prompt": "What is the registration date of the most recently joined customer?",
+    "ambiguous": ["registration date → crt_ts in custs", "most recently → MAX(crt_ts)"]
+  },
+  {
+    "id": 15,
+    "prompt": "List all second-level categories — those that belong to a parent category.",
+    "ambiguous": ["second-level → par_id IS NOT NULL"]
+  },
+  {
+    "id": 16,
+    "prompt": "What is the average per-unit selling price across all order line items?",
+    "ambiguous": ["per-unit selling price → u_prc in ord_lines", "average → AVG(u_prc)"]
+  },
+  {
+    "id": 17,
+    "prompt": "Which products have never been ordered?",
+    "ambiguous": ["never been ordered → prod_id not in ord_lines"]
+  },
+  {
+    "id": 18,
+    "prompt": "Show me the wholesale cost for each product from each supplier.",
+    "ambiguous": ["wholesale cost → sup_prc in prod_sup"]
+  },
+  {
+    "id": 19,
+    "prompt": "How many orders were placed by each customer?",
+    "ambiguous": ["placed → cust_id in ords", "COUNT per customer"]
+  },
+  {
+    "id": 20,
+    "prompt": "What percentage of products are currently out of stock?",
+    "ambiguous": ["out of stock → inv_qty = 0", "percentage → ratio to total COUNT"]
+  },
+  {
+    "id": 21,
+    "prompt": "Find all customers from Ho Chi Minh City who have at least one shipped order.",
+    "ambiguous": ["shipped → sts_cd = 'S'", "customer name → cust_nm"]
+  },
+  {
+    "id": 22,
+    "prompt": "What is the average rating given by each customer?",
+    "ambiguous": ["rating → cust_rtg in rvws", "each customer → GROUP BY cust_id"]
+  },
+  {
+    "id": 23,
+    "prompt": "Show the total order value per category.",
+    "ambiguous": ["order value → ord_amt in ords", "per category → cat_id via prods via ord_lines"]
+  },
+  {
+    "id": 24,
+    "prompt": "List products where the retail price is at least double the supplier cost.",
+    "ambiguous": ["retail price → prods.prc", "supplier cost → prod_sup.sup_prc", "double → prc >= 2 * sup_prc"]
+  },
+  {
+    "id": 25,
+    "prompt": "How many reviews have a score of 5 (excellent)?",
+    "ambiguous": ["score of 5 → cust_rtg = 5 in rvws", "excellent is the description of score 5"]
+  },
+  {
+    "id": 26,
+    "prompt": "List all pending orders with the name of the customer who placed them.",
+    "ambiguous": ["pending → sts_cd = 'P'", "customer name → cust_nm in custs"]
+  },
+  {
+    "id": 27,
+    "prompt": "What is the average transaction value of shipped orders?",
+    "ambiguous": ["transaction value → ord_amt", "shipped → sts_cd = 'S'"]
+  },
+  {
+    "id": 28,
+    "prompt": "Which customers have left a written comment in their review?",
+    "ambiguous": ["written comment → cmt IS NOT NULL in rvws", "cmt is the comment column"]
+  },
+  {
+    "id": 29,
+    "prompt": "Find products where the gross margin exceeds 50 percent.",
+    "ambiguous": ["gross margin → (prc - sup_prc) / prc", "retail price → prc", "cost → sup_prc in prod_sup"]
+  },
+  {
+    "id": 30,
+    "prompt": "How many distinct customers have placed at least one order?",
+    "ambiguous": ["customers → cust_id in ords", "distinct → COUNT(DISTINCT cust_id)"]
+  },
+  {
+    "id": 31,
+    "prompt": "Show orders placed in June 2026, sorted from earliest to latest.",
+    "ambiguous": ["placed date → crt_ts in ords", "June 2026 → crt_ts LIKE '2026-06%'"]
+  },
+  {
+    "id": 32,
+    "prompt": "Which products belong to a top-level category?",
+    "ambiguous": ["top-level → par_id IS NULL in cats", "belong → cat_id in prods"]
+  },
+  {
+    "id": 33,
+    "prompt": "What is the total inventory value of all products in stock?",
+    "ambiguous": ["inventory value → prc * inv_qty", "in stock → inv_qty > 0"]
+  },
+  {
+    "id": 34,
+    "prompt": "Which supplier is linked to the most products?",
+    "ambiguous": ["linked → prod_sup table", "most products → COUNT(prod_id) GROUP BY sup_id"]
+  },
+  {
+    "id": 35,
+    "prompt": "Find customers who have not placed any orders.",
+    "ambiguous": ["not placed → cust_id NOT IN ords", "customer name → cust_nm"]
+  },
+  {
+    "id": 36,
+    "prompt": "List all products that have at least one excellent review.",
+    "ambiguous": ["excellent → cust_rtg = 5 in rvws", "at least one → EXISTS or IN subquery"]
+  },
+  {
+    "id": 37,
+    "prompt": "Which customers have both placed an order and written a product review?",
+    "ambiguous": ["placed an order → cust_id in ords", "written a review → cust_id in rvws", "customer name → cust_nm"]
+  },
+  {
+    "id": 38,
+    "prompt": "What is the total number of items sold across all paid orders?",
+    "ambiguous": ["items sold → SUM(qty) in ord_lines", "paid → sts_cd = 'P2' in ords"]
+  },
+  {
+    "id": 39,
+    "prompt": "What is the most expensive product in each category?",
+    "ambiguous": ["most expensive → MAX(prc)", "category → cat_id in prods"]
+  },
+  {
+    "id": 40,
+    "prompt": "How many products are sourced from more than one supplier?",
+    "ambiguous": ["sourced → prod_sup table", "more than one → COUNT(sup_id) > 1 GROUP BY prod_id"]
+  },
+  {
+    "id": 41,
+    "prompt": "What is the total revenue from customers based in Ho Chi Minh City?",
+    "ambiguous": ["revenue → ord_amt in ords", "Ho Chi Minh City → city = 'HCMC' in custs"]
+  },
+  {
+    "id": 42,
+    "prompt": "Which products have been reviewed by more than one customer?",
+    "ambiguous": ["reviewed → rvws table", "more than one customer → COUNT(DISTINCT cust_id) > 1 GROUP BY prod_id"]
+  },
+  {
+    "id": 43,
+    "prompt": "Show the average supply cost per supplier across all their products.",
+    "ambiguous": ["supply cost → sup_prc in prod_sup", "per supplier → GROUP BY sup_id"]
+  },
+  {
+    "id": 44,
+    "prompt": "List all categories that contain at least one product.",
+    "ambiguous": ["contain a product → cat_id referenced in prods"]
+  },
+  {
+    "id": 45,
+    "prompt": "What percentage of orders have been cancelled?",
+    "ambiguous": ["cancelled → sts_cd = 'C'", "percentage → ratio to total COUNT(*)"]
+  },
+  {
+    "id": 46,
+    "prompt": "Which product has the highest average satisfaction score?",
+    "ambiguous": ["satisfaction score → cust_rtg in rvws", "highest average → MAX(AVG(cust_rtg)) GROUP BY prod_id"]
+  },
+  {
+    "id": 47,
+    "prompt": "Find orders where the transaction amount exceeds 20 million.",
+    "ambiguous": ["transaction amount → ord_amt in ords"]
+  },
+  {
+    "id": 48,
+    "prompt": "List all products supplied by vendors from Vietnam.",
+    "ambiguous": ["vendors → sups table", "Vietnam → country = 'Vietnam' in sups", "linked → prod_sup"]
+  },
+  {
+    "id": 49,
+    "prompt": "What is the total number of units ordered for products that are currently out of stock?",
+    "ambiguous": ["out of stock → inv_qty = 0 in prods", "units ordered → SUM(qty) in ord_lines"]
+  },
+  {
+    "id": 50,
+    "prompt": "Show each customer's name, total number of orders, and total amount spent.",
+    "ambiguous": ["customer name → cust_nm in custs", "total amount spent → SUM(ord_amt) in ords"]
+  }
+]

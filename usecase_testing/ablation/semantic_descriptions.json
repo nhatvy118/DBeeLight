@@ -1,0 +1,67 @@
+{
+  "ecommerce": {
+    "db_desc": "An online retail platform managing product catalog, customer orders, supplier relationships, and product reviews.",
+    "tables": {
+      "customers": "Registered buyers on the platform. Each customer can place multiple orders and leave product reviews.",
+      "categories": "Hierarchical product classification. A category with parent_id=NULL is a top-level (root) category; others are sub-categories.",
+      "products": "Items available for purchase. The price field is the retail (selling) price shown to customers.",
+      "suppliers": "Vendors that supply products to the platform.",
+      "product_suppliers": "Many-to-many mapping between products and their suppliers. supply_price is the wholesale cost paid to the supplier.",
+      "orders": "Customer purchase transactions. total_amount represents the total revenue value of the order.",
+      "order_items": "Individual line items within an order. Each row is one product in one order.",
+      "reviews": "Customer feedback on purchased products. rating is a satisfaction score from 1 (worst) to 5 (best)."
+    },
+    "columns": {
+      "orders.status": "Lifecycle stage of the order. Values: 'pending' (placed, not yet paid), 'paid' (payment confirmed), 'shipped' (dispatched to customer), 'cancelled' (abandoned or rejected).",
+      "orders.total_amount": "Total monetary value of the order, representing revenue from this transaction.",
+      "categories.parent_id": "References the parent category. NULL means this is a root (top-level) category with no parent.",
+      "products.price": "Retail selling price — the amount charged to the customer.",
+      "product_suppliers.supply_price": "Wholesale cost price — the amount paid to the supplier. The gross margin is price minus supply_price.",
+      "reviews.rating": "Customer satisfaction score: 1=very poor, 2=poor, 3=average, 4=good, 5=excellent.",
+      "order_items.unit_price": "Price at which the product was sold in this order (may differ from current products.price if price changed).",
+      "products.stock": "Current inventory quantity available. stock=0 means the product is out of stock."
+    }
+  },
+  "hr": {
+    "db_desc": "A human resources and payroll system managing employee information, organizational hierarchy, attendance, and salary records.",
+    "tables": {
+      "departments": "Organizational units within the company (e.g., Engineering, Sales, HR).",
+      "positions": "Job roles and seniority levels. The level field describes seniority: 'junior', 'mid', 'senior', or 'lead'.",
+      "employees": "Company staff members. salary is the contracted base salary. manager_id links to the employee's direct supervisor.",
+      "attendance": "Daily attendance log per employee. Tracks whether each employee was present, late, absent, or on leave.",
+      "payroll": "Monthly payroll records. net_pay is the take-home amount after deductions. period_month uses 'YYYY-MM' format."
+    },
+    "columns": {
+      "employees.manager_id": "The employee's direct manager. NULL means this employee is at the top of the reporting hierarchy (e.g., CEO or department head) and reports to no one.",
+      "employees.salary": "The employee's contracted base salary in VND.",
+      "employees.hire_date": "The date the employee joined the company. Used to calculate tenure.",
+      "attendance.status": "Daily attendance status. Values: 'present' (worked full day), 'late' (arrived late), 'absent' (did not show up), 'leave' (approved leave day).",
+      "payroll.net_pay": "Take-home pay after all deductions — the actual amount transferred to the employee.",
+      "payroll.base_salary": "The base component of salary before bonuses or deductions are applied.",
+      "payroll.bonus": "Additional variable pay for the period (performance bonus, incentive, etc.).",
+      "payroll.deductions": "Total deductions for the period (taxes, insurance, disciplinary penalties, etc.).",
+      "payroll.period_month": "Payroll period in 'YYYY-MM' format, e.g. '2026-06' for June 2026.",
+      "positions.level": "Seniority tier of the position. Values: 'junior', 'mid', 'senior', 'lead'."
+    }
+  },
+  "hospital": {
+    "db_desc": "A clinic management system tracking patients, doctors, departments, appointments, and prescriptions.",
+    "tables": {
+      "departments": "Clinical departments or wards in the hospital (e.g., Cardiology, Pediatrics, Emergency).",
+      "doctors": "Attending physicians. specialty describes the doctor's medical field.",
+      "patients": "Registered patients. dob is date of birth, used to calculate patient age.",
+      "appointments": "Scheduled or completed consultations between a patient and a doctor.",
+      "prescriptions": "Medications prescribed during an appointment. duration_days is the course length of treatment."
+    },
+    "columns": {
+      "appointments.status": "Appointment lifecycle status. Values: 'scheduled' (upcoming, patient is under active care), 'completed' (visit finished), 'cancelled' (no-show or patient cancelled).",
+      "appointments.reason": "The chief complaint or reason for the visit, as stated by the patient.",
+      "patients.dob": "Date of birth. Used to derive patient age at time of appointment.",
+      "patients.gender": "Patient's self-reported gender.",
+      "prescriptions.duration_days": "Prescribed course length in days — how long the patient should take the medication.",
+      "prescriptions.medication_name": "Name of the drug or treatment prescribed.",
+      "doctors.specialty": "The doctor's clinical specialty or medical field (e.g., 'Cardiology', 'General Practice').",
+      "doctors.department_id": "The ward or department the doctor belongs to."
+    }
+  }
+}

@@ -1,0 +1,847 @@
+[
+  {
+    "id": 1,
+    "prompt": "What is the total revenue from paid orders?",
+    "ambiguous": [
+      "revenue → ord_amt",
+      "paid → sts_cd = 'P2'"
+    ],
+    "schema_only_sql": "SELECT SUM(ord_amt) AS total_revenue FROM ords WHERE sts_cd = 'paid';",
+    "semantic_sql": "SELECT SUM(ord_amt) AS total_revenue FROM ords WHERE sts_cd = 'P2';",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": true,
+    "both_fail": false
+  },
+  {
+    "id": 2,
+    "prompt": "List all products that are currently out of stock.",
+    "ambiguous": [
+      "out of stock → inv_qty = 0"
+    ],
+    "schema_only_sql": "SELECT id, name, descr, prc FROM prods WHERE inv_qty = 0;",
+    "semantic_sql": "SELECT * FROM prods WHERE inv_qty = 0;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 3,
+    "prompt": "Which orders have been shipped?",
+    "ambiguous": [
+      "shipped → sts_cd = 'S'"
+    ],
+    "schema_only_sql": "SELECT * FROM ords WHERE sts_cd = 'shipped';",
+    "semantic_sql": "SELECT * FROM ords WHERE sts_cd = 'S';",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": true,
+    "both_fail": false
+  },
+  {
+    "id": 4,
+    "prompt": "What is the gross margin for each product — retail price minus supplier cost?",
+    "ambiguous": [
+      "retail price → prods.prc",
+      "supplier cost → prod_sup.sup_prc",
+      "gross margin → prc - sup_prc"
+    ],
+    "schema_only_sql": "SELECT p.id, p.name, (p.prc - ps.sup_prc) AS gross_margin\nFROM prods p\nJOIN prod_sup ps ON p.id = ps.prod_id;",
+    "semantic_sql": "SELECT p.id, p.name, (p.prc - ps.sup_prc) AS gross_margin\nFROM prods p\nJOIN prod_sup ps ON p.id = ps.prod_id;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 5,
+    "prompt": "Find the top 5 customers by lifetime spending.",
+    "ambiguous": [
+      "lifetime spending → SUM(ord_amt)",
+      "top 5 → ORDER BY desc LIMIT 5"
+    ],
+    "schema_only_sql": "SELECT c.id, c.cust_nm, SUM(o.ord_amt) AS lifetime_spending\nFROM custs c\nJOIN ords o ON c.id = o.cust_id\nGROUP BY c.id, c.cust_nm\nORDER BY lifetime_spending DESC\nLIMIT 5;",
+    "semantic_sql": "SELECT c.id, c.cust_nm, SUM(o.ord_amt) AS lifetime_spending\nFROM custs c\nJOIN ords o ON c.id = o.cust_id\nGROUP BY c.id, c.cust_nm\nORDER BY lifetime_spending DESC\nLIMIT 5;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 6,
+    "prompt": "Which root-level categories have no sub-categories?",
+    "ambiguous": [
+      "root-level → par_id IS NULL",
+      "no sub-categories → no row references this id as par_id"
+    ],
+    "schema_only_sql": "SELECT c1.id, c1.name \nFROM cats c1 \nLEFT JOIN cats c2 ON c1.id = c2.par_id \nWHERE c1.par_id IS NULL AND c2.id IS NULL;",
+    "semantic_sql": "SELECT id, name \nFROM cats \nWHERE par_id IS NULL \nAND id NOT IN (SELECT DISTINCT par_id FROM cats WHERE par_id IS NOT NULL);",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 7,
+    "prompt": "How many cancelled orders are there?",
+    "ambiguous": [
+      "cancelled → sts_cd = 'C'"
+    ],
+    "schema_only_sql": "SELECT COUNT(*) AS cancelled_orders_count \nFROM ords \nWHERE sts_cd = 'CANCELLED';",
+    "semantic_sql": "SELECT COUNT(*) AS cancelled_orders_count FROM ords WHERE sts_cd = 'C';",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": true,
+    "both_fail": false
+  },
+  {
+    "id": 8,
+    "prompt": "What is the average customer satisfaction score per product?",
+    "ambiguous": [
+      "satisfaction score → cust_rtg in rvws",
+      "per product → GROUP BY prod_id"
+    ],
+    "schema_only_sql": "SELECT prod_id, AVG(cust_rtg) AS avg_satisfaction\nFROM rvws\nGROUP BY prod_id;",
+    "semantic_sql": "SELECT prod_id, AVG(cust_rtg) AS avg_satisfaction_score\nFROM rvws\nGROUP BY prod_id;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 9,
+    "prompt": "Show the total number of units sold per product.",
+    "ambiguous": [
+      "units sold → SUM(qty) in ord_lines"
+    ],
+    "schema_only_sql": "SELECT ol.prod_id, SUM(ol.qty) AS total_units_sold\nFROM ord_lines ol\nGROUP BY ol.prod_id;",
+    "semantic_sql": "SELECT prod_id, SUM(qty) AS total_units_sold\nFROM ord_lines\nGROUP BY prod_id;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 10,
+    "prompt": "Which products have received poor reviews — a score of 2 or below?",
+    "ambiguous": [
+      "poor reviews → cust_rtg <= 2"
+    ],
+    "schema_only_sql": "SELECT p.id, p.name, p.descr\nFROM prods p\nJOIN rvws r ON p.id = r.prod_id\nWHERE r.cust_rtg <= 2;",
+    "semantic_sql": "SELECT p.id, p.name, r.cust_rtg\nFROM prods p\nJOIN rvws r ON p.id = r.prod_id\nWHERE r.cust_rtg <= 2;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 11,
+    "prompt": "What is the total revenue from orders that are in progress (not yet cancelled)?",
+    "ambiguous": [
+      "in progress → sts_cd NOT IN ('C')",
+      "revenue → ord_amt"
+    ],
+    "schema_only_sql": "SELECT SUM(ord_amt) AS total_revenue\nFROM ords\nWHERE sts_cd != 'Cancelled';",
+    "semantic_sql": "SELECT SUM(ord_amt) AS total_revenue\nFROM ords\nWHERE sts_cd IN ('P', 'P2', 'S');",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": true,
+    "both_fail": false
+  },
+  {
+    "id": 12,
+    "prompt": "Find customers who have placed more than one order.",
+    "ambiguous": [
+      "placed → linked by cust_id in ords",
+      "more than one → COUNT > 1"
+    ],
+    "schema_only_sql": "SELECT custs.id, custs.cust_nm, custs.email, custs.phone, custs.city\nFROM custs\nJOIN ords ON custs.id = ords.cust_id\nGROUP BY custs.id\nHAVING COUNT(ords.id) > 1;",
+    "semantic_sql": "SELECT cust_id\nFROM ords\nGROUP BY cust_id\nHAVING COUNT(id) > 1;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 13,
+    "prompt": "Which suppliers provide products in more than one product category?",
+    "ambiguous": [
+      "suppliers → sups via prod_sup",
+      "category → cats via prods.cat_id"
+    ],
+    "schema_only_sql": "SELECT s.id, s.name\nFROM sups s\nJOIN prod_sup ps ON s.id = ps.sup_id\nJOIN prods p ON ps.prod_id = p.id\nJOIN cats c ON p.cat_id = c.id\nGROUP BY s.id, s.name\nHAVING COUNT(DISTINCT c.id) > 1;",
+    "semantic_sql": "SELECT s.id, s.name\nFROM sups s\nJOIN prod_sup ps ON s.id = ps.sup_id\nJOIN prods p ON ps.prod_id = p.id\nJOIN cats c ON p.cat_id = c.id\nGROUP BY s.id, s.name\nHAVING COUNT(DISTINCT c.id) > 1;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 14,
+    "prompt": "What is the registration date of the most recently joined customer?",
+    "ambiguous": [
+      "registration date → crt_ts in custs",
+      "most recently → MAX(crt_ts)"
+    ],
+    "schema_only_sql": "SELECT MAX(crt_ts) AS registration_date FROM custs;",
+    "semantic_sql": "SELECT crt_ts FROM custs ORDER BY crt_ts DESC LIMIT 1;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 15,
+    "prompt": "List all second-level categories — those that belong to a parent category.",
+    "ambiguous": [
+      "second-level → par_id IS NOT NULL"
+    ],
+    "schema_only_sql": "SELECT c2.id, c2.name \nFROM cats c1 \nJOIN cats c2 ON c1.id = c2.par_id;",
+    "semantic_sql": "SELECT * FROM cats WHERE par_id IS NOT NULL;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 16,
+    "prompt": "What is the average per-unit selling price across all order line items?",
+    "ambiguous": [
+      "per-unit selling price → u_prc in ord_lines",
+      "average → AVG(u_prc)"
+    ],
+    "schema_only_sql": "SELECT AVG(u_prc) AS average_per_unit_selling_price FROM ord_lines;",
+    "semantic_sql": "SELECT AVG(u_prc) AS average_per_unit_selling_price FROM ord_lines;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 17,
+    "prompt": "Which products have never been ordered?",
+    "ambiguous": [
+      "never been ordered → prod_id not in ord_lines"
+    ],
+    "schema_only_sql": "SELECT p.id, p.name \nFROM prods p \nLEFT JOIN ord_lines ol ON p.id = ol.prod_id \nWHERE ol.id IS NULL;",
+    "semantic_sql": "SELECT p.id, p.name \nFROM prods p \nLEFT JOIN ord_lines ol ON p.id = ol.prod_id \nWHERE ol.id IS NULL;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 18,
+    "prompt": "Show me the wholesale cost for each product from each supplier.",
+    "ambiguous": [
+      "wholesale cost → sup_prc in prod_sup"
+    ],
+    "schema_only_sql": "SELECT p.name AS product_name, s.name AS supplier_name, ps.sup_prc AS wholesale_cost\nFROM prod_sup ps\nJOIN prods p ON ps.prod_id = p.id\nJOIN sups s ON ps.sup_id = s.id;",
+    "semantic_sql": "SELECT prod_sup.prod_id, prod_sup.sup_id, prod_sup.sup_prc\nFROM prod_sup;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 19,
+    "prompt": "How many orders were placed by each customer?",
+    "ambiguous": [
+      "placed → cust_id in ords",
+      "COUNT per customer"
+    ],
+    "schema_only_sql": "SELECT custs.cust_nm, COUNT(ords.id) AS order_count\nFROM custs\nLEFT JOIN ords ON custs.id = ords.cust_id\nGROUP BY custs.id;",
+    "semantic_sql": "SELECT cust_id, COUNT(*) AS order_count\nFROM ords\nGROUP BY cust_id;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 20,
+    "prompt": "What percentage of products are currently out of stock?",
+    "ambiguous": [
+      "out of stock → inv_qty = 0",
+      "percentage → ratio to total COUNT"
+    ],
+    "schema_only_sql": "SELECT (SUM(CASE WHEN inv_qty = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*)) AS out_of_stock_percentage\nFROM prods;",
+    "semantic_sql": "SELECT (SUM(CASE WHEN inv_qty = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*)) AS out_of_stock_percentage\nFROM prods;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 21,
+    "prompt": "Find all customers from Ho Chi Minh City who have at least one shipped order.",
+    "ambiguous": [
+      "shipped → sts_cd = 'S'",
+      "customer name → cust_nm"
+    ],
+    "schema_only_sql": "SELECT DISTINCT c.id, c.cust_nm, c.email, c.phone, c.city\nFROM custs c\nJOIN ords o ON c.id = o.cust_id\nWHERE c.city = 'Ho Chi Minh City' AND o.sts_cd = 'shipped';",
+    "semantic_sql": "SELECT DISTINCT c.cust_nm, c.email, c.phone\nFROM custs c\nJOIN ords o ON c.id = o.cust_id\nWHERE c.city = 'Ho Chi Minh City' AND o.sts_cd = 'S';",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 22,
+    "prompt": "What is the average rating given by each customer?",
+    "ambiguous": [
+      "rating → cust_rtg in rvws",
+      "each customer → GROUP BY cust_id"
+    ],
+    "schema_only_sql": "SELECT cust_id, AVG(cust_rtg) AS average_rating\nFROM rvws\nGROUP BY cust_id;",
+    "semantic_sql": "SELECT cust_id, AVG(cust_rtg) AS average_rating\nFROM rvws\nGROUP BY cust_id;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 23,
+    "prompt": "Show the total order value per category.",
+    "ambiguous": [
+      "order value → ord_amt in ords",
+      "per category → cat_id via prods via ord_lines"
+    ],
+    "schema_only_sql": "SELECT c.name AS category_name, SUM(o.ord_amt) AS total_order_value\nFROM cats c\nJOIN prods p ON c.id = p.cat_id\nJOIN ord_lines ol ON p.id = ol.prod_id\nJOIN ords o ON ol.ord_id = o.id\nGROUP BY c.name;",
+    "semantic_sql": "SELECT c.name AS category_name, SUM(o.ord_amt) AS total_order_value\nFROM cats c\nJOIN prods p ON c.id = p.cat_id\nJOIN ord_lines ol ON p.id = ol.prod_id\nJOIN ords o ON ol.ord_id = o.id\nGROUP BY c.name;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 24,
+    "prompt": "List products where the retail price is at least double the supplier cost.",
+    "ambiguous": [
+      "retail price → prods.prc",
+      "supplier cost → prod_sup.sup_prc",
+      "double → prc >= 2 * sup_prc"
+    ],
+    "schema_only_sql": "SELECT p.id, p.name, p.prc, ps.sup_prc\nFROM prods p\nJOIN prod_sup ps ON p.id = ps.prod_id\nWHERE p.prc >= 2 * ps.sup_prc;",
+    "semantic_sql": "SELECT p.id, p.name, p.prc, ps.sup_prc\nFROM prods p\nJOIN prod_sup ps ON p.id = ps.prod_id\nWHERE p.prc >= 2 * ps.sup_prc;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 25,
+    "prompt": "How many reviews have a score of 5 (excellent)?",
+    "ambiguous": [
+      "score of 5 → cust_rtg = 5 in rvws",
+      "excellent is the description of score 5"
+    ],
+    "schema_only_sql": "SELECT COUNT(*) AS excellent_reviews_count \nFROM rvws \nWHERE cust_rtg = 5;",
+    "semantic_sql": "SELECT COUNT(*) AS excellent_reviews_count FROM rvws WHERE cust_rtg = 5;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 26,
+    "prompt": "List all pending orders with the name of the customer who placed them.",
+    "ambiguous": [
+      "pending → sts_cd = 'P'",
+      "customer name → cust_nm in custs"
+    ],
+    "schema_only_sql": "SELECT custs.cust_nm, ords.id \nFROM ords \nJOIN custs ON ords.cust_id = custs.id \nWHERE ords.sts_cd = 'pending';",
+    "semantic_sql": "SELECT custs.cust_nm \nFROM ords \nJOIN custs ON ords.cust_id = custs.id \nWHERE ords.sts_cd = 'P';",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": true,
+    "both_fail": false
+  },
+  {
+    "id": 27,
+    "prompt": "What is the average transaction value of shipped orders?",
+    "ambiguous": [
+      "transaction value → ord_amt",
+      "shipped → sts_cd = 'S'"
+    ],
+    "schema_only_sql": "SELECT AVG(ord_amt) AS average_transaction_value\nFROM ords\nWHERE sts_cd = 'shipped';",
+    "semantic_sql": "SELECT AVG(ord_amt) AS average_transaction_value\nFROM ords\nWHERE sts_cd = 'S';",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": true,
+    "both_fail": false
+  },
+  {
+    "id": 28,
+    "prompt": "Which customers have left a written comment in their review?",
+    "ambiguous": [
+      "written comment → cmt IS NOT NULL in rvws",
+      "cmt is the comment column"
+    ],
+    "schema_only_sql": "SELECT DISTINCT custs.id, custs.cust_nm, custs.email, custs.phone, custs.city\nFROM custs\nJOIN rvws ON custs.id = rvws.cust_id\nWHERE rvws.cmt IS NOT NULL AND rvws.cmt <> '';",
+    "semantic_sql": "SELECT DISTINCT custs.cust_nm, custs.email, rvws.cmt\nFROM custs\nJOIN rvws ON custs.id = rvws.cust_id\nWHERE rvws.cmt IS NOT NULL AND rvws.cmt <> '';",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 29,
+    "prompt": "Find products where the gross margin exceeds 50 percent.",
+    "ambiguous": [
+      "gross margin → (prc - sup_prc) / prc",
+      "retail price → prc",
+      "cost → sup_prc in prod_sup"
+    ],
+    "schema_only_sql": "SELECT p.id, p.name, p.prc, ps.sup_prc\nFROM prods p\nJOIN prod_sup ps ON p.id = ps.prod_id\nWHERE (p.prc - ps.sup_prc) / p.prc > 0.5;",
+    "semantic_sql": "SELECT p.id, p.name, p.prc, ps.sup_prc, (p.prc - ps.sup_prc) / p.prc * 100 AS gross_margin\nFROM prods p\nJOIN prod_sup ps ON p.id = ps.prod_id\nWHERE (p.prc - ps.sup_prc) / p.prc > 0.5;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 30,
+    "prompt": "How many distinct customers have placed at least one order?",
+    "ambiguous": [
+      "customers → cust_id in ords",
+      "distinct → COUNT(DISTINCT cust_id)"
+    ],
+    "schema_only_sql": "SELECT COUNT(DISTINCT cust_id) AS distinct_customers\nFROM ords;",
+    "semantic_sql": "SELECT COUNT(DISTINCT cust_id) AS distinct_customers\nFROM ords;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 31,
+    "prompt": "Show orders placed in June 2026, sorted from earliest to latest.",
+    "ambiguous": [
+      "placed date → crt_ts in ords",
+      "June 2026 → crt_ts LIKE '2026-06%'"
+    ],
+    "schema_only_sql": "SELECT * FROM ords WHERE crt_ts BETWEEN '2026-06-01' AND '2026-06-30' ORDER BY crt_ts ASC;",
+    "semantic_sql": "SELECT * FROM ords WHERE crt_ts BETWEEN '2026-06-01' AND '2026-06-30' ORDER BY crt_ts ASC;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 32,
+    "prompt": "Which products belong to a top-level category?",
+    "ambiguous": [
+      "top-level → par_id IS NULL in cats",
+      "belong → cat_id in prods"
+    ],
+    "schema_only_sql": "SELECT p.id, p.name \nFROM prods p \nJOIN cats c ON p.cat_id = c.id \nWHERE c.par_id IS NULL;",
+    "semantic_sql": "SELECT p.id, p.name \nFROM prods p \nJOIN cats c ON p.cat_id = c.id \nWHERE c.par_id IS NULL;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 33,
+    "prompt": "What is the total inventory value of all products in stock?",
+    "ambiguous": [
+      "inventory value → prc * inv_qty",
+      "in stock → inv_qty > 0"
+    ],
+    "schema_only_sql": "SELECT SUM(prc * inv_qty) AS total_inventory_value FROM prods WHERE inv_qty > 0;",
+    "semantic_sql": "SELECT SUM(prc * inv_qty) AS total_inventory_value\nFROM prods\nWHERE inv_qty > 0;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 34,
+    "prompt": "Which supplier is linked to the most products?",
+    "ambiguous": [
+      "linked → prod_sup table",
+      "most products → COUNT(prod_id) GROUP BY sup_id"
+    ],
+    "schema_only_sql": "SELECT sup_id, COUNT(prod_id) AS product_count\nFROM prod_sup\nGROUP BY sup_id\nORDER BY product_count DESC\nLIMIT 1;",
+    "semantic_sql": "SELECT sup_id, COUNT(prod_id) AS product_count\nFROM prod_sup\nGROUP BY sup_id\nORDER BY product_count DESC\nLIMIT 1;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 35,
+    "prompt": "Find customers who have not placed any orders.",
+    "ambiguous": [
+      "not placed → cust_id NOT IN ords",
+      "customer name → cust_nm"
+    ],
+    "schema_only_sql": "SELECT custs.id, custs.cust_nm, custs.email, custs.phone, custs.city\nFROM custs\nLEFT JOIN ords ON custs.id = ords.cust_id\nWHERE ords.id IS NULL;",
+    "semantic_sql": "SELECT custs.id, custs.cust_nm, custs.email, custs.phone, custs.city\nFROM custs\nLEFT JOIN ords ON custs.id = ords.cust_id\nWHERE ords.id IS NULL;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 36,
+    "prompt": "List all products that have at least one excellent review.",
+    "ambiguous": [
+      "excellent → cust_rtg = 5 in rvws",
+      "at least one → EXISTS or IN subquery"
+    ],
+    "schema_only_sql": "SELECT DISTINCT p.id, p.name\nFROM prods p\nJOIN rvws r ON p.id = r.prod_id\nWHERE r.cust_rtg = 5;",
+    "semantic_sql": "SELECT DISTINCT p.id, p.name\nFROM prods p\nJOIN rvws r ON p.id = r.prod_id\nWHERE r.cust_rtg = 5;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 37,
+    "prompt": "Which customers have both placed an order and written a product review?",
+    "ambiguous": [
+      "placed an order → cust_id in ords",
+      "written a review → cust_id in rvws",
+      "customer name → cust_nm"
+    ],
+    "schema_only_sql": "SELECT DISTINCT c.id, c.cust_nm\nFROM custs c\nJOIN ords o ON c.id = o.cust_id\nJOIN rvws r ON c.id = r.cust_id;",
+    "semantic_sql": "SELECT DISTINCT c.id, c.cust_nm\nFROM custs c\nJOIN ords o ON c.id = o.cust_id\nJOIN rvws r ON c.id = r.cust_id;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 38,
+    "prompt": "What is the total number of items sold across all paid orders?",
+    "ambiguous": [
+      "items sold → SUM(qty) in ord_lines",
+      "paid → sts_cd = 'P2' in ords"
+    ],
+    "schema_only_sql": "SELECT SUM(ol.qty) AS total_items_sold\nFROM ord_lines ol\nJOIN ords o ON ol.ord_id = o.id\nWHERE o.sts_cd = 'paid';",
+    "semantic_sql": "SELECT SUM(ol.qty) AS total_items_sold\nFROM ord_lines ol\nJOIN ords o ON ol.ord_id = o.id\nWHERE o.sts_cd = 'P2';",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": true,
+    "both_fail": false
+  },
+  {
+    "id": 39,
+    "prompt": "What is the most expensive product in each category?",
+    "ambiguous": [
+      "most expensive → MAX(prc)",
+      "category → cat_id in prods"
+    ],
+    "schema_only_sql": "SELECT p.cat_id, p.name, MAX(p.prc) AS max_price\nFROM prods p\nGROUP BY p.cat_id;",
+    "semantic_sql": "SELECT c.id AS category_id, c.name AS category_name, p.id AS product_id, p.name AS product_name, MAX(p.prc) AS max_price\nFROM cats c\nJOIN prods p ON c.id = p.cat_id\nGROUP BY c.id, c.name;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 40,
+    "prompt": "How many products are sourced from more than one supplier?",
+    "ambiguous": [
+      "sourced → prod_sup table",
+      "more than one → COUNT(sup_id) > 1 GROUP BY prod_id"
+    ],
+    "schema_only_sql": "SELECT COUNT(DISTINCT prod_id) \nFROM prod_sup \nGROUP BY prod_id \nHAVING COUNT(sup_id) > 1;",
+    "semantic_sql": "SELECT COUNT(DISTINCT prod_id) AS product_count\nFROM prod_sup\nGROUP BY prod_id\nHAVING COUNT(sup_id) > 1;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 41,
+    "prompt": "What is the total revenue from customers based in Ho Chi Minh City?",
+    "ambiguous": [
+      "revenue → ord_amt in ords",
+      "Ho Chi Minh City → city = 'HCMC' in custs"
+    ],
+    "schema_only_sql": "SELECT SUM(o.ord_amt) AS total_revenue\nFROM ords o\nJOIN custs c ON o.cust_id = c.id\nWHERE c.city = 'Ho Chi Minh City';",
+    "semantic_sql": "SELECT SUM(ord_amt) AS total_revenue\nFROM ords\nJOIN custs ON ords.cust_id = custs.id\nWHERE custs.city = 'Ho Chi Minh City';",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 42,
+    "prompt": "Which products have been reviewed by more than one customer?",
+    "ambiguous": [
+      "reviewed → rvws table",
+      "more than one customer → COUNT(DISTINCT cust_id) > 1 GROUP BY prod_id"
+    ],
+    "schema_only_sql": "SELECT p.id, p.name\nFROM prods p\nJOIN rvws r ON p.id = r.prod_id\nGROUP BY p.id, p.name\nHAVING COUNT(DISTINCT r.cust_id) > 1;",
+    "semantic_sql": "SELECT prod_id\nFROM rvws\nGROUP BY prod_id\nHAVING COUNT(DISTINCT cust_id) > 1;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 43,
+    "prompt": "Show the average supply cost per supplier across all their products.",
+    "ambiguous": [
+      "supply cost → sup_prc in prod_sup",
+      "per supplier → GROUP BY sup_id"
+    ],
+    "schema_only_sql": "SELECT AVG(sup_prc) AS avg_supply_cost, sup_id\nFROM prod_sup\nGROUP BY sup_id;",
+    "semantic_sql": "SELECT AVG(sup_prc) AS avg_supply_cost, sup_id\nFROM prod_sup\nGROUP BY sup_id;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 44,
+    "prompt": "List all categories that contain at least one product.",
+    "ambiguous": [
+      "contain a product → cat_id referenced in prods"
+    ],
+    "schema_only_sql": "SELECT DISTINCT cats.id, cats.name \nFROM cats \nJOIN prods ON cats.id = prods.cat_id;",
+    "semantic_sql": "SELECT DISTINCT c.id, c.name \nFROM cats c \nJOIN prods p ON c.id = p.cat_id;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 45,
+    "prompt": "What percentage of orders have been cancelled?",
+    "ambiguous": [
+      "cancelled → sts_cd = 'C'",
+      "percentage → ratio to total COUNT(*)"
+    ],
+    "schema_only_sql": "SELECT (SUM(CASE WHEN sts_cd = 'Cancelled' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)) AS cancelled_percentage\nFROM ords;",
+    "semantic_sql": "SELECT (COUNT(CASE WHEN sts_cd = 'C' THEN 1 END) * 100.0 / COUNT(*)) AS cancelled_percentage\nFROM ords;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": true,
+    "both_fail": false
+  },
+  {
+    "id": 46,
+    "prompt": "Which product has the highest average satisfaction score?",
+    "ambiguous": [
+      "satisfaction score → cust_rtg in rvws",
+      "highest average → MAX(AVG(cust_rtg)) GROUP BY prod_id"
+    ],
+    "schema_only_sql": "SELECT p.name, AVG(r.cust_rtg) AS avg_satisfaction\nFROM prods p\nJOIN rvws r ON p.id = r.prod_id\nGROUP BY p.id\nORDER BY avg_satisfaction DESC\nLIMIT 1;",
+    "semantic_sql": "SELECT p.name, AVG(r.cust_rtg) AS avg_satisfaction\nFROM prods p\nJOIN rvws r ON p.id = r.prod_id\nGROUP BY p.id\nORDER BY avg_satisfaction DESC\nLIMIT 1;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 47,
+    "prompt": "Find orders where the transaction amount exceeds 20 million.",
+    "ambiguous": [
+      "transaction amount → ord_amt in ords"
+    ],
+    "schema_only_sql": "SELECT * FROM ords WHERE ord_amt > 20000000;",
+    "semantic_sql": "SELECT * FROM ords WHERE ord_amt > 20000000;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 48,
+    "prompt": "List all products supplied by vendors from Vietnam.",
+    "ambiguous": [
+      "vendors → sups table",
+      "Vietnam → country = 'Vietnam' in sups",
+      "linked → prod_sup"
+    ],
+    "schema_only_sql": "SELECT p.id, p.name, p.descr, p.prc, p.inv_qty\nFROM prods p\nJOIN prod_sup ps ON p.id = ps.prod_id\nJOIN sups s ON ps.sup_id = s.id\nWHERE s.country = 'Vietnam';",
+    "semantic_sql": "SELECT p.id, p.name\nFROM prods p\nJOIN prod_sup ps ON p.id = ps.prod_id\nJOIN sups s ON ps.sup_id = s.id\nWHERE s.country = 'Vietnam';",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": true,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 49,
+    "prompt": "What is the total number of units ordered for products that are currently out of stock?",
+    "ambiguous": [
+      "out of stock → inv_qty = 0 in prods",
+      "units ordered → SUM(qty) in ord_lines"
+    ],
+    "schema_only_sql": "SELECT SUM(ol.qty) AS total_units_ordered\nFROM ord_lines ol\nJOIN prods p ON ol.prod_id = p.id\nWHERE p.inv_qty = 0;",
+    "semantic_sql": "SELECT SUM(ol.qty) AS total_units_ordered\nFROM ord_lines ol\nJOIN prods p ON ol.prod_id = p.id\nWHERE p.inv_qty = 0;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  },
+  {
+    "id": 50,
+    "prompt": "Show each customer's name, total number of orders, and total amount spent.",
+    "ambiguous": [
+      "customer name → cust_nm in custs",
+      "total amount spent → SUM(ord_amt) in ords"
+    ],
+    "schema_only_sql": "SELECT c.cust_nm, COUNT(o.id) AS total_orders, SUM(o.ord_amt) AS total_amount_spent\nFROM custs c\nLEFT JOIN ords o ON c.id = o.cust_id\nGROUP BY c.id;",
+    "semantic_sql": "SELECT c.cust_nm, COUNT(o.id) AS total_orders, SUM(o.ord_amt) AS total_amount_spent\nFROM custs c\nLEFT JOIN ords o ON c.id = o.cust_id\nGROUP BY c.id;",
+    "schema_only_ok": true,
+    "semantic_ok": true,
+    "schema_only_err": "",
+    "semantic_err": "",
+    "results_differ": false,
+    "semantic_wins": false,
+    "both_fail": false
+  }
+]
