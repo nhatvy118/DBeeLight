@@ -1078,62 +1078,7 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
     }
   };
 
-  const handleRefreshResponse = async (aiIndex: number) => {
-    const userIndex = aiIndex - 1;
-    if (userIndex < 0) return;
-    const userMsg = messages[userIndex];
-    if (!userMsg?.isUser) return;
-
-    setIsSending(true);
-    try {
-      // Files are bound to the session server-side; pass their ids via active_file_ids
-      // (no marker text embedded in the message anymore).
-      const refreshFileIds = (userMsg.attachments || [])
-        .map((a) => a.fileId)
-        .filter((id): id is string => !!id);
-      const res = await sendMessageWithStream(userMsg.text, sessionId, selectedProject?.id || null, {
-        activeFileIds: scopedFileIds(refreshFileIds.length ? refreshFileIds : getActiveFileIds(activeDataSources)),
-      });
-      const resText = res.response;
-      if ((resText && resText.trim().length > 0) || readCharts((res as any).tool_events).length > 0) {
-        setMessages((prev) => {
-          const updated = [...prev];
-          updated[aiIndex] = {
-            text: buildAssistantTextFromSqlPreview(
-              (resText ?? '').trim(),
-              readSqlPreview((res as any).tool_events),
-            ),
-            isUser: false,
-            ...(() => {
-              const pendingResume = !!(res as { pending_workflow_resume?: boolean }).pending_workflow_resume;
-              const sqlAction = resolveSqlExecuteAction((res as any).tool_events, pendingResume);
-              return {
-                sqlToExecute: sqlAction.sqlToExecute,
-                sqlActionState: sqlAction.sqlActionState,
-                workflowResumePending: pendingResume,
-              };
-            })(),
-            exportToExcel: captureExport(readFileExport((res as any).tool_events)),
-            exportCreatedAt: readFileExport((res as any).tool_events) ? Date.now() : undefined,
-            charts: readCharts((res as any).tool_events),
-            queryResult: readQueryResult((res as any).tool_events),
-            mutationPreview: readSqlPreview((res as any).tool_events)?.preview ?? null,
-            schemaPreview: readSchemaPreview((res as any).tool_events),
-          };
-          return updated;
-        });
-      } else if (!res.success) {
-        toast.error(`Error: ${res.error || 'Failed to refresh response'}`);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to refresh response';
-      toast.error(`Error: ${message}`);
-    } finally {
-      setIsSending(false);
-    }
-  };
-
-  const handleSchemaTypeChange = (aiIndex: number, colIdx: number, nextType: string) => {
+  const handleSchemaTypeChange =(aiIndex: number, colIdx: number, nextType: string) => {
     setMessages((prev) => {
       const updated = [...prev];
       const msg = updated[aiIndex];
@@ -1929,7 +1874,6 @@ export default function Chat({ projectId: propProjectId, sessionId: propSessionI
           <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px 24px' }}>
             <MessageList
               messages={messages}
-              onRefreshResponse={(idx) => void handleRefreshResponse(idx)}
               onExecuteSql={(idx) => void handleExecuteSql(idx)}
               onCancelSql={(idx) => void handleCancelSql(idx)}
               onExportFile={(idx) => void handleExportExcel(idx)}

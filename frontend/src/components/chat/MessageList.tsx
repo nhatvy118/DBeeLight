@@ -139,7 +139,6 @@ export type UiMessage = {
 
 type MessageListProps = {
   messages: UiMessage[];
-  onRefreshResponse?: (aiIndex: number) => void;
   onExecuteSql?: (aiIndex: number) => void;
   onCancelSql?: (aiIndex: number) => void;
   onExportFile?: (aiIndex: number) => void | Promise<void>;
@@ -168,7 +167,6 @@ type MessageListProps = {
 
 export default function MessageList({
   messages,
-  onRefreshResponse,
   onExecuteSql,
   onCancelSql,
   onExportFile,
@@ -721,26 +719,13 @@ export default function MessageList({
                 );
               })() : null;
 
+            if (!sqlAction) return null;
+
             return (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6, marginTop: 12 }}>
-                {sqlAction && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    {sqlAction}
-                  </div>
-                )}
-                {onRefreshResponse && (
-                  <button
-                    type="button"
-                    onClick={() => void onRefreshResponse(index)}
-                    className="focusable"
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 999, fontSize: 12.5, fontWeight: 600, color: 'var(--text-soft)', background: 'var(--surface)', border: '1px solid var(--border)' }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; e.currentTarget.style.color = 'var(--text)'; e.currentTarget.style.borderColor = 'var(--border-strong)'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--text-soft)'; e.currentTarget.style.borderColor = 'var(--border)'; }}
-                  >
-                    <Icons.Refresh size={15} />
-                    <span>Regenerate</span>
-                  </button>
-                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {sqlAction}
+                </div>
               </div>
             );
           })()}

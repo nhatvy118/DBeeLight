@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { AuthProvider } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
-import { LanguageProvider } from './context/LanguageContext';
 import { OnboardingProvider } from './context/OnboardingContext';
 import MainLayout from './components/layout/MainLayout';
 import AppRoutes from './routes/AppRoutes';
@@ -13,17 +12,15 @@ export default function App() {
 
   return (
     <ThemeProvider>
-      <LanguageProvider>
-        <AuthProvider>
-          <OnboardingProvider>
-            <MainLayout currentSessionId={currentSessionId} onSessionSelect={setCurrentSessionId}>
-              <AppRoutes sessionId={currentSessionId} onSessionIdChange={setCurrentSessionId} />
-            </MainLayout>
-          </OnboardingProvider>
-          <Toaster />
-          <ConfirmHost />
-        </AuthProvider>
-      </LanguageProvider>
+      <AuthProvider>
+        <OnboardingProvider>
+          <MainLayout currentSessionId={currentSessionId} onSessionSelect={setCurrentSessionId}>
+            <AppRoutes sessionId={currentSessionId} onSessionIdChange={setCurrentSessionId} />
+          </MainLayout>
+        </OnboardingProvider>
+        <Toaster />
+        <ConfirmHost />
+      </AuthProvider>
     </ThemeProvider>
   );
 }

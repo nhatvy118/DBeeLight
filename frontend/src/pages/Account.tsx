@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react';
 import { url } from '../services/api';
-import { useLanguage, LANGUAGE_OPTIONS } from '../context/LanguageContext';
-import { Icons } from '../icons';
 
 type AuthUser = {
   name?: string;
@@ -16,7 +14,6 @@ type AuthUser = {
 };
 
 export default function Account() {
-  const { language, setLanguage } = useLanguage();
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [displayName, setDisplayName] = useState<string>('');
@@ -137,49 +134,6 @@ export default function Account() {
               </div>
             </>
           )}
-        </div>
-
-        {/* Preferences — answer language */}
-        <div className="card soft-shadow" style={{ marginTop: 20, borderRadius: 'var(--r-lg)', padding: 26 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 4 }}>
-            <span style={{ width: 36, height: 36, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'var(--accent-soft)', color: 'var(--accent-ink)', flexShrink: 0 }}>
-              <Icons.Question size={18} />
-            </span>
-            <div>
-              <div style={{ fontSize: 16, fontWeight: 700 }}>Answer language</div>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Choose the language DBeeLight replies in.</div>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
-            {LANGUAGE_OPTIONS.map((opt) => {
-              const selected = language === opt.value;
-              return (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => setLanguage(opt.value)}
-                  className="focusable"
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left',
-                    padding: '12px 14px', borderRadius: 'var(--r-sm)', cursor: 'pointer', transition: 'all .14s',
-                    border: `1.5px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
-                    background: selected ? 'var(--accent-soft)' : 'var(--surface)',
-                  }}
-                  onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = 'var(--surface-2)'; }}
-                  onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = 'var(--surface)'; }}
-                >
-                  <span style={{ width: 20, height: 20, borderRadius: 99, flexShrink: 0, display: 'grid', placeItems: 'center', border: `2px solid ${selected ? 'var(--accent-strong)' : 'var(--border-strong)'}`, background: selected ? 'var(--accent-strong)' : 'transparent', color: 'var(--on-accent)' }}>
-                    {selected && <Icons.Check size={13} />}
-                  </span>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'block', fontSize: 14.5, fontWeight: 600, color: selected ? 'var(--accent-ink)' : 'var(--text)' }}>{opt.label}</span>
-                    <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-muted)' }}>{opt.sub}</span>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
         </div>
       </div>
     </div>
