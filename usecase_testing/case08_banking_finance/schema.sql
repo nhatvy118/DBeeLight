@@ -59,3 +59,12 @@ CREATE TABLE loan_payments (
     amount_paid        DECIMAL(14, 2) NOT NULL,
     remaining_balance  DECIMAL(14, 2) NOT NULL
 );
+
+CREATE TABLE collaterals (
+    id      SERIAL PRIMARY KEY,
+    ref     INT REFERENCES loans(id),
+    type    VARCHAR(30) NOT NULL,
+    val     DECIMAL(14, 2) NOT NULL,
+    dt      DATE NOT NULL,
+    st      VARCHAR(20) DEFAULT 'active'
+);

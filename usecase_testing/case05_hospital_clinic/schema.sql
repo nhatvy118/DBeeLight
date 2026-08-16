@@ -37,3 +37,11 @@ CREATE TABLE prescriptions (
     dosage           VARCHAR(50),
     duration_days    INT
 );
+
+CREATE TABLE encounter_records (
+    id      SERIAL PRIMARY KEY,
+    appt    INT REFERENCES appointments(id),
+    wait    INT NOT NULL,
+    typ     VARCHAR(20) NOT NULL,
+    dt      TIMESTAMP NOT NULL
+);
