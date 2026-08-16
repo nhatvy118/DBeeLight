@@ -36,3 +36,11 @@ CREATE TABLE grades (
     score            DECIMAL(5, 2) NOT NULL,
     max_score        DECIMAL(5, 2) DEFAULT 100
 );
+
+CREATE TABLE grade_records (
+    id      SERIAL PRIMARY KEY,
+    enr     INT REFERENCES enrollments(id),
+    letter  VARCHAR(2),             
+    pts     DECIMAL(5, 2) NOT NULL,   
+    dt      DATE NOT NULL
+);

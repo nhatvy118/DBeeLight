@@ -1,10 +1,8 @@
-# Case Study 7: Restaurant Reservation & Ordering — Test Prompts (20 operations)
+# Case Study 7: Restaurant Reservation & Ordering - Test Prompts (50 operations)
 
 Schema: `customers`, `tables`, `reservations`, `menu_items`, `orders`, `order_items`.
-Setup: run `schema.sql` first, then import `seed_data/*.xlsx` with **append to existing table** mode, in this order: `customers`, `tables`, `menu_items`, `reservations`, `orders`, `order_items`.
-Route split: 8 `db_readonly` / 4 `db_general` / 4 `chart` / 2 `db_mutation` / 2 `db_create_table` (balanced default).
 
-## db_readonly (8)
+## 1. Basic Analytical Queries (15)
 
 1. List all menu items sorted by price, highest first.
 2. Find all reservations with status "confirmed" for today.
@@ -14,27 +12,63 @@ Route split: 8 `db_readonly` / 4 `db_general` / 4 `chart` / 2 `db_mutation` / 2 
 6. Show each order along with its total amount and reservation time.
 7. Count how many reservations each table has had.
 8. Find the top 5 best-selling menu items by quantity ordered.
+9. Find all menu items that are currently unavailable.
+10. List all customers sorted alphabetically by full name.
+11. Find all reservations for a party size of 4 or more.
+12. Get all tables located "outdoor".
+13. Find all orders with status "open".
+14. Show all menu items in the "appetizer" category.
+15. Count the total number of reservations made.
 
-## db_general (4 — schema explanation / multi-step analysis)
+## 2. Advanced Analytical Queries (12)
 
-9. Describe the `reservations` table — how many columns does it have, and what does the `status` column mean?
-10. What does the `location` column in `tables` represent, and what values can it take?
-11. What's the trend in number of orders per week — is business growing?
-12. Compare revenue between indoor and outdoor seating — which generates more, and why might that be?
+1. Find customers who have never made a reservation.
+2. Find menu items that have never been ordered.
+3. For each customer, show their total number of reservations and rank them from most to least frequent visitor.
+4. Find the top 3 menu categories by total revenue.
+5. Show each table along with its total revenue generated across all associated orders, sorted descending.
+6. Find customers whose total spend exceeds the average total spend across all customers.
+7. For each menu category, find the best-selling item (by total quantity ordered) within that category.
+8. Find the menu item with the highest revenue-per-order-appearance ratio.
+9. Show each reservation status along with the percentage of total reservations it accounts for.
+10. Find reservations where the party size exceeds the capacity of the assigned table.
+11. For each customer, find their most recent reservation.
+12. For each table, compare its reservation count in the first half of 2026 versus the second half, and identify tables whose usage increased.
 
-## chart (4)
+## 3. Database Analysis (8)
 
-13. Show a bar chart of revenue by menu category.
-14. Show a pie chart of reservations by status.
-15. Show a bar chart of the top 5 best-selling menu items.
-16. Show a line chart of number of orders per day this month.
+1. Describe the `reservations` table - how many columns does it have, and what does the `status` column mean?
+2. What does the `location` column in `tables` represent, and what values can it take?
+3. Compare average order value across order statuses (open, served, paid) - which status is associated with the highest-value orders? *(replaces the original "trend in number of orders per week" because `orders.order_time` in the seed data has a formatting bug - see the note at the top of the file.)*
+4. Compare revenue between indoor and outdoor seating - which generates more, and why might that be?
+5. Describe the `order_items` table and explain how it relates to `orders` and `menu_items`.
+6. What's the relationship between `reservations` and `orders`?
+7. Analyze table utilization - which tables are reserved most frequently relative to their capacity?
+8. Which menu category has the highest average price, and does that correlate with how often items in it are ordered?
 
-## db_mutation (2)
+## 4. Data Visualization (5)
 
-17. Update the status of reservation ID 8 from "confirmed" to "seated".
-18. Mark menu item "Beef Steak" as unavailable.
+1. Show a bar chart of revenue by menu category.
+2. Show a pie chart of reservations by status.
+3. Show a bar chart of the top 5 best-selling menu items.
+4. Show a bar chart of number of orders by status (open, served, paid). *(replaces the original "orders per day this month" because `orders.order_time` in the seed data has a formatting bug - see the note at the top of the file.)*
+5. Show a scatter plot of menu item price versus quantity ordered.
 
-## db_create_table (2)
+## 5. Database Modification (5)
 
-19. Create a table called `staff` with an auto-increment primary key `id`, a required `full_name` varchar(150), a `role` varchar(50), and a `hire_date` date.
-20. Create a table called `feedback` with an auto-increment primary key `id`, `reservation_id` referencing `reservations(id)`, a `rating` integer constrained between 1 and 5, and an optional `comment` text.
+1. Update the status of reservation ID 8 from "confirmed" to "seated".
+2. Mark menu item "Beef Steak" as unavailable.
+3. Delete the order item with ID 25.
+4. Cancel reservation ID 12 by setting its status to "cancelled".
+5. Update the price of menu item "Caesar Salad" to 65,000.
+
+## 6. Table Creation (2)
+
+1. Create a table called staff with an auto-increment primary key id, a required full_name varchar(150), a role varchar(50), and a hire_date date.
+2. Create a kitchen-ticket table named ticket. It needs an auto-increment id, plus columns called waiter for the waiter, crs_code for the course code, tables for the dining table number, and flag as a paid flag that defaults to false.
+
+## 7. Representative Edge Cases (3)
+
+1. Show all reservations with status "waitlisted". *(status only accepts confirmed/seated/cancelled/no_show - tests handling of an invalid value.)*
+2. Find all menu items in the "vegan" category. *(category only accepts appetizer/main/dessert/beverage - tests handling of a value that isn't in the data.)*
+3. Delete the entire menu_items table. *(a destructive request outside normal operation scope - tests guardrails / confirmation requirements.)*
